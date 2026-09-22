@@ -1,0 +1,146 @@
+# ci-test — this file is yours.
+#
+# gt created it once and will never modify or delete it again. Put this
+# repository's test suite here; the orchestration around it stays gt's.
+#
+# Coverage is uploaded as an artifact named `gt-coverage`, which the bulwark
+# stage consumes instead of running every suite a second time — `.bulwark.yml`
+# declares `coverage.source: report` to match. The artifact mirrors this
+# repository's own layout, because bulwark looks for each report next to the
+# unit that produced it (`<packageDir>/coverage/{coverage-summary.json,lcov.info}`
+# per TypeScript package) rather than at one agreed path.
+# Each project under source/ is its own pnpm workspace (ADR-0001), so the suite
+# runs once per affected project, in that project's directory, and each run
+# uploads its own `gt-coverage-<project>` artifact holding source/<project>/...
+# reports. The `coverage` job merges them into the one `gt-coverage` artifact
+# bulwark reads. A project the change does not reach is not tested and
+# contributes no report.
+name: ci-test
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  detect:
+    name: detect
+    runs-on: ubuntu-latest
+    outputs:
+      projects: ${{ steps.projects.outputs.projects }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: projects
+        uses: ./.github/actions/changed-projects
+
+  test:
+    name: test (${{ matrix.project }})
+    needs: detect
+    # An empty matrix is a workflow error, so a run with no affected project
+    # skips the job instead.
+    if: needs.detect.outputs.projects != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        project: ${{ fromJSON(needs.detect.outputs.projects) }}
+    defaults:
+      run:
+        working-directory: source/${{ matrix.project }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Installs the pnpm version the project pins in its packageManager field.
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          package_json_file: source/${{ matrix.project }}/package.json
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: source/${{ matrix.project }}/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+
+      # Every package runs its suite under Node and in Chromium (vitest.shared.ts in
+      # each project), and playwright ships no postinstall hook, so the engine is
+      # absent unless it is fetched here. playwright is the project root's
+      # devDependency, which is where `pnpm exec` resolves it.
+      #
+      # `--with-deps` installs the shared libraries headless chromium links
+      # against. The runner image happens to carry most of them for its
+      # preinstalled browsers, but that is incidental to the image and not a
+      # contract, and a missing library surfaces as a browser that fails to
+      # launch rather than as a clear error.
+      - name: Install the chromium engine the browser tests drive
+        run: pnpm exec playwright install --with-deps chromium
+
+      # turbo's test task depends on each package's own build (turbo.json),
+      # so this instruments and runs every suite in dependency order without
+      # a separate `pnpm build` step first.
+      - run: pnpm test
+
+      - name: Collect coverage into the artifact layout
+        # Staged under one directory mirroring the repository from its root,
+        # rather than listing report paths on the upload directly, so nothing
+        # needs renaming on the way in: bulwark finds a TypeScript package's
+        # pair at <packageDir>/coverage/{coverage-summary.json,lcov.info} —
+        # Vitest's own convention, not a path this repo chose — and a copy
+        # that preserves the repo-relative path needs no configuration to
+        # match it.
+        env:
+          STAGE: ${{ runner.temp }}/gt-coverage
+          PROJECT_DIR: source/${{ matrix.project }}
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          collected=0
+          while IFS= read -r -d '' report; do
+            mkdir -p "${STAGE}/$(dirname "$report")"
+            cp "$report" "${STAGE}/${report}"
+            echo "collected ${report}"
+            collected=$((collected + 1))
+          done < <(
+            find "${PROJECT_DIR}" \
+              \( -name node_modules -o -name dist -o -name .turbo \) -prune -o \
+              -type f \( -path '*/coverage/lcov.info' \
+                       -o -path '*/coverage/coverage-summary.json' \) -print0
+          )
+          # An empty artifact is the failure this arrangement exists to avoid:
+          # bulwark would find no report, mark every language unmeasured,
+          # warn, and still pass — a coverage gate that stopped covering
+          # anything, reported as green.
+          if [[ "$collected" -eq 0 ]]; then
+            echo "::error::no coverage reports found to upload"
+            exit 1
+          fi
+          echo "collected ${collected} report(s)"
+
+      - name: Upload this project's coverage
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: gt-coverage-${{ matrix.project }}
+          path: ${{ runner.temp }}/gt-coverage
+          retention-days: 1
+
+  # Artifacts are immutable per name, so the matrix legs cannot share one. This
+  # job folds them into the single `gt-coverage` artifact the bulwark stage
+  # restores; each leg's paths already carry their own source/<project> prefix.
+  coverage:
+    name: coverage
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: gt-coverage-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/gt-coverage
+      - name: Upload coverage for the bulwark stage
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: gt-coverage
+          path: ${{ runner.temp }}/gt-coverage
+          retention-days: 1

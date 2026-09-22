@@ -1,0 +1,41 @@
+packages:
+  - packages/*
+
+# Wait a week before installing newly published versions, transitive ones
+# included (supply-chain hygiene). Minutes.
+minimumReleaseAge: 10080
+
+# @vipengele/* is exempt. The cooldown buys time for a hijacked release to be
+# noticed and yanked before it is installed — a risk that belongs to packages
+# this org does not publish. These are published from this org's own
+# repositories by trusted publishing, with provenance, from a tag a human
+# pushed; there is no window in which an unnoticed compromise of them is
+# waiting to be found by someone else.
+#
+# Without this, a cross-project dependency (ADR-0001) is uninstallable for a
+# week after every release of it, which makes releasing the producer and then
+# consuming it a fortnight-long operation.
+minimumReleaseAgeExclude:
+  - "@vipengele/*"
+
+# Refuse a version published with weaker trust evidence (e.g. provenance) than
+# an earlier version of the same package — the signature of a hijacked release.
+trustPolicy: no-downgrade
+
+# Transitive dependencies may only come from the registry, never from git URLs
+# or tarballs a dependency chose on its own.
+blockExoticSubdeps: true
+
+# tsup declares chokidar ^4.0.1, but pnpm's highest-resolution mode picks
+# 4.0.3 within that range, and trustPolicy rejects it: 4.0.2/4.0.3 carry no
+# npm provenance while 4.0.1 does. Pinning the exact provenance-carrying
+# patch tsup's own range already allows resolves the install without
+# weakening trustPolicy.
+overrides:
+  chokidar: 4.0.1
+
+# esbuild (pulled in transitively by tsup) ships a postinstall script that
+# downloads its platform binary. pnpm refuses to run any dependency's
+# lifecycle script unless it is explicitly allow-listed here.
+allowBuilds:
+  esbuild: true

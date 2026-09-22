@@ -1,0 +1,13 @@
+// tsup handles JS bundling only; `tsup --dts` throws against this repo's pinned
+// typescript, so declarations come from tsc (see tsconfig.base.json).
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "emitDeclarationOnly": true,
+    "noEmit": false
+  },
+  "include": ["src"],
+  "exclude": ["src/**/*.test.ts"]
+}

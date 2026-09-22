@@ -1,0 +1,23 @@
+{
+  "name": "core",
+  "private": true,
+  "packageManager": "pnpm@12.4.1",
+  "scripts": {
+    "build": "turbo run build",
+    "type-check": "turbo run type-check",
+    "test": "turbo run test",
+    "lint": "biome lint . --error-on-warnings",
+    "format": "biome format --write .",
+    "format:check": "biome format ."
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.12",
+    "@vitest/browser-playwright": "5.0.0",
+    "@vitest/coverage-v8": "5.0.0",
+    "playwright": "1.63.0",
+    "tsup": "8.3.6",
+    "turbo": "2.10.12",
+    "typescript": "7.0.2",
+    "vitest": "5.0.0"
+  }
+}

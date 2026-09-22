@@ -1,0 +1,27 @@
+# What lydite builds, tests, scans and gates in vipengele/typescript.
+#
+# Each project under source/ is its own pnpm workspace (ADR-0001). A component is
+# the unit its build tool treats as a whole, and here that unit is one workspace
+# package: turbo's `test` task fans out to each package's own
+# `vitest run --coverage`, and each is its own component.
+components:
+  - name: core-common
+    dir: source/core/packages/common
+    runner: vitest
+
+  - name: core-redaction
+    dir: source/core/packages/redaction
+    runner: vitest
+
+  - name: core-observability
+    dir: source/core/packages/observability
+    runner: vitest
+    # observability imports @vipengele/ts-core-common and @vipengele/ts-core-redaction
+    # through their package.json `exports`, which point at dist/ — turbo's own test
+    # task depends on `^build` (turbo.json) so CI never runs a workspace package's
+    # test before its workspace dependencies are built. lydite's vitest runner has
+    # no such graph, so the build runs here instead.
+    depends_on: [core-common, core-redaction]
+    setup:
+      - sh -c 'cd "$(git rev-parse --show-toplevel)/source/core" && pnpm --filter @vipengele/ts-core-common run build'
+      - sh -c 'cd "$(git rev-parse --show-toplevel)/source/core" && pnpm --filter @vipengele/ts-core-redaction run build'
