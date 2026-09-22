@@ -1,7 +1,7 @@
 import { defineConfig } from "tsup";
 
 export default defineConfig({
-  entry: ["src/index.ts"],
+  entry: ["src/index.ts", "src/types/numeric/index.ts"],
   format: ["esm"],
   target: "es2022",
   // `dts: true` throws against this repo's pinned typescript; `tsc -p tsconfig.build.json`

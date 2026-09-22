@@ -20,5 +20,17 @@
       "security": "error",
       "correctness": "error"
     }
-  }
+  },
+  "overrides": [
+    {
+      "includes": ["**/types/numeric/index.ts"],
+      "linter": {
+        "rules": {
+          "complexity": {
+            "noStaticOnlyClass": "off"
+          }
+        }
+      }
+    }
+  ]
 }

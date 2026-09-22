@@ -31,6 +31,10 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
+    "./types/numeric": {
+      "types": "./dist/types/numeric/index.d.ts",
+      "default": "./dist/types/numeric/index.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
