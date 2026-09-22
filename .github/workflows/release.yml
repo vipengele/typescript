@@ -1,0 +1,487 @@
+# release — publishes every project's packages to npm at one version.
+#
+# A human pushes the tag; nothing else starts this. The tag is the decision and
+# the only input: `vX.Y.Z` is the version of the whole repository, and every
+# non-private package of every project under `source/` is published at it
+# (ADR-0001). Each project is its own pnpm workspace, so the version is checked,
+# installed, built and published per project, but no project is ever released
+# alone.
+#
+# Four jobs, and the seams between them are safety properties. `tag` reads the
+# repository and decides whether this is a release at all, and in what order the
+# projects publish. `build` holds no credentials: it installs dependencies —
+# which runs third-party lifecycle scripts — and builds, one matrix leg per
+# project, then hands `dist/` on as an artefact. `publish` holds the OIDC token
+# and publishes exactly the artefacts it was handed, after checking that each
+# carries nothing but the `dist/` directories it is supposed to. `announce`
+# creates the GitHub Release once every package is on the registry.
+#
+# Projects publish one after another, dependencies first. A project that
+# depends on another project's packages resolves them from the registry, so it
+# is published only once what it depends on is there; publishing the projects
+# in parallel would let a dependent land before its dependency.
+#
+# Publishing is npm trusted publishing: npm exchanges this workflow's OIDC token
+# for a short-lived credential, so no npm secret exists in this repository. A
+# publisher is enrolled per package name, and npm can only enrol one on a name
+# the registry already holds — so each name is created by a one-time manual
+# publish before its publisher can exist.
+name: release
+
+on:
+  push:
+    # A tag filter is a glob, not a regex: `+` means one or more of what
+    # precedes it. It is the coarse gate — the `tag` job below applies the real
+    # pattern and fails a tag that only looks like a release.
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
+
+# Read-only by default; the publish and announce jobs widen this to exactly
+# what they need.
+permissions:
+  contents: read
+
+# One release at a time, and never cancel one in flight: a cancelled run leaves
+# some packages published and the rest not. The key is the workflow, not the
+# tag, so two versions tagged close together cannot publish concurrently and
+# leave npm's `latest` wherever the slower run finished.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    name: tag
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.parse.outputs.version }}
+      projects: ${{ steps.order.outputs.projects }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Everything that can fail without leaving anything half-published fails
+      # here: a tag that is not a version, and missing release notes. The
+      # GitHub Release body is a file a human wrote and reviewed, so a run that
+      # reaches npm before discovering it is absent has published a version
+      # whose notes nobody can produce.
+      - name: The tag is a version and carries its notes
+        id: parse
+        run: |
+          set -euo pipefail
+          if [[ ! "${GITHUB_REF_NAME}" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            echo "::error::${GITHUB_REF_NAME} is not vX.Y.Z"
+            exit 1
+          fi
+          version="${BASH_REMATCH[1]}"
+
+          notes="docs/release-notes/${GITHUB_REF_NAME}.md"
+          if [ ! -f "$notes" ]; then
+            echo "::error::$notes is missing — write the notes for ${GITHUB_REF_NAME} before tagging"
+            exit 1
+          fi
+
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "releasing ${version}"
+
+      # The publish order. A project depends on another when any of its
+      # packages names one of the other's packages in dependencies,
+      # peerDependencies or optionalDependencies; the order is a topological
+      # sort of that graph, and a cycle ends the release here, because no order
+      # publishes both halves of one after the other.
+      #
+      # Package names and dependencies are read from the manifests on disk
+      # rather than from pnpm, so this job installs nothing.
+      - name: The projects, dependencies first
+        id: order
+        run: |
+          set -euo pipefail
+          projects="$(python3 - <<'PY'
+          import glob, json, os, sys
+
+          owner = {}  # package name -> project
+          needs = {}  # project -> package names its packages depend on
+          for manifest in sorted(glob.glob("source/*/packages/*/package.json")):
+              project = manifest.split(os.sep)[1]
+              data = json.load(open(manifest))
+              needs.setdefault(project, set())
+              if not data.get("private", False):
+                  owner[data["name"]] = project
+              for field in ("dependencies", "peerDependencies", "optionalDependencies"):
+                  needs[project].update(data.get(field, {}))
+
+          graph = {
+              project: sorted({owner[name] for name in names if name in owner} - {project})
+              for project, names in needs.items()
+          }
+          order, state = [], {}
+          def visit(project, path):
+              if state.get(project) == "done":
+                  return
+              if state.get(project) == "visiting":
+                  sys.exit("dependency cycle between projects: " + " -> ".join(path + [project]))
+              state[project] = "visiting"
+              for dependency in graph[project]:
+                  visit(dependency, path + [project])
+              state[project] = "done"
+              order.append(project)
+          for project in sorted(graph):
+              visit(project, [])
+          if not order:
+              sys.exit("no project under source/ has a package")
+          print(json.dumps(order))
+          PY
+          )"
+          echo "publish order: ${projects}"
+          echo "projects=${projects}" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: build (${{ matrix.project }})
+    needs: tag
+    runs-on: ubuntu-latest
+    permissions:
+      # A job-level block REPLACES the workflow default rather than narrowing
+      # it, so read is stated here rather than inherited. This job reads the
+      # repository and writes nothing anywhere.
+      contents: read
+    strategy:
+      # One project failing to build fails the release before anything is
+      # published, so the other legs have nothing left to contribute.
+      fail-fast: true
+      matrix:
+        project: ${{ fromJSON(needs.tag.outputs.projects) }}
+    defaults:
+      run:
+        working-directory: source/${{ matrix.project }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # `pnpm install` below runs postinstall scripts from the dependency
+          # tree, and a token left in .git/config is a token they can read.
+          # Nothing in this job talks to git over the network.
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          package_json_file: source/${{ matrix.project }}/package.json
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: source/${{ matrix.project }}/pnpm-lock.yaml
+
+      # ADR-0001: one tag sets one version across every project. npm publishes
+      # whatever the manifests say while the GitHub Release takes the tag, so a
+      # tag ahead of the manifests ships artefacts that disagree about which
+      # version they are.
+      #
+      # The package set is the one the publish job selects — every non-private
+      # workspace project — read the same way, so a package added to the
+      # workspace is checked here because it is published there.
+      - name: The manifests carry the tag's version
+        env:
+          WANT: ${{ needs.tag.outputs.version }}
+        run: |
+          set -euo pipefail
+          packages="$(pnpm list --recursive --depth -1 --json)"
+          # A selection that matches nothing would pass this check vacuously.
+          count="$(jq -r '[.[] | select(.private == false)] | length' <<< "$packages")"
+          if [ "$count" -eq 0 ]; then
+            echo "::error::no publishable package was found in this project"
+            exit 1
+          fi
+          wrong="$(jq -r --arg want "$WANT" \
+            '.[] | select(.private == false) | select(.version != $want) | "  \(.name) is \(.version)"' \
+            <<< "$packages")"
+          if [ -n "$wrong" ]; then
+            echo "::error::${GITHUB_REF_NAME} names version ${WANT}, which not every package carries"
+            echo "$wrong"
+            exit 1
+          fi
+          echo "$count package(s) at ${WANT}"
+
+      - run: pnpm install --frozen-lockfile
+
+      # Every package publishes `files: ["dist"]`, so the whole project is
+      # built — a package whose dist/ is absent publishes an empty tarball.
+      - run: pnpm build
+
+      # Staged under one directory whose contents mirror the repository from its
+      # root. Listing the dist/ paths on the upload directly would make
+      # upload-artifact root the archive at their common ancestor, stripping the
+      # prefix each path needs to land back where the publish job expects it.
+      - name: Stage dist/ for the publish job
+        working-directory: .
+        env:
+          STAGE: ${{ runner.temp }}/release-dist
+          PROJECT: ${{ matrix.project }}
+        run: |
+          set -euo pipefail
+          # A list read inside a process substitution takes its failure with it:
+          # `pnpm list` or `jq` falling over leaves a loop that runs zero times
+          # and a step that passes having staged nothing.
+          packages="$(pnpm --dir "source/${PROJECT}" list --recursive --depth -1 --json | jq -r '.[] | select(.private == false) | .path')"
+          if [ -z "$packages" ]; then
+            echo "::error::no publishable package was found in this project"
+            exit 1
+          fi
+          # The stage carries exactly this step's output. Anything an earlier
+          # step left under it is a file the publish job would be handed.
+          rm -rf "${STAGE}"
+          while IFS= read -r package; do
+            relative="${package#"${GITHUB_WORKSPACE}/"}"
+            if [ ! -d "${relative}/dist" ]; then
+              echo "::error::${relative}/dist is missing — the build produced no output for it"
+              exit 1
+            fi
+            mkdir -p "${STAGE}/${relative}"
+            cp -R "${relative}/dist" "${STAGE}/${relative}/dist"
+            echo "staged ${relative}/dist"
+          done <<< "$packages"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dist-${{ matrix.project }}
+          path: ${{ runner.temp }}/release-dist
+
+  publish:
+    name: publish
+    needs: [tag, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # npm exchanges this OIDC token for a short-lived publish credential and
+      # attaches the provenance attestation. Without it `--provenance` has
+      # nothing to sign.
+      id-token: write
+    # The environment is what limits which refs reach these credentials, and it
+    # is part of what npm checks: a trusted publisher names the environment
+    # alongside the repository and this file, so a publish from anywhere else is
+    # refused rather than merely unreviewed.
+    #
+    # Without it the binding is owner, repository and filename only — and a run
+    # uses the workflow file from the ref that triggered it, so pushing a branch
+    # that widens the trigger would publish with valid provenance, past review
+    # and past the checks this workflow does not repeat.
+    environment:
+      name: npm-release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Nothing here needs the checkout credential, and a credential in
+          # .git/config is one every subprocess inherits.
+          persist-credentials: false
+
+      # Every project pins its own pnpm in its packageManager field; they are
+      # kept on one version, and the first project in publish order is the one
+      # read here.
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          package_json_file: source/${{ fromJSON(needs.tag.outputs.projects)[0] }}/package.json
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          # Writes the .npmrc registry line the publish resolves against. Node
+          # 24 ships an npm new enough to perform the OIDC exchange for trusted
+          # publishing.
+          registry-url: https://registry.npmjs.org
+
+      # Unpacked into a directory of their own, never over the checkout. The
+      # build job runs third-party lifecycle scripts, so a file an archive
+      # carries is a file one of them may have written — and a manifest
+      # expanded over the checkout is the manifest this job publishes, with
+      # whatever `prepublishOnly` it names.
+      #
+      # merge-multiple unpacks every artefact into ONE directory. Each already
+      # mirrors the repository from its root under its own source/<project>/
+      # prefix, so the legs cannot collide, and where a file lands does not
+      # depend on whether the action nests each artefact under its name.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: dist-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/release-dist
+
+      # The manifests that are published come from this job's checkout, and the
+      # only thing the build job contributes is dist/.
+      #
+      # Which directories those are is read from the checkout too, so the
+      # archive cannot name the places it is allowed to land; anything it
+      # carries outside them ends the release here — before any project has
+      # published — rather than reaching a package. `--provenance` signs
+      # whatever is packed, so a tarball built from a file this job did not
+      # verify would carry an attestation saying it came from this commit.
+      - name: Only dist/ crosses from the build job
+        env:
+          PROJECTS: ${{ needs.tag.outputs.projects }}
+          STAGE: ${{ runner.temp }}/release-dist
+        run: |
+          set -euo pipefail
+          packages=""
+          while IFS= read -r project; do
+            listed="$(pnpm --dir "source/${project}" list --recursive --depth -1 --json | jq -r '.[] | select(.private == false) | .path')"
+            if [ -z "$listed" ]; then
+              echo "::error::no publishable package was found in ${project}"
+              exit 1
+            fi
+            packages="${packages}${listed}"$'\n'
+          done < <(jq -r '.[]' <<< "$PROJECTS")
+          packages="$(sed '/^$/d' <<< "$packages")"
+
+          allowed=()
+          while IFS= read -r package; do
+            relative="${package#"${GITHUB_WORKSPACE}/"}"
+            if [ ! -d "${STAGE}/${relative}/dist" ]; then
+              echo "::error::${relative}/dist is missing from the build artefacts"
+              exit 1
+            fi
+            allowed+=("${relative}/dist/")
+          done <<< "$packages"
+
+          # Directories are ignored: an empty one carries nothing. A symlink is
+          # not a directory to `find`, so one planted outside a dist/ is caught
+          # here rather than followed by the copy below.
+          carried="$(cd "${STAGE}" && find . ! -type d | sed 's|^\./||' | sort)"
+          stray=""
+          while IFS= read -r entry; do
+            [ -z "$entry" ] && continue
+            inside=""
+            for prefix in "${allowed[@]}"; do
+              case "$entry" in "${prefix}"*) inside=yes; break ;; esac
+            done
+            if [ -z "$inside" ]; then
+              stray="${stray}  ${entry}"$'\n'
+            fi
+          done <<< "$carried"
+          if [ -n "$stray" ]; then
+            echo "::error::the build artefacts carry files outside the packages' dist/ directories"
+            printf '%s' "$stray"
+            exit 1
+          fi
+
+          while IFS= read -r package; do
+            relative="${package#"${GITHUB_WORKSPACE}/"}"
+            rm -rf "${relative}/dist"
+            cp -R "${STAGE}/${relative}/dist" "${relative}/dist"
+            echo "restored ${relative}/dist"
+          done <<< "$packages"
+
+      # One step for every project, in publish order, so a project starts only
+      # after every project before it has finished — a failure stops the
+      # release before any project that might depend on the one that failed.
+      #
+      # Per project:
+      #
+      # * `pnpm install --ignore-scripts`, because `pnpm publish` rewrites
+      #   `workspace:*` into the real version by reading the installed
+      #   dependency and refuses to pack without it. Scripts stay off: this job
+      #   builds nothing, and the credentials it holds are the ones a
+      #   dependency's postinstall must never see.
+      #
+      # * A published version is immutable: npm answers [E403] to a second PUT
+      #   of a version it already holds, and one tag push can produce more than
+      #   one run. So each name is probed against the registry's version
+      #   endpoint — 200 published, 404 not — and only the absent ones are
+      #   published. A re-run finishes what is missing rather than failing on
+      #   what landed. Any other answer is fatal: a probe that cannot say
+      #   whether a version exists leaves publishing a guess.
+      #
+      # * The dist-tag. `latest` is what a bare `npm install` resolves, so
+      #   publishing a version OLDER than the one already there — a fix
+      #   released on an earlier line after a newer one shipped — would
+      #   silently downgrade every consumer who installs afterwards. The
+      #   registry is asked rather than the tags, because `latest` is the thing
+      #   being protected and only the registry knows where it points.
+      #
+      # pnpm orders the selection within a project topologically, so a package
+      # publishes after the ones it depends on. --access public is redundant
+      # with each manifest's publishConfig, and is passed anyway so a scoped
+      # package added without that field publishes public rather than failing
+      # as restricted. --ignore-scripts because everything a package ships is
+      # built in the job that holds no credentials.
+      - name: Publish every project, dependencies first
+        env:
+          VERSION: ${{ needs.tag.outputs.version }}
+          PROJECTS: ${{ needs.tag.outputs.projects }}
+        run: |
+          set -euo pipefail
+          while IFS= read -r project; do
+            echo "::group::${project}"
+            dir="source/${project}"
+            pnpm --dir "$dir" install --frozen-lockfile --ignore-scripts
+            names="$(pnpm --dir "$dir" list --recursive --depth -1 --json | jq -r '.[] | select(.private == false) | .name')"
+
+            filters=()
+            dist_tag=latest
+            while IFS= read -r name; do
+              # The scope's slash is a path separator to the registry, so it is
+              # encoded: @vipengele/ts-core-common is asked for as
+              # @vipengele%2Fts-core-common. A transport failure writes 000
+              # rather than a status, which is neither 200 nor 404 and ends the
+              # release below.
+              status="$(curl --silent --show-error --output /dev/null \
+                --write-out '%{http_code}' \
+                "https://registry.npmjs.org/${name//\//%2F}/${VERSION}" || true)"
+              case "$status" in
+                200) echo "${name}@${VERSION} is on the registry already" ;;
+                404) filters+=(--filter "$name") ;;
+                *)
+                  echo "::error::the registry answered ${status} for ${name}@${VERSION} — whether it is published is unknown"
+                  exit 1
+                  ;;
+              esac
+
+              current="$(curl --silent --show-error --fail \
+                "https://registry.npmjs.org/-/package/${name//\//%2F}/dist-tags" \
+                | jq -r '.latest // empty' || true)"
+              [ -z "$current" ] && continue
+              [ "$current" = "$VERSION" ] && continue
+              # sort -V puts the higher version last.
+              if [ "$(printf '%s\n%s\n' "$VERSION" "$current" | sort -V | tail -n 1)" != "$VERSION" ]; then
+                echo "${name} already has ${current} as latest, which is newer than ${VERSION}"
+                dist_tag=previous
+              fi
+            done <<< "$names"
+
+            if [ "${#filters[@]}" -eq 0 ]; then
+              echo "every ${project} package is on the registry at ${VERSION}; nothing to publish"
+            else
+              echo "publishing ${project} under the ${dist_tag} dist-tag"
+              pnpm --dir "$dir" "${filters[@]}" publish --provenance --access public --no-git-checks --ignore-scripts --tag "$dist_tag"
+            fi
+            echo "::endgroup::"
+          done < <(jq -r '.[]' <<< "$PROJECTS")
+
+  announce:
+    name: announce
+    needs: [tag, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      # Creating the GitHub Release, and nothing wider.
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Last, because it is the announcement: it exists once every package it
+      # announces is installable from npm.
+      #
+      # `gh release create` fails on a version that already has a GitHub
+      # Release, which would strand every re-run after a partial publish at the
+      # step before the one that needs to finish. Writing the notes through
+      # `edit` when one exists converges instead.
+      - name: Announce the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          notes="docs/release-notes/${GITHUB_REF_NAME}.md"
+          if gh release view "${GITHUB_REF_NAME}" > /dev/null 2>&1; then
+            gh release edit "${GITHUB_REF_NAME}" --notes-file "$notes" --draft=false
+          else
+            gh release create "${GITHUB_REF_NAME}" \
+              --verify-tag \
+              --title "${GITHUB_REF_NAME}" \
+              --notes-file "$notes"
+          fi

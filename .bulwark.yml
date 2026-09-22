@@ -1,0 +1,26 @@
+# .bulwark.yml — this file is yours.
+#
+# gt scaffolded it and will never modify or delete it again; bulwark owns what
+# goes in it.
+#
+# Everything else bulwark supports — per-language enablement, coverage
+# tolerances, patch-coverage opt-outs, toolchain overrides — belongs here too.
+# See bulwark's README.
+typescript:
+  # Biome rather than the default ESLint + eslint-plugin-security. That plugin's
+  # detect-object-injection fires on every `obj[key]`, and .bulwark.yml has no
+  # rule-level exclusion, so the only way to quiet it is a suppression at each
+  # site. Biome's security + correctness sets carry their weight instead. This
+  # matches the choice made across the governed repos (wardnet-design-system included).
+  linter: biome
+
+# `report`: ci-test runs every suite with instrumentation and uploads the
+# result as the `gt-coverage` artifact, so bulwark reads those reports rather
+# than running everything a second time. It finds each report next to the
+# unit that produced it — Istanbul's `coverage/coverage-summary.json` per
+# TypeScript package (no path override needed; that location is Vitest
+# convention, not this repo's choice) — because ci-test stages the artifact
+# as a mirror of this repository and the bulwark stage restores it into the
+# scan root, where discovery already looks.
+coverage:
+  source: report

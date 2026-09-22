@@ -1,0 +1,59 @@
+{
+  "name": "@vipengele/ts-core-observability",
+  "version": "0.0.0",
+  "description": "Structured logging and error reporting for the browser and Node — category-scoped loggers, pluggable sinks, and an error reporter with scopes, breadcrumbs and console, HTTP and OTLP transports.",
+  "keywords": [
+    "vipengele",
+    "typescript",
+    "logging",
+    "logger",
+    "structured-logging",
+    "error-reporting",
+    "error-tracking",
+    "exceptions",
+    "observability",
+    "opentelemetry",
+    "otlp"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "engines": {
+    "node": ">=24"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vipengele/typescript.git",
+    "directory": "source/core/packages/observability"
+  },
+  "homepage": "https://github.com/vipengele/typescript/tree/main/source/core/packages/observability#readme",
+  "bugs": "https://github.com/vipengele/typescript/issues",
+  "exports": {
+    "./logger": {
+      "types": "./dist/logger/index.d.ts",
+      "default": "./dist/logger/index.js"
+    },
+    "./errors": {
+      "types": "./dist/errors/index.d.ts",
+      "default": "./dist/errors/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsup && tsc -p tsconfig.build.json",
+    "type-check": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --coverage"
+  },
+  "dependencies": {
+    "@vipengele/ts-core-common": "workspace:*",
+    "@vipengele/ts-core-redaction": "workspace:*"
+  }
+}

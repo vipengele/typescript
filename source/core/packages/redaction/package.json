@@ -1,0 +1,48 @@
+{
+  "name": "@vipengele/ts-core-redaction",
+  "version": "0.0.0",
+  "description": "Redact secrets and personal data from structured values before they leave the process — key and pattern rules, depth and size limits, for the browser and Node.",
+  "keywords": [
+    "vipengele",
+    "typescript",
+    "redaction",
+    "pii",
+    "scrubbing",
+    "sanitize",
+    "privacy",
+    "secrets"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "engines": {
+    "node": ">=24"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vipengele/typescript.git",
+    "directory": "source/core/packages/redaction"
+  },
+  "homepage": "https://github.com/vipengele/typescript/tree/main/source/core/packages/redaction#readme",
+  "bugs": "https://github.com/vipengele/typescript/issues",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsup && tsc -p tsconfig.build.json",
+    "type-check": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --coverage"
+  }
+}

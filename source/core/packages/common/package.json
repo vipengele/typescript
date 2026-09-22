@@ -1,0 +1,45 @@
+{
+  "name": "@vipengele/ts-core-common",
+  "version": "0.0.0",
+  "description": "Shared types and primitives of the vipengele TypeScript core — context propagation, error normalization and runtime detection used by the other @vipengele/ts-core-* packages.",
+  "keywords": [
+    "vipengele",
+    "typescript",
+    "runtime-detection",
+    "async-context",
+    "error-normalization"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "engines": {
+    "node": ">=24"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vipengele/typescript.git",
+    "directory": "source/core/packages/common"
+  },
+  "homepage": "https://github.com/vipengele/typescript/tree/main/source/core/packages/common#readme",
+  "bugs": "https://github.com/vipengele/typescript/issues",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsup && tsc -p tsconfig.build.json",
+    "type-check": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --coverage"
+  }
+}

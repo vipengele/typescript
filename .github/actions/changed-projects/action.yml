@@ -1,0 +1,61 @@
+# changed-projects — the projects under source/ whose CI has something to check.
+#
+# A project is a directory under source/ (ADR-0001). It is selected when a file
+# inside it changed. A change to a file every project's CI depends on (the CI
+# stages, this action, the coverage config) selects all of them, since those can
+# alter any project's result. Anything else — docs, agentic instructions —
+# selects none.
+#
+# The diff is against the base of the event: the PR base, the merge-group base or
+# the pushed range. When no base can be determined (a manual run, a first push, a
+# base commit the clone lacks) every project is selected: an unknown diff must not
+# skip a project. The caller checks out with `fetch-depth: 0` so the base exists.
+name: changed-projects
+description: JSON array of the source/ projects a change affects.
+
+outputs:
+  projects:
+    description: 'JSON array of project directory names, e.g. ["core"].'
+    value: ${{ steps.detect.outputs.projects }}
+
+runs:
+  using: composite
+  steps:
+    - id: detect
+      shell: bash
+      env:
+        EVENT: ${{ github.event_name }}
+        PR_BASE: ${{ github.event.pull_request.base.sha }}
+        MERGE_BASE: ${{ github.event.merge_group.base_sha }}
+        PUSH_BEFORE: ${{ github.event.before }}
+      run: |
+        set -euo pipefail
+        all="$(find source -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort | jq -R . | jq -sc .)"
+
+        case "$EVENT" in
+          pull_request*) base="$PR_BASE" ;;
+          merge_group)   base="$MERGE_BASE" ;;
+          push)          base="$PUSH_BEFORE" ;;
+          *)             base="" ;;
+        esac
+
+        # An all-zero SHA is what a push that creates a branch reports.
+        if [[ -z "$base" || "$base" =~ ^0+$ ]] || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+          echo "no usable base for ${EVENT}; selecting every project"
+          echo "projects=${all}" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        changed="$(git diff --name-only "$base" HEAD)"
+        echo "changed files:"; echo "$changed" | sed 's/^/  /'
+
+        if grep -qE '^(\.github/(workflows/ci-[a-z]+\.yml|actions/)|\.bulwark\.yml$)' <<< "$changed"; then
+          echo "a shared CI file changed; selecting every project"
+          echo "projects=${all}" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        selected="$(grep -oE '^source/[^/]+' <<< "$changed" | cut -d/ -f2 | sort -u | jq -R . | jq -sc . || true)"
+        # A project directory that no longer exists has nothing to build.
+        selected="$(jq -c --argjson all "$all" '[.[]? | select(. as $p | $all | index($p))]' <<< "${selected:-[]}")"
+        echo "projects=${selected}" >> "$GITHUB_OUTPUT"
