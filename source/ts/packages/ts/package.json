@@ -1,0 +1,42 @@
+{
+  "name": "@vipengele/ts",
+  "version": "0.0.0",
+  "description": "The batteries-included umbrella package of the vipengele TypeScript framework.",
+  "keywords": [
+    "vipengele",
+    "typescript"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "engines": {
+    "node": ">=24"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vipengele/typescript.git",
+    "directory": "source/ts/packages/ts"
+  },
+  "homepage": "https://github.com/vipengele/typescript/tree/main/source/ts/packages/ts#readme",
+  "bugs": "https://github.com/vipengele/typescript/issues",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsup && tsc -p tsconfig.build.json",
+    "type-check": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --coverage"
+  }
+}
