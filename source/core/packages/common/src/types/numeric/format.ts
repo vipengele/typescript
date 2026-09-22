@@ -1,16 +1,16 @@
 /** Options accepted by {@link format}. */
 export interface FormatOptions {
   /**
-   * Digits kept after the decimal separator. Defaults to 20, the largest value
-   * `Intl.NumberFormat` accepts.
+   * Digits kept after the decimal separator. Defaults to 20.
    */
   readonly maximumFractionDigits?: number;
 }
 
 /**
  * `Intl.NumberFormat` defaults `maximumFractionDigits` to 3, which rounds `0.123456789` to
- * `0.123` without saying so. 20 is the ceiling the specification allows and keeps every digit a
- * `number` can carry.
+ * `0.123` without saying so. 20 covers every digit a `number`'s magnitude typically carries;
+ * ECMA-402 allows up to 100, but a value with significant digits smaller than 1e-20 still loses
+ * them at this default and needs an explicit `maximumFractionDigits` to keep them.
  */
 const DEFAULT_MAXIMUM_FRACTION_DIGITS = 20;
 

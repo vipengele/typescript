@@ -19,12 +19,20 @@ export interface LocaleParts {
 const REPRESENTATIVE_VALUE = -12345678.9;
 
 /**
+ * Keyed by locale (the argument exactly as passed, `undefined` folded to `""`). A locale's
+ * separator characters don't change within a single process — only ICU version affects them, and
+ * that's fixed for the process's lifetime — so caching here avoids building an `Intl.NumberFormat`
+ * on every `format`/`parse` call.
+ */
+const CACHE = new Map<string, LocaleParts>();
+
+/**
  * Reads a locale's separator characters out of the runtime's own CLDR data.
  *
  * None of these characters can be assumed: `sv-SE` negates with U+2212 rather than
  * hyphen-minus, `fr-FR` groups with U+202F and `sv-SE` with U+00A0 rather than a plain space,
  * and `de-CH` groups with an apostrophe. Which character a locale uses also moves between ICU
- * versions, so it is derived per call rather than tabulated here.
+ * versions, so it is derived from `Intl` rather than tabulated here.
  *
  * `numberingSystem: "latn"` pins the digits to ASCII; the separators stay locale-specific.
  *
@@ -34,6 +42,12 @@ const REPRESENTATIVE_VALUE = -12345678.9;
  * @throws {RangeError} when `locale` is not a structurally valid BCP 47 language tag.
  */
 export function resolveLocaleParts(locale?: string): LocaleParts {
+  const key = locale ?? "";
+  const cached = CACHE.get(key);
+  if (cached !== undefined) {
+    return cached;
+  }
+
   const parts = new Intl.NumberFormat(locale, {
     numberingSystem: "latn",
     maximumFractionDigits: 1,
@@ -53,5 +67,7 @@ export function resolveLocaleParts(locale?: string): LocaleParts {
     }
   }
 
-  return { group, decimal, minus };
+  const resolved = { group, decimal, minus };
+  CACHE.set(key, resolved);
+  return resolved;
 }
