@@ -47,3 +47,9 @@ test("the resolved characters match what the same locale formats with", () => {
 test("an invalid language tag raises RangeError", () => {
   expect(() => resolveLocaleParts("not a locale")).toThrow(RangeError);
 });
+
+test("an empty string still raises RangeError after the omitted locale has been cached", () => {
+  resolveLocaleParts();
+
+  expect(() => resolveLocaleParts("")).toThrow(RangeError);
+});

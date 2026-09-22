@@ -19,12 +19,14 @@ export interface LocaleParts {
 const REPRESENTATIVE_VALUE = -12345678.9;
 
 /**
- * Keyed by locale (the argument exactly as passed, `undefined` folded to `""`). A locale's
- * separator characters don't change within a single process — only ICU version affects them, and
- * that's fixed for the process's lifetime — so caching here avoids building an `Intl.NumberFormat`
- * on every `format`/`parse` call.
+ * Keyed by locale exactly as passed, `undefined` included as its own key. `""` is itself a
+ * locale argument — an invalid one, which `Intl.NumberFormat` rejects — so it cannot share a key
+ * with the omitted case without a call missing its `RangeError`. A locale's separator characters
+ * don't change within a single process — only ICU version affects them, and that's fixed for the
+ * process's lifetime — so caching here avoids building an `Intl.NumberFormat` on every
+ * `format`/`parse` call.
  */
-const CACHE = new Map<string, LocaleParts>();
+const CACHE = new Map<string | undefined, LocaleParts>();
 
 /**
  * Reads a locale's separator characters out of the runtime's own CLDR data.
@@ -42,8 +44,7 @@ const CACHE = new Map<string, LocaleParts>();
  * @throws {RangeError} when `locale` is not a structurally valid BCP 47 language tag.
  */
 export function resolveLocaleParts(locale?: string): LocaleParts {
-  const key = locale ?? "";
-  const cached = CACHE.get(key);
+  const cached = CACHE.get(locale);
   if (cached !== undefined) {
     return cached;
   }
@@ -68,6 +69,6 @@ export function resolveLocaleParts(locale?: string): LocaleParts {
   }
 
   const resolved = { group, decimal, minus };
-  CACHE.set(key, resolved);
+  CACHE.set(locale, resolved);
   return resolved;
 }
