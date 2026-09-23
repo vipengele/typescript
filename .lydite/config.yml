@@ -17,10 +17,17 @@ typescript:
   # the release — reproduced serialized behind the same mutex below, so it is
   # Corepack's own download-then-resolve step that is unreliable here, not a
   # concurrency artifact. `--ignore-scripts` keeps the global install from
-  # running lifecycle scripts in the shared global prefix, and no `--force`:
-  # a GitHub-hosted runner has nothing at this path to conflict with, so
-  # forcing would only silently overwrite a real conflict instead of failing
-  # on it.
+  # running lifecycle scripts in the shared global prefix.
+  #
+  # The guard checks the *installed version*, not mere presence: every
+  # component in a run shares one global npm prefix, so whichever runs first
+  # installs its own pin and a presence-only check would let every later
+  # component silently run under that version instead of its own — invisible
+  # today because every project pins the same pnpm version, but ADR-0001 has
+  # each project own its toolchain independently, so that stops holding the
+  # moment one bumps its pin without the other. `--force` is therefore
+  # expected to fire across components with different pins, not a sign of a
+  # conflict to avoid.
   #
   # Setting `typescript.install` replaces lydite's own per-workspace-root
   # install coalescing (see nodedeps.Install upstream) with this string run
@@ -40,7 +47,7 @@ typescript:
     version=$(node -e "let d=process.cwd();while(!require('fs').existsSync(d+'/package.json')||!require(d+'/package.json').packageManager){d=require('path').dirname(d)}process.stdout.write(require(d+'/package.json').packageManager.split('@')[1])")
     until mkdir /tmp/lydite-pnpm-install.lock 2>/dev/null; do sleep 0.1; done
     trap 'rmdir /tmp/lydite-pnpm-install.lock 2>/dev/null || true' EXIT
-    command -v pnpm >/dev/null 2>&1 || npm install -g --ignore-scripts "pnpm@${version}"
+    [ "$(pnpm --version 2>/dev/null)" = "${version}" ] || npm install -g --ignore-scripts --force "pnpm@${version}"
     rmdir /tmp/lydite-pnpm-install.lock 2>/dev/null || true
     trap - EXIT
     pnpm install --frozen-lockfile
