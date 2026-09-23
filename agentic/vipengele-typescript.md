@@ -16,10 +16,18 @@ Error Event, Scope, Breadcrumb, Transport) before naming things.
   cross-project dependency is a published range, never `workspace:*`.
 - `source/core/` — the framework's foundation:
   - `packages/common` — `@vipengele/ts-core-common`: shared types and primitives (context
-    propagation, error normalization, runtime detection) the other packages agree on.
+    propagation, error normalization, runtime detection) the other packages agree on. A
+    sub-path like `./types/numeric` (the locale-aware `Numeric.parse`/`tryParse`/`format`) is a
+    tree-shakeable slice of the package's surface, not a separate package — a bundler-using
+    consumer imports only the sub-path it needs.
   - `packages/redaction` — `@vipengele/ts-core-redaction`: the reusable redaction library.
   - `packages/observability` — `@vipengele/ts-core-observability`: the logger (`./logger`) and the
     error reporter (`./errors`), two entry points of one package.
+- `source/ts/` — `@vipengele/ts`, the framework's batteries-included umbrella package
+  (`packages/ts/`, nested so `release.yml`'s publish-order globbing sees it). Its name is a
+  deliberate exception to the `@vipengele/ts-<project>-<package>` convention (ADR-0003); it
+  currently has no dependency on any other `@vipengele/*` package and re-exports nothing, since
+  nothing has ever been published to the registry for it to depend on.
 - `.github/actions/changed-projects` — the projects a change affects; CI builds only those.
 - `docs/adr/` — architecture decision records. Read before revisiting a decision recorded there.
 - `docs/release-notes/` — one file per release, named after its tag (`vX.Y.Z.md`). The release
@@ -49,7 +57,9 @@ Runtime-specific code is chosen by feature detection or conditional `exports`, n
 
 ESM only, `"sideEffects": false`, `files: ["dist"]`, zero runtime dependencies outside the
 framework unless a package says why. `@opentelemetry/api` is an optional peer where trace
-correlation needs it — a consumer without OpenTelemetry pays nothing.
+correlation needs it — a consumer without OpenTelemetry pays nothing. A custom error extends
+`VipengeleError` and ships with a `code` and a type-guard, never a bare class a caller checks with
+`instanceof` (`agentic/rules/custom-errors-carry-a-code-and-a-type-guard.md`, ADR-0002).
 
 ## Workspace and dependency policy
 
