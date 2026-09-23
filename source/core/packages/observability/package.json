@@ -1,6 +1,6 @@
 {
   "name": "@vipengele/ts-core-observability",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "description": "Structured logging and error reporting for the browser and Node — category-scoped loggers, pluggable sinks, and an error reporter with scopes, breadcrumbs and console, HTTP and OTLP transports.",
   "keywords": [
     "vipengele",
