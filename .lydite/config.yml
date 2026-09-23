@@ -5,30 +5,36 @@ licence:
 typescript:
   # lydite's own auto-detection runs `pnpm install --frozen-lockfile` for a
   # pnpm-lock.yaml root, and a GitHub-hosted runner has no `pnpm` on PATH
-  # until something installs it. `corepack enable` creates the `pnpm` shim
-  # (alongside `node`/`npm`, so already on PATH); `corepack prepare
-  # --activate` then eagerly downloads and verifies the exact version each
-  # project's `package.json` pins via `packageManager` (ADR-0001) — the
-  # `node -e` walks up from the install's own directory to the nearest
-  # ancestor `package.json` carrying that field, the same resolution Corepack
-  # itself does. Eager, rather than the shim's own lazy download on first
-  # `pnpm` invocation, matters here: that is exactly the point at which two
-  # components can race on Corepack's shared download cache and corrupt each
-  # other's extraction (reproduced locally).
+  # until something installs it. This installs the exact version each
+  # project's `package.json` pins via `packageManager` (ADR-0001) with
+  # `npm install -g` — the `node -e` walks up from the install's own
+  # directory to the nearest ancestor `package.json` carrying that field, the
+  # same resolution Corepack itself would use.
+  #
+  # Not Corepack: `corepack enable` plus `corepack prepare --activate`
+  # reproducibly fails on this runner with "Cannot find module
+  # .../corepack/v1/pnpm/<version>/bin/pnpm.cjs" immediately after fetching
+  # the release — reproduced serialized behind the same mutex below, so it is
+  # Corepack's own download-then-resolve step that is unreliable here, not a
+  # concurrency artifact. `--ignore-scripts` keeps the global install from
+  # running lifecycle scripts in the shared global prefix, and no `--force`:
+  # a GitHub-hosted runner has nothing at this path to conflict with, so
+  # forcing would only silently overwrite a real conflict instead of failing
+  # on it.
   #
   # Setting `typescript.install` replaces lydite's own per-workspace-root
   # install coalescing (see nodedeps.Install upstream) with this string run
-  # independently by every component, so that race is this override's own to
-  # avoid. The mkdir-as-mutex serializes only the two `corepack` calls,
-  # releasing before `pnpm install --frozen-lockfile`, which is safe to run
-  # concurrently per pnpm's own store locking.
+  # independently by every component, and `npm install -g` is not safe for
+  # concurrent invocation — two components installing at once can race on the
+  # same global npm directory. The mkdir-as-mutex serializes only that
+  # install, releasing before `pnpm install --frozen-lockfile`, which is safe
+  # to run concurrently per pnpm's own store locking.
   install: |-
     set -e
     version=$(node -e "let d=process.cwd();while(!require('fs').existsSync(d+'/package.json')||!require(d+'/package.json').packageManager){d=require('path').dirname(d)}process.stdout.write(require(d+'/package.json').packageManager.split('@')[1])")
-    until mkdir /tmp/lydite-corepack-prepare.lock 2>/dev/null; do sleep 0.1; done
-    trap 'rmdir /tmp/lydite-corepack-prepare.lock 2>/dev/null || true' EXIT
-    corepack enable
-    corepack prepare "pnpm@${version}" --activate
-    rmdir /tmp/lydite-corepack-prepare.lock 2>/dev/null || true
+    until mkdir /tmp/lydite-pnpm-install.lock 2>/dev/null; do sleep 0.1; done
+    trap 'rmdir /tmp/lydite-pnpm-install.lock 2>/dev/null || true' EXIT
+    command -v pnpm >/dev/null 2>&1 || npm install -g --ignore-scripts "pnpm@${version}"
+    rmdir /tmp/lydite-pnpm-install.lock 2>/dev/null || true
     trap - EXIT
     pnpm install --frozen-lockfile
