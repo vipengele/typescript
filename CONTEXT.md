@@ -29,6 +29,12 @@ _Avoid_: scrubbing, sanitizing (sanitizing also means escaping for output)
 A handle bound to one Category that emits Log Records. Obtained from
 `@vipengele/ts-core-observability/logger`.
 
+**Logger Provider**:
+The level configuration and Sinks a set of Loggers share. The process has one default provider,
+shared by every copy of the package loaded into it; an isolated provider serves tests and hosts
+that keep tenants apart.
+_Avoid_: logging platform (vipengele is the platform), logger factory, settings
+
 **Category**:
 A dotted name (`services.editing`) identifying where a record comes from. Levels are configured per
 category prefix, and the longest matching prefix wins.
@@ -52,8 +58,21 @@ breadcrumbs.
 _Avoid_: exception (that is one link of the chain), issue (a grouping on the backend)
 
 **Scope**:
-The context an Error Event is enriched from — tags, user, attributes, breadcrumbs. Scopes nest,
-and the innermost wins.
+The ambient context a Log Record and an Error Event are both enriched from, carried along an async
+call chain. Scopes form a tree: the root holds the environment and never changes; every other
+scope holds its own attributes and sees its ancestors', the innermost value winning. A scope that
+begins a Unit of Work also owns that unit's Breadcrumbs.
+_Avoid_: context (OpenTelemetry's word for its own propagation object), MDC, request context (the
+browser has no request)
+
+**Resource**:
+The root Scope seen from outside the process: which service, release, environment and runtime is
+emitting. Sent once alongside Log Records and Error Events, never repeated inside each one.
+_Avoid_: global tags, global context
+
+**Unit of Work**:
+One request, job or message handled end to end — the span of work whose Breadcrumbs belong
+together. In the browser the page is the only unit of work.
 
 **Breadcrumb**:
 A small record of something that happened before an error (a log record, a request, a navigation,
