@@ -11,6 +11,13 @@ const NNBSP = " ";
 const MINUS = "−";
 /** Left-to-right mark, which `ar-EG` and `fa-IR` prefix a negative number with. */
 const LTR = "‎";
+/**
+ * de-CH's group character, read from `Intl` rather than hardcoded — it has moved between ICU
+ * versions (U+0027 on one, U+2019 on another).
+ */
+const DE_CH_GROUP = new Intl.NumberFormat("de-CH", { numberingSystem: "latn" })
+  .formatToParts(1234)
+  .find((part) => part.type === "group")?.value;
 
 const LOCALES = ["sv-SE", "fr-FR", "de-CH", "ar-EG", "fa-IR", "en-IN", "de-DE", "en-US"] as const;
 
@@ -30,8 +37,8 @@ describe("locale-specific input", () => {
     ["sv-SE", `${MINUS}12${NBSP}345${NBSP}678,9`, -12345678.9],
     ["fr-FR", `1${NNBSP}234${NNBSP}567,89`, 1234567.89],
     ["fr-FR", `-12${NNBSP}345${NNBSP}678,9`, -12345678.9],
-    ["de-CH", "1'234'567.89", 1234567.89],
-    ["de-CH", "-12'345'678.9", -12345678.9],
+    ["de-CH", `1${DE_CH_GROUP}234${DE_CH_GROUP}567.89`, 1234567.89],
+    ["de-CH", `-12${DE_CH_GROUP}345${DE_CH_GROUP}678.9`, -12345678.9],
     ["ar-EG", "1,234,567.89", 1234567.89],
     ["ar-EG", `${LTR}-12,345,678.9`, -12345678.9],
     ["fa-IR", "1,234,567.89", 1234567.89],

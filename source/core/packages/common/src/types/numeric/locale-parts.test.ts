@@ -10,8 +10,15 @@ describe("separator characters per locale", () => {
     expect(resolveLocaleParts("fr-FR")).toEqual({ group: " ", decimal: ",", minus: "-" });
   });
 
-  test("de-CH groups with an apostrophe", () => {
-    expect(resolveLocaleParts("de-CH")).toEqual({ group: "'", decimal: ".", minus: "-" });
+  test("de-CH's group character matches what Intl itself reports", () => {
+    // de-CH's group character has moved between ICU versions — U+0027 (ASCII
+    // apostrophe) on one, U+2019 (right single quotation mark) on another —
+    // so the expectation is read from Intl directly rather than hardcoded.
+    const expectedGroup = new Intl.NumberFormat("de-CH", { numberingSystem: "latn" })
+      .formatToParts(1234)
+      .find((part) => part.type === "group")?.value;
+
+    expect(resolveLocaleParts("de-CH")).toEqual({ group: expectedGroup, decimal: ".", minus: "-" });
   });
 
   test("ar-EG resolves past the leading U+200E literal part", () => {
