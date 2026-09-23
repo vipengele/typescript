@@ -29,3 +29,11 @@ components:
   - name: ts
     dir: source/ts/packages/ts
     runner: vitest
+
+# Each project's own vitest.shared.ts (source/<project>/vitest.shared.ts) is the
+# Node+Chromium preset every package under that project imports — real TypeScript,
+# but a workspace-root file no package's own `dir` contains, so it is an orphan
+# under no component rather than dead code.
+excludes:
+  - "source/core/vitest.shared.ts"
+  - "source/ts/vitest.shared.ts"
