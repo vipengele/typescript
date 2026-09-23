@@ -1,3 +1,11 @@
 licence:
   policy:
     allow: [Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, MIT, Unicode-3.0]
+
+typescript:
+  # lydite's own auto-detection runs `pnpm install --frozen-lockfile` for a
+  # pnpm-lock.yaml root but, unlike its yarn path, never enables Corepack
+  # first — and a GitHub-hosted runner has no `pnpm` on PATH until something
+  # does. Every project here pins its version via `packageManager`
+  # (ADR-0001), so enabling Corepack is enough; it reads that field itself.
+  install: "corepack enable && pnpm install --frozen-lockfile"
