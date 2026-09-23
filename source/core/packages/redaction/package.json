@@ -1,6 +1,6 @@
 {
   "name": "@vipengele/ts-core-redaction",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "description": "Redact secrets and personal data from structured values before they leave the process — key and pattern rules, depth and size limits, for the browser and Node.",
   "keywords": [
     "vipengele",
