@@ -8,8 +8,8 @@ config. `source/core/` is the first, holding `@vipengele/ts-core-common`,
 project: `@vipengele/ts-<project>-<package>`.
 
 Everything that builds, tests or ships lives under `source/`. The repo root holds only what crosses
-projects: `.github/`, `agentic/`, `.memory`, `.lydite`, `.serena`, the gt and bulwark config,
-`docs/` and `CONTEXT.md`.
+projects: `.github/`, `agentic/`, `.memory`, `.lydite`, `.serena`, the gt config, `docs/` and
+`CONTEXT.md`.
 
 A release is one tag, `vX.Y.Z`, the version of the whole framework. One workflow publishes every
 non-private package of every project at that version. It builds the projects in parallel in a

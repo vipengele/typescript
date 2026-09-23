@@ -30,7 +30,7 @@ Error Event, Scope, Breadcrumb, Transport) before naming things.
 ```bash
 pnpm build          # turbo run build — tsup bundles, tsc emits declarations, in dependency order
 pnpm type-check     # turbo run type-check
-pnpm test           # turbo run test — vitest under Node and Chromium, 100% v8 coverage, gated by bulwark
+pnpm test           # turbo run test — vitest under Node and Chromium, 100% v8 coverage, gated by lydite
 pnpm lint           # biome lint . --error-on-warnings
 pnpm format:check   # biome format .
 ```
@@ -63,12 +63,12 @@ correlation needs it — a consumer without OpenTelemetry pays nothing.
 ## CI
 
 - `.github/actions/changed-projects` lists the `source/` projects a diff touches. A change to a
-  shared CI file (`ci-*.yml`, that action, `.bulwark.yml`) selects every project; a change that
+  shared CI file (`ci-*.yml`, that action, `.lydite/`) selects every project; a change that
   touches no project (docs, agentic instructions) selects none and the stages skip.
 - `ci-build.yml` runs, per affected project, `pnpm lint`, `pnpm format:check`, `pnpm build`,
   `pnpm type-check`.
-- `ci-test.yml` installs Chromium, runs `pnpm test` per affected project and uploads coverage for
-  the bulwark stage.
+- `ci-test.yml` installs Chromium and runs `pnpm test` per affected project. The `lydite` stage
+  gates coverage separately, running each `.lydite/components.yml` component's suite itself.
 
 ## Release
 
