@@ -14,9 +14,8 @@
 # The stages are gt's: adding one means editing .gt-repo.yaml, so a check that
 # needs no stage of its own lives here as a step.
 #
-# Running the suite is ci-test's job — it uploads a gt-coverage artifact the
-# bulwark stage reads instead of running everything a second time
-# (.bulwark.yml: coverage.source: report).
+# Running the suite is ci-test's job. The lydite stage gates coverage
+# separately, running each `.lydite/components.yml` component's suite itself.
 #
 # It is called by ci-orchestration.yml and must keep `workflow_call`, or the
 # orchestrator loses the stage.

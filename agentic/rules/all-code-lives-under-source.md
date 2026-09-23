@@ -7,7 +7,7 @@ description: Nothing that builds, tests or ships lives at the repo root; it live
 Every package, app, script, manifest, lockfile and tool config that builds, tests or ships
 belongs to a project under `source/<project>/`. The repo root holds only what crosses projects:
 `.github/`, `agentic/`, `.memory/`, `.lydite/`, `.serena/`, `.gt.yaml`, `.gt-repo.yaml`,
-`.bulwark.yml`, `docs/`, `CONTEXT.md`, `README.md` and `LICENSE`.
+`docs/`, `CONTEXT.md`, `README.md` and `LICENSE`.
 
 A root `package.json`, `pnpm-workspace.yaml`, `tsconfig.json`, `biome.json` or `src/` would make
 the root a workspace of its own: CI's change detection selects projects by their `source/`

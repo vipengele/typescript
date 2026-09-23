@@ -1,13 +1,10 @@
 {
-  "name": "@vipengele/ts-core-common",
+  "name": "@vipengele/ts",
   "version": "0.0.0",
-  "description": "Shared types and primitives of the vipengele TypeScript core — context propagation, error normalization and runtime detection used by the other @vipengele/ts-core-* packages.",
+  "description": "The batteries-included umbrella package of the vipengele TypeScript framework.",
   "keywords": [
     "vipengele",
-    "typescript",
-    "runtime-detection",
-    "async-context",
-    "error-normalization"
+    "typescript"
   ],
   "license": "MIT",
   "type": "module",
@@ -22,18 +19,14 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/vipengele/typescript.git",
-    "directory": "source/core/packages/common"
+    "directory": "source/ts/packages/ts"
   },
-  "homepage": "https://github.com/vipengele/typescript/tree/main/source/core/packages/common#readme",
+  "homepage": "https://github.com/vipengele/typescript/tree/main/source/ts/packages/ts#readme",
   "bugs": "https://github.com/vipengele/typescript/issues",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
-    },
-    "./types/numeric": {
-      "types": "./dist/types/numeric/index.d.ts",
-      "default": "./dist/types/numeric/index.js"
     },
     "./package.json": "./package.json"
   },

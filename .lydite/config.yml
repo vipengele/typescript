@@ -1,3 +1,54 @@
 licence:
   policy:
     allow: [Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, MIT, Unicode-3.0]
+
+typescript:
+  # lydite's own auto-detection runs `pnpm install --frozen-lockfile` for a
+  # pnpm-lock.yaml root, and a GitHub-hosted runner has no `pnpm` on PATH
+  # until something installs it. This installs the exact version each
+  # project's `package.json` pins via `packageManager` (ADR-0001) with
+  # `npm install -g` — the `node -e` walks up from the install's own
+  # directory to the nearest ancestor `package.json` carrying that field, the
+  # same resolution Corepack itself would use.
+  #
+  # Not Corepack: `corepack enable` plus `corepack prepare --activate`
+  # reproducibly fails on this runner with "Cannot find module
+  # .../corepack/v1/pnpm/<version>/bin/pnpm.cjs" immediately after fetching
+  # the release — reproduced serialized behind the same mutex below, so it is
+  # Corepack's own download-then-resolve step that is unreliable here, not a
+  # concurrency artifact. `--ignore-scripts` keeps the global install from
+  # running lifecycle scripts in the shared global prefix.
+  #
+  # The guard checks the *installed version*, not mere presence: every
+  # component in a run shares one global npm prefix, so whichever runs first
+  # installs its own pin and a presence-only check would let every later
+  # component silently run under that version instead of its own — invisible
+  # today because every project pins the same pnpm version, but ADR-0001 has
+  # each project own its toolchain independently, so that stops holding the
+  # moment one bumps its pin without the other. `--force` is therefore
+  # expected to fire across components with different pins, not a sign of a
+  # conflict to avoid.
+  #
+  # Setting `typescript.install` replaces lydite's own per-workspace-root
+  # install coalescing (see nodedeps.Install upstream) with this string run
+  # independently by every component, and `npm install -g` is not safe for
+  # concurrent invocation — two components installing at once can race on the
+  # same global npm directory. The mkdir-as-mutex serializes only that
+  # install, releasing before `pnpm install --frozen-lockfile`, which is safe
+  # to run concurrently per pnpm's own store locking.
+  #
+  # `playwright install --with-deps chromium` is here for the same reason
+  # `ci-test.yml` runs it explicitly: `vitest.shared.ts` runs every suite
+  # under a `chromium` project too, and playwright ships no postinstall hook
+  # to fetch the browser itself — lydite's own auto-detection has no
+  # equivalent step, only the pnpm install this override already replaces.
+  install: |-
+    set -e
+    version=$(node -e "let d=process.cwd();while(!require('fs').existsSync(d+'/package.json')||!require(d+'/package.json').packageManager){d=require('path').dirname(d)}process.stdout.write(require(d+'/package.json').packageManager.split('@')[1])")
+    until mkdir /tmp/lydite-pnpm-install.lock 2>/dev/null; do sleep 0.1; done
+    trap 'rmdir /tmp/lydite-pnpm-install.lock 2>/dev/null || true' EXIT
+    [ "$(pnpm --version 2>/dev/null)" = "${version}" ] || npm install -g --ignore-scripts --force "pnpm@${version}"
+    rmdir /tmp/lydite-pnpm-install.lock 2>/dev/null || true
+    trap - EXIT
+    pnpm install --frozen-lockfile
+    pnpm exec playwright install --with-deps chromium

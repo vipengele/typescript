@@ -49,7 +49,7 @@ runs:
         changed="$(git diff --name-only "$base" HEAD)"
         echo "changed files:"; echo "$changed" | sed 's/^/  /'
 
-        if grep -qE '^(\.github/(workflows/ci-[a-z]+\.yml|actions/)|\.bulwark\.yml$)' <<< "$changed"; then
+        if grep -qE '^(\.github/(workflows/ci-[a-z]+\.yml|actions/)|\.lydite/)' <<< "$changed"; then
           echo "a shared CI file changed; selecting every project"
           echo "projects=${all}" >> "$GITHUB_OUTPUT"
           exit 0
