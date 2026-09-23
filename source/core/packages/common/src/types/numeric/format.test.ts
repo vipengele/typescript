@@ -69,3 +69,9 @@ test("an omitted locale formats with the runtime's default locale", () => {
 test("an invalid language tag raises RangeError", () => {
   expect(() => format(1, "not a locale")).toThrow(RangeError);
 });
+
+test("an empty string still raises RangeError after the omitted locale has been cached", () => {
+  format(1);
+
+  expect(() => format(1, "")).toThrow(RangeError);
+});

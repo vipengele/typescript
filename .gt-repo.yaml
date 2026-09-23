@@ -27,6 +27,8 @@ dependabot:
       Per-package entries would edit only those manifests, leave the lockfile
       stale, and fail every `pnpm install --frozen-lockfile`. Each new project
       under source/ needs its own entry, at its own workspace root.
+  - ecosystem: npm
+    directory: /source/ts
 pipeline:
   ci:
     stages:
