@@ -1,6 +1,6 @@
 {
   "name": "@vipengele/ts-core-common",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "description": "Shared types and primitives of the vipengele TypeScript core — context propagation, error normalization and runtime detection used by the other @vipengele/ts-core-* packages.",
   "keywords": [
     "vipengele",
