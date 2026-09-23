@@ -29,6 +29,12 @@ typescript:
   # same global npm directory. The mkdir-as-mutex serializes only that
   # install, releasing before `pnpm install --frozen-lockfile`, which is safe
   # to run concurrently per pnpm's own store locking.
+  #
+  # `playwright install --with-deps chromium` is here for the same reason
+  # `ci-test.yml` runs it explicitly: `vitest.shared.ts` runs every suite
+  # under a `chromium` project too, and playwright ships no postinstall hook
+  # to fetch the browser itself — lydite's own auto-detection has no
+  # equivalent step, only the pnpm install this override already replaces.
   install: |-
     set -e
     version=$(node -e "let d=process.cwd();while(!require('fs').existsSync(d+'/package.json')||!require(d+'/package.json').packageManager){d=require('path').dirname(d)}process.stdout.write(require(d+'/package.json').packageManager.split('@')[1])")
@@ -38,3 +44,4 @@ typescript:
     rmdir /tmp/lydite-pnpm-install.lock 2>/dev/null || true
     trap - EXIT
     pnpm install --frozen-lockfile
+    pnpm exec playwright install --with-deps chromium
