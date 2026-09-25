@@ -1,0 +1,29 @@
+# verify-cross-project-deps — every cross-project dependency has both halves.
+#
+# A cross-project dependency (ADR-0009) is an exact pin in a package's
+# `dependencies` and a `link:` override in the depending project's
+# pnpm-workspace.yaml pointing at the owning package's directory. A pin without
+# its override installs from the registry and fails in the release change; an
+# override without its pin publishes a manifest that does not name the sibling.
+# This fails on either, and on a link: that does not resolve to the owning
+# package. Every problem is annotated with the project, package and file.
+#
+# With `expect-version`, every pin must also equal that version, as it does in a
+# release. Runs from the repository root; needs jq and mikefarah's yq, both on
+# GitHub-hosted Ubuntu runners.
+name: verify-cross-project-deps
+description: Check every cross-project dependency is an exact pin with a matching link override.
+
+inputs:
+  expect-version:
+    description: 'Version every cross-project pin must equal, e.g. "0.0.2". Empty checks pins are exact without comparing them.'
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        EXPECT_VERSION: ${{ inputs.expect-version }}
+      run: 'bash "${GITHUB_ACTION_PATH}/verify.sh" "$EXPECT_VERSION"'
