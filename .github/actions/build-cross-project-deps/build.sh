@@ -5,8 +5,8 @@
 # Usage: build.sh <project>, run from the repository root.
 #
 # A package's owning project is the source/<project> directory its manifest sits
-# under. A dependency, peer or optional dependency owned by another project is a
-# cross-project dependency; one owned by the same project is a workspace:* link
+# under. A `dependencies` entry owned by another project is a cross-project
+# dependency (ADR-0009); one owned by the same project is a workspace:* link
 # and is left to that project's own build graph. The owning projects are
 # collected transitively and built dependencies first, each running
 # `pnpm --filter <pkg>... build` so the sibling's intra-project ordering stays
@@ -34,7 +34,7 @@ if ! plan="$(jq -nr --arg target "$project" '
   [inputs | {
     project: (input_filename | split("/")[1]),
     name,
-    deps: ([.dependencies, .peerDependencies, .optionalDependencies] | map((. // {}) | keys) | add)
+    deps: ((.dependencies // {}) | keys)
   }] as $manifests
   | ($manifests | map({(.name): .project}) | add // {}) as $owner
 

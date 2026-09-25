@@ -62,9 +62,9 @@ runs:
         selected="$(jq -c --argjson all "$all" '[.[]? | select(. as $p | $all | index($p))]' <<< "${selected:-[]}")"
 
         # A package's owning project is the source/<project> its manifest sits
-        # under. A dependency, peer or optional dependency owned by another project
-        # is a cross-project edge (ADR-0009); one owned by the same project is a
-        # workspace:* link and adds nothing.
+        # under. A `dependencies` entry owned by another project is a cross-project
+        # edge (ADR-0009); one owned by the same project is a workspace:* link and
+        # adds nothing.
         shopt -s nullglob
         manifests=(source/*/packages/*/package.json)
         shopt -u nullglob
@@ -73,7 +73,7 @@ runs:
             [inputs | {
               project: (input_filename | split("/")[1]),
               name,
-              deps: ([.dependencies, .peerDependencies, .optionalDependencies] | map((. // {}) | keys) | add)
+              deps: ((.dependencies // {}) | keys)
             }] as $manifests
             | ($manifests | map({(.name): .project}) | add // {}) as $owner
 
