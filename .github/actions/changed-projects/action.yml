@@ -1,7 +1,9 @@
 # changed-projects — the projects under source/ whose CI has something to check.
 #
 # A project is a directory under source/ (ADR-0001). It is selected when a file
-# inside it changed. A change to a file every project's CI depends on (the CI
+# inside it changed, or when it depends, directly or transitively, on a package
+# owned by a selected project (ADR-0009): a change reaches every project that
+# consumes it. A change to a file every project's CI depends on (the CI
 # stages, this action, the coverage config) selects all of them, since those can
 # alter any project's result. Anything else — docs, agentic instructions —
 # selects none.
@@ -58,4 +60,34 @@ runs:
         selected="$(grep -oE '^source/[^/]+' <<< "$changed" | cut -d/ -f2 | sort -u | jq -R . | jq -sc . || true)"
         # A project directory that no longer exists has nothing to build.
         selected="$(jq -c --argjson all "$all" '[.[]? | select(. as $p | $all | index($p))]' <<< "${selected:-[]}")"
+
+        # A package's owning project is the source/<project> its manifest sits
+        # under. A dependency, peer or optional dependency owned by another project
+        # is a cross-project edge (ADR-0009); one owned by the same project is a
+        # workspace:* link and adds nothing.
+        shopt -s nullglob
+        manifests=(source/*/packages/*/package.json)
+        shopt -u nullglob
+        if ((${#manifests[@]} > 0)); then
+          selected="$(jq -nc --argjson selected "$selected" --argjson all "$all" '
+            [inputs | {
+              project: (input_filename | split("/")[1]),
+              name,
+              deps: ([.dependencies, .peerDependencies, .optionalDependencies] | map((. // {}) | keys) | add)
+            }] as $manifests
+            | ($manifests | map({(.name): .project}) | add // {}) as $owner
+
+            | def dependents($p):
+                [$manifests[] | select(.project != $p)
+                 | select(any(.deps[]; $owner[.] == $p)) | .project] | unique;
+
+              def closure:
+                . as $set
+                | ($set + [$set[] as $p | dependents($p)[]] | unique) as $next
+                | if $next == $set then $set else $next | closure end;
+
+            $selected | unique | closure
+            | [.[] | select(. as $p | $all | index($p))]
+          ' "${manifests[@]}")"
+        fi
         echo "projects=${selected}" >> "$GITHUB_OUTPUT"
