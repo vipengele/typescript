@@ -84,6 +84,10 @@ jobs:
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "releasing ${version}"
 
+      - uses: ./.github/actions/verify-cross-project-deps
+        with:
+          expect-version: ${{ steps.parse.outputs.version }}
+
       # The publish order. A project depends on another when any of its
       # packages names one of the other's packages in dependencies,
       # peerDependencies or optionalDependencies; the order is a topological
@@ -201,6 +205,10 @@ jobs:
           echo "$count package(s) at ${WANT}"
 
       - run: pnpm install --frozen-lockfile
+
+      - uses: ./.github/actions/build-cross-project-deps
+        with:
+          project: ${{ matrix.project }}
 
       # Every package publishes `files: ["dist"]`, so the whole project is
       # built — a package whose dist/ is absent publishes an empty tarball.

@@ -59,6 +59,9 @@ jobs:
           cache: pnpm
           cache-dependency-path: source/${{ matrix.project }}/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/build-cross-project-deps
+        with:
+          project: ${{ matrix.project }}
 
       # Every package runs its suite under Node and in Chromium (vitest.shared.ts in
       # each project), and playwright ships no postinstall hook, so the engine is
