@@ -13,7 +13,9 @@ Error Event, Scope, Breadcrumb, Transport) before naming things.
 
 - `source/<project>/` — one pnpm workspace per project, with its own `pnpm-workspace.yaml`,
   lockfile, `turbo.json`, `tsconfig.base.json`, `vitest.shared.ts` and `biome.json`. A
-  cross-project dependency is a published range, never `workspace:*`.
+  cross-project dependency is an exact pin in `dependencies`, overridden by a `link:` in
+  `pnpm-workspace.yaml` to the sibling's package directory — never a `workspace:*` link or a
+  published range (ADR-0009).
 - `source/core/` — the framework's foundation:
   - `packages/common` — `@vipengele/ts-core-common`: shared types and primitives (context
     propagation, error normalization, runtime detection) the other packages agree on. A
@@ -72,9 +74,16 @@ correlation needs it — a consumer without OpenTelemetry pays nothing. A custom
 
 ## CI
 
-- `.github/actions/changed-projects` lists the `source/` projects a diff touches. A change to a
-  shared CI file (`ci-*.yml`, that action, `.lydite/`) selects every project; a change that
-  touches no project (docs, agentic instructions) selects none and the stages skip.
+- `.github/actions/changed-projects` lists the `source/` projects a diff touches, then adds every
+  project that depends on one of them, directly or transitively, through a cross-project
+  dependency (ADR-0009). A change to a shared CI file (`ci-*.yml`, that action, `.lydite/`)
+  selects every project; a change that touches no project (docs, agentic instructions) selects
+  none and the stages skip.
+- `verify-cross-project-deps` runs once per workflow, before project selection, and fails unless
+  every cross-project pin has a matching `link:` override and vice versa (ADR-0009).
+- `build-cross-project-deps` runs per affected project, before its own install, and builds the
+  sibling projects it links to, dependencies first; a project with no cross-project dependency is
+  a no-op.
 - `ci-build.yml` runs, per affected project, `pnpm lint`, `pnpm format:check`, `pnpm build`,
   `pnpm type-check`.
 - `ci-test.yml` installs Chromium and runs `pnpm test` per affected project. The `lydite` stage
@@ -85,9 +94,14 @@ correlation needs it — a consumer without OpenTelemetry pays nothing. A custom
 A release is one tag, `vX.Y.Z`, pushed by a human (ADR-0001). The `release` skill walks the whole
 sequence.
 
-- `release.yml`: `tag` validates the tag, requires `docs/release-notes/<tag>.md` and computes the
-  publish order; `build` is a credential-free matrix over every project; `publish` holds the OIDC
-  token, verifies the artefacts carry nothing but `dist/`, and publishes each project in dependency
-  order with provenance; `announce` creates the GitHub Release. Publishing is idempotent.
+- `release.yml`: `tag` validates the tag, requires `docs/release-notes/<tag>.md`, runs
+  `verify-cross-project-deps` with `expect-version` set so every cross-project pin matches the
+  tag, and computes the publish order; `build` is a credential-free matrix over every project that
+  builds each project's cross-project dependencies first; `publish` holds the OIDC token, verifies
+  the artefacts carry nothing but `dist/`, and publishes each project in dependency order with
+  provenance; `announce` creates the GitHub Release. Publishing is idempotent.
+- The `release` skill rewrites every cross-project pin to the new version and refreshes the
+  depending project's lockfile before the release PR, so `verify-cross-project-deps` and
+  `--frozen-lockfile` both pass in the release change (ADR-0009).
 - A brand-new package name must be created by a one-time manual publish before a trusted publisher
   can be enrolled on it.
