@@ -81,9 +81,10 @@ correlation needs it — a consumer without OpenTelemetry pays nothing. A custom
   none and the stages skip.
 - `verify-cross-project-deps` runs once per workflow, before project selection, and fails unless
   every cross-project pin has a matching `link:` override and vice versa (ADR-0009).
-- `build-cross-project-deps` runs per affected project, before its own install, and builds the
-  sibling projects it links to, dependencies first; a project with no cross-project dependency is
-  a no-op.
+- `build-cross-project-deps` runs per affected project, right after its own `pnpm install
+  --frozen-lockfile` and before its build, and builds the sibling projects it links to,
+  dependencies first — install only records the `link:` override, so the linked `dist/` is only
+  needed once the project builds. A project with no cross-project dependency is a no-op.
 - `ci-build.yml` runs, per affected project, `pnpm lint`, `pnpm format:check`, `pnpm build`,
   `pnpm type-check`.
 - `ci-test.yml` installs Chromium and runs `pnpm test` per affected project. The `lydite` stage
