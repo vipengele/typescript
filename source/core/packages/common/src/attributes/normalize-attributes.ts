@@ -65,6 +65,20 @@ function breadthMarker(total: number, state: State): string {
   return `[Truncated: ${total - state.maxBreadth} more]`;
 }
 
+/**
+ * A retained caller key can legitimately be `"…"` (or a generated `"…#1"`), and appending the
+ * breadth marker under that same key would silently overwrite it once `Object.fromEntries`
+ * collapses the duplicate. Raising a `#<n>` suffix until the candidate isn't in `used` keeps the
+ * marker from ever colliding with a key it is meant to summarise alongside.
+ */
+function breadthMarkerKey(used: ReadonlySet<string>): string {
+  let key = BREADTH_TRUNCATION_KEY;
+  for (let suffix = 1; used.has(key); suffix++) {
+    key = `${BREADTH_TRUNCATION_KEY}#${suffix}`;
+  }
+  return key;
+}
+
 function describeFunction(fn: object): string {
   const name = readProperty(fn, "name", null);
   return `[Function: ${typeof name === "string" && name !== "" ? name : "anonymous"}]`;
@@ -88,7 +102,8 @@ function normalizeRecord(record: object, depth: number, state: State): { readonl
   }
 
   if (keys.length > state.maxBreadth) {
-    entries.push([BREADTH_TRUNCATION_KEY, breadthMarker(keys.length, state)]);
+    const used = new Set(entries.map(([key]) => key));
+    entries.push([breadthMarkerKey(used), breadthMarker(keys.length, state)]);
   }
 
   // `Object.fromEntries` defines each key as an own data property, so a `__proto__` key in the
@@ -146,7 +161,7 @@ function normalizeMap(map: ReadonlyMap<unknown, unknown>, depth: number, state: 
   }
 
   if (map.size > state.maxBreadth) {
-    entries.push([BREADTH_TRUNCATION_KEY, breadthMarker(map.size, state)]);
+    entries.push([breadthMarkerKey(emitted), breadthMarker(map.size, state)]);
   }
 
   return Object.fromEntries(entries);
@@ -241,6 +256,10 @@ function normalizeValue(value: unknown, depth: number, state: State, honorToJSON
     case "string":
       return truncateString(value, state);
     case "number":
+      // `NaN`/`Infinity`/`-Infinity` survive unchanged in memory but become `null` under
+      // `JSON.stringify`, so a JSON sink and an in-memory one would otherwise see different
+      // values for the same attribute. A stable string keeps every sink in agreement.
+      return Number.isFinite(value) ? value : String(value);
     case "boolean":
       return value;
     case "bigint":

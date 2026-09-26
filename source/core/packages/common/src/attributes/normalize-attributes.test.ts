@@ -24,6 +24,14 @@ test.for(["text", 42, -0.5, true, false, null])("passes the primitive %o through
   expect(normalizeAttributes({ value })).toEqual({ value });
 });
 
+test.for<[number, string]>([
+  [Number.NaN, "NaN"],
+  [Number.POSITIVE_INFINITY, "Infinity"],
+  [Number.NEGATIVE_INFINITY, "-Infinity"],
+])("turns the non-finite number %o into the JSON-stable string %o", ([value, expected]) => {
+  expect(normalizeAttributes({ value })).toEqual({ value: expected });
+});
+
 test("drops an undefined object property", () => {
   const result = normalizeAttributes({ kept: 1, dropped: undefined });
 
@@ -111,6 +119,16 @@ test("applies maxBreadth to a Map and summarises the rest", () => {
   ]);
 
   expect(normalizeAttributes({ map }, { maxBreadth: 2 })).toEqual({ map: { a: 1, b: 2, "…": "[Truncated: 1 more]" } });
+});
+
+test("disambiguates a Map's breadth marker key when a retained key is already the marker key", () => {
+  const map = new Map<string, unknown>([
+    ["…", "kept"],
+    ["a", 1],
+    ["b", 2],
+  ]);
+
+  expect(normalizeAttributes({ map }, { maxBreadth: 2 })).toEqual({ map: { "…": "kept", a: 1, "…#1": "[Truncated: 1 more]" } });
 });
 
 test("turns a Set into an array with normalized items", () => {
@@ -366,6 +384,12 @@ test("applies maxBreadth to the input record", () => {
 
 test("keeps an object of exactly maxBreadth entries whole", () => {
   expect(normalizeAttributes({ value: { a: 1, b: 2 } }, { maxBreadth: 2 })).toEqual({ value: { a: 1, b: 2 } });
+});
+
+test("disambiguates the breadth marker key when a retained key is already the marker key", () => {
+  expect(normalizeAttributes({ value: { "…": "kept", a: 1, b: 2 } }, { maxBreadth: 2 })).toEqual({
+    value: { "…": "kept", a: 1, "…#1": "[Truncated: 1 more]" },
+  });
 });
 
 test("keeps 100 array items by default and summarises the rest", () => {
