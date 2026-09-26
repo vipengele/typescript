@@ -37,6 +37,22 @@ describe("matched keys", () => {
     expect(Object.hasOwn(result, "__proto__")).toBe(true);
     expect(Object.getOwnPropertyDescriptor(result, "__proto__")?.value).toEqual({ password: "[REDACTED]", id: 1 });
   });
+
+  test("an own toJSON is dropped rather than copied, so serializing the redacted copy can't invoke it", () => {
+    const secretPassword = "hunter2";
+    class Account {
+      readonly password = secretPassword;
+      toJSON() {
+        return { password: secretPassword, leaked: true };
+      }
+    }
+
+    const result = redact(new Account(), policy);
+
+    expect(result).toEqual({ password: "[REDACTED]" });
+    expect(JSON.stringify(result)).not.toContain(secretPassword);
+    expect(JSON.stringify(result)).not.toContain("leaked");
+  });
 });
 
 describe("cycles", () => {
@@ -251,6 +267,51 @@ describe("Error", () => {
 
     expect(replacement).toHaveBeenCalledExactlyOnceWith("abc", "token");
     expect(result.cause).toEqual({ token: "[REDACTED]" });
+  });
+});
+
+describe("cross-realm builtins", () => {
+  // A value built in another realm (an iframe, a worker) fails `instanceof` here, since it was
+  // constructed from a different realm's Date/Map/Set/Error, even though it carries the same
+  // internal tag `Object.prototype.toString` reads and the same methods, inherited from that
+  // realm's own equivalent prototype. Standing in a copy of the real prototype's own properties,
+  // under a distinct object identity, reproduces that same mismatch — instanceof fails, the tag
+  // and the methods don't — without needing an actual second realm.
+  function asForeign<T extends object>(value: T, prototype: object): T {
+    Object.setPrototypeOf(value, Object.create(Object.prototype, Object.getOwnPropertyDescriptors(prototype)));
+    return value;
+  }
+
+  test("a foreign-realm Date fails instanceof here, but is still returned by reference", () => {
+    const date = asForeign(new Date(0), Date.prototype);
+    expect(date instanceof Date).toBe(false);
+
+    expect(redact({ at: date }, policy)).toEqual({ at: date });
+  });
+
+  test("a foreign-realm Map fails instanceof here, but is still walked as a Map", () => {
+    const map = asForeign(new Map<string, unknown>([["password", "x"]]), Map.prototype);
+    expect(map instanceof Map).toBe(false);
+
+    expect(redact(map, policy)).toEqual(new Map([["password", "[REDACTED]"]]));
+  });
+
+  test("a foreign-realm Set fails instanceof here, but is still walked as a Set", () => {
+    const set = asForeign(new Set([{ password: "x" }]), Set.prototype);
+    expect(set instanceof Set).toBe(false);
+
+    expect(redact(set, policy)).toEqual(new Set([{ password: "[REDACTED]" }]));
+  });
+
+  test("a foreign-realm Error fails instanceof here, but its name/message/stack still survive", () => {
+    const error = asForeign(new Error("boom"), Error.prototype);
+    expect(error instanceof Error).toBe(false);
+
+    const result = redact(error, policy) as Record<string, unknown>;
+
+    expect(result.name).toBe("Error");
+    expect(result.message).toBe("boom");
+    expect(typeof result.stack).toBe("string");
   });
 });
 

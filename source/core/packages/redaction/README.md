@@ -84,9 +84,13 @@ redact(payload, policy, { replacement: (value, key) => `[REDACTED:${key}]` });
   Mutating a policy's `keys` array after it has already been passed to `redact()` has no effect on
   later calls with that same policy object. Build a new `RedactionPolicy` object instead of
   mutating an existing one.
-- **`toJSON()` is not honored.** `redact()` walks a value's own enumerable properties directly; it
-  never calls `toJSON()` first. `@vipengele/ts-core-observability`'s error normalization honors
-  `toJSON()` (ADR-0007); redaction is a deliberate exception to that convention.
+- **`toJSON()` is not honored, and an own `toJSON` is dropped from a copy rather than carried
+  over.** `redact()` walks a value's own enumerable properties directly; it never calls `toJSON()`
+  first. `@vipengele/ts-core-observability`'s error normalization honors `toJSON()` (ADR-0007);
+  redaction is a deliberate exception to that convention. A `toJSON` copied by reference would
+  still close over the original, un-redacted instance, and `JSON.stringify` invokes it
+  automatically — so it is never copied, even when the source value's own `toJSON` isn't matched
+  by any key rule.
 - **Regex key matchers are unanchored.** A `RegExp` or `{ pattern }` matcher is tested as a
   substring/pattern match against the key, not a full match: `/token/` matches a key like
   `"my_token_field"`, not only a key that equals `"token"` exactly. Anchor the pattern (`/^token$/`)

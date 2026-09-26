@@ -25,12 +25,19 @@ function normalize(matcher: KeyMatcher): NormalizedMatcher {
     const lowered = pattern.toLowerCase();
     return (key) => key.toLowerCase() === lowered;
   }
-  // A private copy without `g`/`y`: those flags make `test` advance `lastIndex`, which would both
-  // alternate the result across calls and mutate the caller's own instance.
-  const flags = new Set(pattern.flags.replace(/[gy]/g, ""));
+  // A private copy, so the caller's own instance is never mutated. Its flags are kept as given —
+  // stripping `g`/`y` would silently turn a sticky matcher into an unanchored one, matching a
+  // substring anywhere instead of only at the start. `g`/`y` still advance this copy's own
+  // `lastIndex` on a match, so it is reset before every test: otherwise a sticky matcher would
+  // stop matching after its first hit, and a global one would start each test from wherever the
+  // last one left off instead of from the start of the key.
+  const flags = new Set(pattern.flags);
   if (caseInsensitive) flags.add("i");
   const regex = new RegExp(pattern.source, [...flags].join(""));
-  return (key) => regex.test(key);
+  return (key) => {
+    regex.lastIndex = 0;
+    return regex.test(key);
+  };
 }
 
 function normalizedMatchers(policy: RedactionPolicy): readonly NormalizedMatcher[] {

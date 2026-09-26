@@ -48,6 +48,11 @@ function walk(value: unknown, context: WalkContext): unknown {
   }
 }
 
+/** `Object.prototype.toString`'s builtin tag, stable across realms unlike `instanceof`. */
+function tagOf(value: object): string {
+  return Object.prototype.toString.call(value);
+}
+
 /**
  * Objects returned by reference because they hold no keyed data a key rule could match, or their
  * state lives outside their own enumerable keys, so a generic walk would silently discard it and
@@ -56,18 +61,25 @@ function walk(value: unknown, context: WalkContext): unknown {
  * `URL` is deliberately excluded even though it has the same shape: it can carry credentials, in
  * userinfo (`https://user:pass@host`) or a query string, that a policy has no way to name, so it
  * falls to the generic walk instead and comes back `{}` rather than leaking them by reference.
+ *
+ * Checked by tag, not `instanceof`: an `instanceof` check fails for a value built in another
+ * realm (an iframe's `Date`, say), which would otherwise fall through to the generic walk and
+ * silently lose everything this function exists to preserve by reference.
  */
 function isOpaque(value: object): boolean {
-  return (
-    value instanceof Date ||
-    value instanceof ArrayBuffer ||
-    ArrayBuffer.isView(value) ||
-    value instanceof RegExp ||
-    value instanceof Promise ||
-    value instanceof String ||
-    value instanceof Number ||
-    value instanceof Boolean
-  );
+  if (ArrayBuffer.isView(value)) return true;
+  switch (tagOf(value)) {
+    case "[object Date]":
+    case "[object ArrayBuffer]":
+    case "[object RegExp]":
+    case "[object Promise]":
+    case "[object String]":
+    case "[object Number]":
+    case "[object Boolean]":
+      return true;
+    default:
+      return false;
+  }
 }
 
 function isPlainObject(value: object): boolean {
@@ -78,12 +90,23 @@ function isPlainObject(value: object): boolean {
 function walkContainer(value: object, context: WalkContext): unknown {
   if (isPlainObject(value)) return walkFields(value, context);
   if (Array.isArray(value)) return value.map((element: unknown) => walk(element, context));
-  if (value instanceof Map) return walkMap(value, context);
-  if (value instanceof Set) return new Set([...value].map((member: unknown) => walk(member, context)));
-  if (value instanceof Error) return walkError(value, context);
-  return walkFields(value, context);
+  switch (tagOf(value)) {
+    case "[object Map]":
+      return walkMap(value as Map<unknown, unknown>, context);
+    case "[object Set]":
+      return new Set([...(value as Set<unknown>)].map((member: unknown) => walk(member, context)));
+    case "[object Error]":
+      return walkError(value as Error, context);
+    default:
+      return walkFields(value, context);
+  }
 }
 
+/**
+ * `toJSON` is never copied: it would carry the original instance's closure into the redacted
+ * copy, and `JSON.stringify` calls it automatically, running arbitrary code that still has
+ * access to the un-redacted value and can write it straight into the "redacted" output.
+ */
 function walkFields(
   value: object,
   context: WalkContext,
@@ -91,7 +114,7 @@ function walkFields(
   skip?: ReadonlySet<string>,
 ): Record<string, unknown> {
   for (const key of Object.keys(value)) {
-    if (skip?.has(key)) continue;
+    if (key === "toJSON" || skip?.has(key)) continue;
     setField(into, key, (value as Record<string, unknown>)[key], context);
   }
   return into;

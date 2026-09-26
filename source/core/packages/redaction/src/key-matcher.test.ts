@@ -55,6 +55,15 @@ describe("RegExp matchers", () => {
     expect(matchKey(policy, key)).toBe(true);
     expect(regex.lastIndex).toBe(0);
   });
+
+  test("a sticky matcher keeps its anchored-at-start semantics, not just its statelessness", () => {
+    const policy: RedactionPolicy = { keys: [/token/y] };
+
+    expect(matchKey(policy, "access_token")).toBe(false);
+    expect(matchKey(policy, "access_token")).toBe(false);
+    expect(matchKey(policy, "token_id")).toBe(true);
+    expect(matchKey(policy, "token_id")).toBe(true);
+  });
 });
 
 describe("policies", () => {
