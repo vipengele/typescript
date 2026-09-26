@@ -19,8 +19,12 @@ Error Event, Scope, Breadcrumb, Transport) before naming things.
 - `source/core/` — the framework's foundation:
   - `packages/common` — `@vipengele/ts-core-common`: shared types and primitives (context
     propagation, error normalization, runtime detection) the other packages agree on. A
-    sub-path like `./types/numeric` (the locale-aware `Numeric.parse`/`tryParse`/`format`) is a
-    tree-shakeable slice of the package's surface, not a separate package — a bundler-using
+    sub-path like `./types/numeric` (the locale-aware `Numeric.parse`/`tryParse`/`format`) or
+    `./context` (`createAsyncContextStore`, a value carried across an async call chain behind a
+    fixed carrier fallback — `AsyncLocalStorage`, then `AsyncContext.Variable`, then a synchronous
+    stack, ADR-0004; state shared across dual-resolved copies of the package lives behind a
+    `globalThis` registry, `agentic/rules/shared-realm-state-lives-behind-a-globalthis-symbol-slot.md`)
+    is a tree-shakeable slice of the package's surface, not a separate package — a bundler-using
     consumer imports only the sub-path it needs.
   - `packages/redaction` — `@vipengele/ts-core-redaction`: the reusable redaction library.
   - `packages/observability` — `@vipengele/ts-core-observability`: the logger (`./logger`) and the
