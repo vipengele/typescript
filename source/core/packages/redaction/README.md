@@ -95,6 +95,11 @@ redact(payload, policy, { replacement: (value, key) => `[REDACTED:${key}]` });
   substring/pattern match against the key, not a full match: `/token/` matches a key like
   `"my_token_field"`, not only a key that equals `"token"` exactly. Anchor the pattern (`/^token$/`)
   if an exact match is required.
+- **A `RedactionPolicy`'s regex matchers are a trust boundary, not sanitized input.** `matchKey()`
+  tests each one against a short key string, never against attacker-controlled data — but the
+  pattern itself is never validated for catastrophic backtracking. Build a policy from patterns
+  you wrote or reviewed, the same way you would trust any other regular expression compiled into
+  your program; do not construct one from a pattern string an untrusted caller supplied.
 - **`Map` key-matching only applies to string keys.** A `Map` entry whose key is not a string is
   never tested against the policy, and the key itself is carried into the output by reference,
   unredacted — its value is still walked and redacted recursively, but sensitive data held on an
