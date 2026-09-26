@@ -160,10 +160,9 @@ describe("pass-through values", () => {
     }
   });
 
-  test("RegExps, URLs, Promises and boxed primitives are returned by reference, not walked into an empty object", () => {
+  test("RegExps, Promises and boxed primitives are returned by reference, not walked into an empty object", () => {
     const input = {
       pattern: /^\d+$/,
-      link: new URL("https://example.com/password"),
       pending: Promise.resolve("password"),
       boxed: new String("password"),
     };
@@ -174,6 +173,17 @@ describe("pass-through values", () => {
     for (const key of Object.keys(input) as (keyof typeof input)[]) {
       expect(result[key]).toBe(input[key]);
     }
+  });
+
+  test("a URL is walked to an empty object rather than passed through, since it can carry credentials no key rule could name", () => {
+    const url = new URL("https://example.com/path");
+    url.password = "hunter2";
+    url.searchParams.set("access_token", "abc");
+
+    const result = redact({ link: url }, policy) as { link: unknown };
+
+    expect(result.link).not.toBe(url);
+    expect(result.link).toEqual({});
   });
 
   test("primitives and null are returned unchanged", () => {

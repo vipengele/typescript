@@ -49,9 +49,13 @@ function walk(value: unknown, context: WalkContext): unknown {
 }
 
 /**
- * Objects returned by reference: either they hold no keyed data a key rule could match, or their
+ * Objects returned by reference because they hold no keyed data a key rule could match, or their
  * state lives outside their own enumerable keys, so a generic walk would silently discard it and
  * return `{}` — a `RegExp`'s pattern, a boxed primitive's wrapped value, a `Promise`'s resolution.
+ *
+ * `URL` is deliberately excluded even though it has the same shape: it can carry credentials, in
+ * userinfo (`https://user:pass@host`) or a query string, that a policy has no way to name, so it
+ * falls to the generic walk instead and comes back `{}` rather than leaking them by reference.
  */
 function isOpaque(value: object): boolean {
   return (
@@ -59,7 +63,6 @@ function isOpaque(value: object): boolean {
     value instanceof ArrayBuffer ||
     ArrayBuffer.isView(value) ||
     value instanceof RegExp ||
-    value instanceof URL ||
     value instanceof Promise ||
     value instanceof String ||
     value instanceof Number ||

@@ -28,7 +28,7 @@ function redact(value: unknown, policy: RedactionPolicy, options?: RedactOptions
 
 Returns a redacted copy of `value`. Every value found under a key the policy matches is replaced
 whole and never descended into; everything else is walked recursively. Plain objects, arrays,
-`Map`s, `Set`s, `Error`s and other class instances come back as copies; `Date`s, `RegExp`s, `URL`s,
+`Map`s, `Set`s, `Error`s and other class instances come back as copies; `Date`s, `RegExp`s,
 `Promise`s, boxed primitives, `ArrayBuffer`s and their views, functions and primitives are returned
 as-is. The input is never mutated.
 
@@ -99,7 +99,9 @@ redact(payload, policy, { replacement: (value, key) => `[REDACTED:${key}]` });
 - **A class instance other than `Map`, `Set` or `Error` keeps only its own enumerable string
   keys.** Anything whose state lives elsewhere — a `RegExp`'s pattern, a boxed primitive's wrapped
   value, a `Promise`'s resolution — is returned by reference instead of being walked into an empty
-  object; `RegExp`, `URL`, `Promise` and boxed primitives are recognized this way, alongside `Date`
-  and `ArrayBuffer`/its views. A custom class with genuinely private state (a `#field` or a
+  object; `RegExp`, `Promise` and boxed primitives are recognized this way, alongside `Date` and
+  `ArrayBuffer`/its views. A custom class with genuinely private state (a `#field` or a
   `WeakMap`-backed value) loses that state in the copy, since only own enumerable string keys are
-  read.
+  read. `URL` is the deliberate exception: it has the same shape, but its userinfo and query string
+  can carry credentials no key rule could name, so it is walked instead of passed through and comes
+  back `{}`, same as any other class instance with no own enumerable keys.
