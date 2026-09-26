@@ -1,0 +1,25 @@
+# build-cross-project-deps — build the sibling projects a project links to.
+#
+# A cross-project dependency (ADR-0009) is an exact pin overridden by a `link:`
+# to the sibling's package directory, so the link resolves to the sibling's
+# dist/ and the sibling has to be built first. This builds every project the
+# given one depends on, transitively and dependencies first; a project with no
+# cross-project dependency is a no-op. A failure is annotated with the sibling
+# project and package that failed, so it is not read as the caller's own.
+#
+# Runs from the repository root. The caller sets up Node and pnpm beforehand.
+name: build-cross-project-deps
+description: Build the sibling projects a source/ project's cross-project dependencies link to.
+
+inputs:
+  project:
+    description: 'Project directory name under source/, e.g. "ts".'
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        PROJECT: ${{ inputs.project }}
+      run: 'bash "${GITHUB_ACTION_PATH}/build.sh" "$PROJECT"'

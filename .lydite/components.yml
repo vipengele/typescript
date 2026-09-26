@@ -34,6 +34,13 @@ components:
 # Node+Chromium preset every package under that project imports — real TypeScript,
 # but a workspace-root file no package's own `dir` contains, so it is an orphan
 # under no component rather than dead code.
+#
+# The two new .github/actions/*/{build,verify}.sh scripts (ADR-0009) are CI
+# infrastructure, not a source/ package — no component's `dir` covers them, and a
+# lasting automated fixture-test suite for them is scope beyond issue #71; each was
+# hand-verified against fixtures instead.
 excludes:
   - "source/core/vitest.shared.ts"
   - "source/ts/vitest.shared.ts"
+  - ".github/actions/build-cross-project-deps/build.sh"
+  - ".github/actions/verify-cross-project-deps/verify.sh"

@@ -46,6 +46,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      - uses: ./.github/actions/verify-cross-project-deps
       - id: projects
         uses: ./.github/actions/changed-projects
 
@@ -75,6 +76,9 @@ jobs:
           cache: pnpm
           cache-dependency-path: source/${{ matrix.project }}/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/build-cross-project-deps
+        with:
+          project: ${{ matrix.project }}
       # `--error-on-warnings` (in the lint script) makes a warning fatal, so a
       # rule that only warns is dealt with instead of accumulating unread.
       - run: pnpm lint
