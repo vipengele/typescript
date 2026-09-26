@@ -91,6 +91,18 @@ test("disambiguates Map keys that stringify to the same value instead of overwri
   expect(normalizeAttributes({ map })).toEqual({ map: { dup: "first", "dup#1": "second", "dup#2": "third" } });
 });
 
+test("keeps disambiguating a Map key that collides with an already-emitted generated key", () => {
+  const a = { toString: () => "dup" };
+  const b = { toString: () => "dup" };
+  const map = new Map<unknown, unknown>([
+    [a, "first"],
+    ["dup#1", "literal"],
+    [b, "second"],
+  ]);
+
+  expect(normalizeAttributes({ map })).toEqual({ map: { dup: "first", "dup#1": "literal", "dup#2": "second" } });
+});
+
 test("applies maxBreadth to a Map and summarises the rest", () => {
   const map = new Map([
     ["a", 1],

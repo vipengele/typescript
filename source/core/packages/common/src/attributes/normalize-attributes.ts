@@ -116,12 +116,13 @@ function normalizeArray(array: readonly unknown[], depth: number, state: State):
  * A `Map` key is rarely a string, and `Object.fromEntries` coerces every key to one with
  * `String()` — two distinct object keys with no custom `toString` both become
  * `"[object Object]"` and silently overwrite one another. Stringifying the key here the same
- * way, then suffixing a repeat with `#<n>`, keeps every entry instead of losing one to a
- * collision `Object.fromEntries` would not have reported.
+ * way, then raising a `#<n>` suffix until the result is a key nothing has been emitted under
+ * yet, keeps every entry instead of losing one to a collision `Object.fromEntries` would not
+ * have reported — including a collision against a literal key that already looks generated.
  */
 function normalizeMap(map: ReadonlyMap<unknown, unknown>, depth: number, state: State): { readonly [key: string]: AttributeValue } {
   const entries: [string, AttributeValue][] = [];
-  const seen = new Map<string, number>();
+  const emitted = new Set<string>();
   let index = 0;
 
   for (const [key, value] of map) {
@@ -135,10 +136,13 @@ function normalizeMap(map: ReadonlyMap<unknown, unknown>, depth: number, state: 
     }
 
     const stringKey = typeof key === "string" ? key : String(key);
-    const repeat = seen.get(stringKey) ?? 0;
-    seen.set(stringKey, repeat + 1);
+    let outputKey = stringKey;
+    for (let suffix = 1; emitted.has(outputKey); suffix++) {
+      outputKey = `${stringKey}#${suffix}`;
+    }
+    emitted.add(outputKey);
 
-    entries.push([repeat > 0 ? `${stringKey}#${repeat}` : stringKey, normalizeValue(value, depth + 1, state)]);
+    entries.push([outputKey, normalizeValue(value, depth + 1, state)]);
   }
 
   if (map.size > state.maxBreadth) {
