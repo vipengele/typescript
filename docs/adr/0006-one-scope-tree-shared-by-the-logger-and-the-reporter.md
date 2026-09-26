@@ -5,17 +5,25 @@ read it from one place: the current `Scope`, a class in `@vipengele/ts-core-comm
 Java's MDC. Scopes form a tree.
 
 - **The root** holds the environment — release, environment name, runtime — and never changes after
-  it is initialized.
+  it is initialized. No other scope may `set` a key the root already holds; the root's keys are
+  reserved, never shadowed, so reading one never has to prefer the root over a closer scope that
+  was never allowed to hold it in the first place.
 - **The default scope** is a permanent, mutable child of the root, current whenever nothing else
   is: outside any request on Node, and in the browser, where the page is the only Unit of Work.
   A single-page app's `setUser` after login lands here.
 - **Every other scope** is created as a child, holds its own `Record` of attributes and is mutable
   through `set`. It reads a key by walking up its ancestors at read time, never by copying them when
   it is created, so a value set on a request's scope after a nested child exists still reaches the
-  child. A `set` on a nested child changes only that child. The innermost value wins.
-- **A scope that begins a Unit of Work** (`isolate: true`) also owns that unit's Breadcrumbs, a
-  bounded buffer kept apart from its attributes, so one request's breadcrumbs never reach another
-  request's error.
+  child. A `set` on a nested child changes only that child. The innermost value wins, except for a
+  root-owned key, which no descendant may set to begin with.
+- **A scope that begins a Unit of Work** (`Scope.isolated`) is a child of the root, not of whatever
+  scope was current — so one request's tree never hangs off another's — and, like any scope, may
+  carry a tag. A scope created mid-request (`Scope.inherit`) is a child of the current scope instead,
+  and may carry its own tag for the step it represents.
+- **There is no separate Breadcrumb buffer.** A scope's tag *is* its Breadcrumb. An Error Event's
+  trail is the tagged ancestors of the Scope it was raised in, read by walking from the root down —
+  recording a breadcrumb for something is creating a scope for it (`Scope.inherit` or
+  `Scope.isolated` with a tag), never a separate call.
 
 Mutability is what Sentry's isolation layer exists for: authentication middleware identifies the
 user after the request has started, and an error three calls later must still carry it. In a tree
@@ -31,36 +39,56 @@ call's — so the call site always wins. The reporter reads only the Scope; an e
 
 ## Propagation, and what the browser guarantees
 
-The current scope is carried by a Scope Carrier — `current()`, `run(scope, fn)`, `bind(fn)` — the
-first of these that applies: one the application installs with `Scope.useCarrier(...)`;
-`AsyncLocalStorage` on Node, Bun and Deno, reached through `getBuiltinModule` (ADR-0004); the TC39
-`AsyncContext` when `globalThis` has it; otherwise a synchronous stack. An installed carrier lets an
-application that already runs zone.js — an Angular app — carry scopes across `await` through its
-zones; a zone carrier lives in its own entry point, uses the `Zone` global the application loaded,
-and never imports or installs zone.js. Patching globals stays the application's choice, never a
-side effect of importing the framework. The store lives on
-`globalThis`, like the logger's level table (ADR-0005), because two copies of the package with two
-stores cannot see each other's scopes.
+The current scope is carried by a `ContextCarrier<Scope>` — `current()`, `run(scope, fn)` — installed
+through `Scope.useCarrier(...)` ahead of whichever is detected: `AsyncLocalStorage` on Node, Bun and
+Deno, reached through `getBuiltinModule` (ADR-0004); the TC39 `AsyncContext` when `globalThis` has
+it; otherwise a synchronous stack. `Scope` owns exactly one such carrier, behind one fixed
+`globalThis` key — there is no way to ask `Scope` for a second, independent store.
+`Scope.propagate`, `Scope.inherit` and `Scope.isolated` are all built on this one carrier contract;
+none of them need a carrier to know anything about capturing or rebinding a value for later, because
+that is handled once, generically, by the underlying store's own single-argument `propagate` —
+which is also why `ContextCarrier` needed no extra method for `Scope`'s sake: a zone.js carrier's
+own native rebind (`Zone.current.wrap`) and the generic capture-then-`run` fallback produce the same
+result, so there was never a case for the carrier itself to supply a different `bind`. An installed
+carrier lets an application that already runs zone.js — an Angular app — carry scopes across
+`await` through its zones; a zone carrier lives in its own entry point, uses the `Zone` global the
+application loaded, and never imports or installs zone.js. Patching globals stays the application's
+choice, never a side effect of importing the framework. The store lives on `globalThis`, like the
+logger's level table (ADR-0005), because two copies of the package with two stores cannot see each
+other's scopes.
 
-The synchronous stack sees a scope from `Scope.run` until the first `await`, and the default scope
-after it — never a sibling flow's scope. Losing context is recoverable; context from the wrong
+The synchronous stack sees a scope for the duration of the callback passed to `Scope.propagate`,
+`Scope.inherit` or `Scope.isolated`, and the default scope again once that callback's *synchronous*
+frame returns — never a sibling flow's scope. Losing context is recoverable; context from the wrong
 Unit of Work is a defect that reads as correct data. Code that needs a scope across an `await` in
-the browser captures it (`Scope.current()`, then `scope.run(...)`), binds callbacks
-(`scope.bind(fn)`), or relies on `logger.with()`, which is lexical and survives everything.
+the browser captures it (`Scope.current()`, then `Scope.propagate(scope, fn)` again after the gap),
+or relies on `logger.with()`, which is lexical and survives everything.
 
-## Entering a scope
+## Creating a scope
 
-- `Scope.run(scope, fn)` is the primitive, and correct in every runtime.
-- `using _ = Scope.enter(scope)` restores the parent on dispose, for **synchronous** blocks. Inside
-  an `async` function, `enter` changes the execution that still belongs to the caller until the
-  first `await`, so the caller would continue inside the child — a sibling's scope. `enter`
-  schedules a microtask that finds the scope still entered only when the block crossed an `await`
-  (a synchronous block always disposes first); it then restores the parent and emits one `warn`
-  pointing at `Scope.run`. This is also why the TC39 `AsyncContext` proposal has no `enter`.
-- `@isolatedScope()` and `@scoped(attributes)` wrap a method in `Scope.run`, so they are correct for
-  `async` methods too. They accept both standard and legacy (`experimentalDecorators`) decorator
-  calls, told apart by argument shape. `Scope.isolated(fn)` does the same for free functions,
-  which decorators cannot reach.
+- `Scope.inherit(tag, attributes, fn)` creates a child of the **current** scope, carrying `tag` as
+  its Breadcrumb, and runs `fn` with it current — correct in every runtime, including across an
+  `await` inside `fn` wherever the carrier supports it.
+- `Scope.isolated(tag, attributes, fn)` does the same, but as a child of the **root** rather than of
+  whatever was current — the entry point for a new Unit of Work, so one request's tree never hangs
+  off another's.
+- Both are callback-taking only. There is no disposable `enter()` and no bare `using` form: without
+  a callback boundary, a sequence of scopes created in the same block nest instead of forming
+  siblings (the first is still current, so the second's parent is the first, not the first's own
+  parent) — confusing exactly where it matters most, several steps inside one method — so the
+  callback form is the only one offered.
+- Because every scope is entered through a callback, there is no execution that silently continues
+  in the wrong scope after an unawaited gap the way a disposable-based `enter()` would have allowed.
+  The crossed-`await` warning considered earlier is dropped along with `enter()` itself; the
+  synchronous stack's documented limitation (loses the scope after the first `await` inside `fn`)
+  stands on its own, without a warning.
+- `@isolatedScope(tag)` and `@scoped(tag, attributes)` wrap a method body in `Scope.isolated`/
+  `Scope.inherit`, so they are correct for `async` methods too. They accept both standard and legacy
+  (`experimentalDecorators`) decorator calls, told apart by argument shape.
+
+A `Scope`'s public surface is only `tag`, `get` and `set` — never `parent`. Walking the tree to read
+a breadcrumb trail is the reporter's own internal concern, not something an application does, so
+nothing about ancestry is exposed outside the framework's own code.
 
 ## Considered options
 
