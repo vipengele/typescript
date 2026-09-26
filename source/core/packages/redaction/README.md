@@ -28,9 +28,9 @@ function redact(value: unknown, policy: RedactionPolicy, options?: RedactOptions
 
 Returns a redacted copy of `value`. Every value found under a key the policy matches is replaced
 whole and never descended into; everything else is walked recursively. Plain objects, arrays,
-`Map`s, `Set`s, `Error`s and other class instances come back as copies; `Date`s, `RegExp`s,
-`Promise`s, boxed primitives, `ArrayBuffer`s and their views, functions and primitives are returned
-as-is. The input is never mutated.
+`Map`s, `Set`s, `Error`s and other class instances come back as copies; `Date`s, `RegExp`s, boxed
+primitives, `ArrayBuffer`s and their views, functions and primitives are returned as-is. The input
+is never mutated.
 
 `RedactOptions.replacement` controls what a matched value is replaced with; see `Replacement`
 below. It defaults to the string `"[REDACTED]"`.
@@ -102,10 +102,19 @@ redact(payload, policy, { replacement: (value, key) => `[REDACTED:${key}]` });
   might carry sensitive data.
 - **A class instance other than `Map`, `Set` or `Error` keeps only its own enumerable string
   keys.** Anything whose state lives elsewhere — a `RegExp`'s pattern, a boxed primitive's wrapped
-  value, a `Promise`'s resolution — is returned by reference instead of being walked into an empty
-  object; `RegExp`, `Promise` and boxed primitives are recognized this way, alongside `Date` and
-  `ArrayBuffer`/its views. A custom class with genuinely private state (a `#field` or a
-  `WeakMap`-backed value) loses that state in the copy, since only own enumerable string keys are
-  read. `URL` is the deliberate exception: it has the same shape, but its userinfo and query string
-  can carry credentials no key rule could name, so it is walked instead of passed through and comes
-  back `{}`, same as any other class instance with no own enumerable keys.
+  value — is returned by reference instead of being walked into an empty object; `RegExp` and
+  boxed primitives are recognized this way, alongside `Date` and `ArrayBuffer`/its views. A custom
+  class with genuinely private state (a `#field` or a `WeakMap`-backed value) loses that state in
+  the copy, since only own enumerable string keys are read. `URL` and `Promise` are the deliberate
+  exceptions: a `URL`'s userinfo and query string can carry credentials no key rule could name,
+  and a `Promise` has no way to verify it is genuine without a side effect (attaching a handler to
+  it), so both are walked instead of passed through and come back `{}`, same as any other class
+  instance with no own enumerable keys.
+- **Built-in types are recognized by an internal-slot check, not by `Symbol.toStringTag` or
+  `instanceof`.** A plain object can set its own `Symbol.toStringTag` to `"Date"` or `"Map"`, or be
+  built in another realm and fail `instanceof` despite being a genuine instance; `redact()` calls a
+  method the built-in's own spec requires to check that internal slot before doing anything else,
+  so neither an impostor's claimed tag nor a real instance's foreign origin changes how it is
+  handled. `Error` is the one exception: it has no such method to call, but a class instance
+  merely claiming to be one is still just walked like any other instance, so nothing is exposed or
+  thrown by a false positive there either.

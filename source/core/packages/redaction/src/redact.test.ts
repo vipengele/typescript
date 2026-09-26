@@ -40,12 +40,13 @@ describe("matched keys", () => {
 
   test("an own toJSON is dropped rather than copied, so serializing the redacted copy can't invoke it", () => {
     const secretPassword = "hunter2";
+    // An own enumerable field, not a prototype method: `Object.keys()` only sees this because it
+    // is a class field (assigned in the constructor), which is what the fix actually has to drop.
     class Account {
       readonly password = secretPassword;
-      toJSON() {
-        return { password: secretPassword, leaked: true };
-      }
+      readonly toJSON = () => ({ password: secretPassword, leaked: true });
     }
+    expect(Object.hasOwn(new Account(), "toJSON")).toBe(true);
 
     const result = redact(new Account(), policy);
 
@@ -176,10 +177,9 @@ describe("pass-through values", () => {
     }
   });
 
-  test("RegExps, Promises and boxed primitives are returned by reference, not walked into an empty object", () => {
+  test("RegExps and boxed primitives are returned by reference, not walked into an empty object", () => {
     const input = {
       pattern: /^\d+$/,
-      pending: Promise.resolve("password"),
       boxed: new String("password"),
     };
 
@@ -200,6 +200,15 @@ describe("pass-through values", () => {
 
     expect(result.link).not.toBe(url);
     expect(result.link).toEqual({});
+  });
+
+  test("a Promise is walked to an empty object rather than passed through, since there is no side-effect-free way to verify it", () => {
+    const pending = Promise.resolve("password");
+
+    const result = redact({ pending }, policy) as { pending: unknown };
+
+    expect(result.pending).not.toBe(pending);
+    expect(result.pending).toEqual({});
   });
 
   test("primitives and null are returned unchanged", () => {
@@ -312,6 +321,49 @@ describe("cross-realm builtins", () => {
     expect(result.name).toBe("Error");
     expect(result.message).toBe("boom");
     expect(typeof result.stack).toBe("string");
+  });
+});
+
+describe("spoofed builtin tags", () => {
+  test("a class instance faking a Date's Symbol.toStringTag is walked as a plain instance, not passed through unredacted", () => {
+    class FakeDate {
+      readonly password = "x";
+      get [Symbol.toStringTag]() {
+        return "Date";
+      }
+    }
+    const fake = new FakeDate();
+    expect(Object.prototype.toString.call(fake)).toBe("[object Date]");
+
+    expect(redact(fake, policy)).toEqual({ password: "[REDACTED]" });
+  });
+
+  test("a class instance faking a Map's Symbol.toStringTag is walked as a plain instance instead of thrown on or bypassed", () => {
+    class FakeMap {
+      readonly password = "x";
+      get [Symbol.toStringTag]() {
+        return "Map";
+      }
+    }
+    const fake = new FakeMap();
+    expect(Object.prototype.toString.call(fake)).toBe("[object Map]");
+
+    expect(() => redact(fake, policy)).not.toThrow();
+    expect(redact(fake, policy)).toEqual({ password: "[REDACTED]" });
+  });
+
+  test("a class instance faking a Set's Symbol.toStringTag is walked as a plain instance instead of thrown on or bypassed", () => {
+    class FakeSet {
+      readonly password = "x";
+      get [Symbol.toStringTag]() {
+        return "Set";
+      }
+    }
+    const fake = new FakeSet();
+    expect(Object.prototype.toString.call(fake)).toBe("[object Set]");
+
+    expect(() => redact(fake, policy)).not.toThrow();
+    expect(redact(fake, policy)).toEqual({ password: "[REDACTED]" });
   });
 });
 
