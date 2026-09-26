@@ -164,6 +164,7 @@ settings:
 
 overrides:
   chokidar: 4.0.1
+  '@vipengele/ts-core-common': link:../core/packages/common
 
 importers:
 
@@ -194,7 +195,11 @@ importers:
         specifier: 5.0.0
         version: 5.0.0(@vitest/browser-playwright@5.0.0)(@vitest/coverage-v8@5.0.0)(@vitest/ui@5.0.0)(vite@8.3.0(esbuild@0.24.2))
 
-  packages/ts: {}
+  packages/ts:
+    dependencies:
+      '@vipengele/ts-core-common':
+        specifier: link:../../../core/packages/common
+        version: link:../../../core/packages/common
 
 packages:
 

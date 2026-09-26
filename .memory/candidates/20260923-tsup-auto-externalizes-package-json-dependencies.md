@@ -25,6 +25,10 @@ This is tsup's own default: it reads a package's `dependencies` and `peerDepende
 override. So `@vipengele/ts` needs no explicit `external: [...]` in its `tsup.config.ts` once
 `@vipengele/ts-core-common` is added to its `package.json` `dependencies` — the existing
 `tsup.config.ts` shape (`source/ts/packages/ts/tsup.config.ts`, no `external` key) already matches
-the pattern that works for observability today. Worth confirming after wiring it up (a bundle
-check per ADR-0004 asserts `@vipengele/ts` contains no inlined `@vipengele/*` code), but there is
-no reason from precedent to expect `external` needs to be added by hand.
+the pattern that works for observability today.
+
+Confirmed while implementing issue #71's second slice: once `@vipengele/ts-core-common` was added
+to `source/ts/packages/ts/package.json`'s `dependencies` and `@vipengele/ts` was given a real
+`export { Numeric } from "@vipengele/ts-core-common/types/numeric"`, `pnpm build` produced a
+`dist/index.js` of 134 bytes containing only the re-export statement — no `noExternal` override
+was needed, and no `@vipengele/ts-core-common` code was inlined.
