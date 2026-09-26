@@ -165,6 +165,7 @@ settings:
 overrides:
   chokidar: 4.0.1
   '@vipengele/ts-core-common': link:../core/packages/common
+  '@vipengele/ts-core-redaction': link:../core/packages/redaction
 
 importers:
 
@@ -200,6 +201,9 @@ importers:
       '@vipengele/ts-core-common':
         specifier: link:../../../core/packages/common
         version: link:../../../core/packages/common
+      '@vipengele/ts-core-redaction':
+        specifier: link:../../../core/packages/redaction
+        version: link:../../../core/packages/redaction
 
 packages:
 

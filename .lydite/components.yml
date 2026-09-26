@@ -29,11 +29,13 @@ components:
   - name: ts
     dir: source/ts/packages/ts
     runner: vitest
-    # ts pins and links @vipengele/ts-core-common across projects (ADR-0009); lydite's
-    # vitest runner has no cross-project build graph, so the build runs here instead.
-    depends_on: [core-common]
+    # ts pins and links @vipengele/ts-core-common and @vipengele/ts-core-redaction across
+    # projects (ADR-0009); lydite's vitest runner has no cross-project build graph, so the
+    # build runs here instead.
+    depends_on: [core-common, core-redaction]
     setup:
       - sh -c 'cd "$(git rev-parse --show-toplevel)/source/core" && pnpm --filter @vipengele/ts-core-common run build'
+      - sh -c 'cd "$(git rev-parse --show-toplevel)/source/core" && pnpm --filter @vipengele/ts-core-redaction run build'
 
 # Each project's own vitest.shared.ts (source/<project>/vitest.shared.ts) is the
 # Node+Chromium preset every package under that project imports — real TypeScript,
