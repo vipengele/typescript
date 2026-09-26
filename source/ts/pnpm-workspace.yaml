@@ -34,6 +34,7 @@ blockExoticSubdeps: true
 overrides:
   chokidar: 4.0.1
   "@vipengele/ts-core-common": "link:../core/packages/common"
+  "@vipengele/ts-core-redaction": "link:../core/packages/redaction"
 
 # esbuild (pulled in transitively by tsup) ships a postinstall script that
 # downloads its platform binary. pnpm refuses to run any dependency's
