@@ -25,6 +25,20 @@ Removing or masking secrets and personal data from a structured value before it 
 process. Owned by `@vipengele/ts-core-redaction`.
 _Avoid_: scrubbing, sanitizing (sanitizing also means escaping for output)
 
+**Redaction Policy**:
+What keys to redact and how: a set of Key Matchers and the Replacement applied where one matches.
+Composable presets and exceptions are `@vipengele/ts-core-redaction`'s own concern to add on top,
+not a separate glossary term.
+
+**Key Matcher**:
+One rule a Redaction Policy tests an object key against: an exact string, a regular expression, or
+either compared case-insensitively.
+
+**Replacement**:
+What a matched Key Matcher's value becomes: `"[REDACTED]"` by default, or a caller-supplied
+function of the matched value and key, so partial masking and pseudonymization are additional
+Replacements, not a different mechanism.
+
 **Logger**:
 A handle bound to one Category that emits Log Records. Obtained from
 `@vipengele/ts-core-observability/logger`.
