@@ -22,8 +22,10 @@ prototype-less objects) only matter for `@vipengele/ts-core-redaction` used **st
 README says "Usable on its own", `source/core/packages/redaction/README.md:3-5`), since nothing in
 the repo normalizes input before handing it to redaction in that path.
 
-As of this check (2026-09-26), both `source/core/packages/redaction/src/index.ts` and
-`source/core/packages/observability/src/{errors,logger}/index.ts` are 1-line stubs (`export {};`) —
-there is no existing deep-walk, plain-object-detection, or cycle-handling code anywhere in the repo
-to reuse or match conventions with (checked via
-`grep -rn "getPrototypeOf|isPlainObject|WeakSet|lastIndex" source/core/packages/{common,observability}/src` → 0 hits).
+Updated after issue #18 landed (2026-09-26): `@vipengele/ts-core-redaction` now has a real
+`redact()` walker (`source/core/packages/redaction/src/redact.ts`, exported from
+`src/index.ts`) with the deep-walk/plain-object-detection/ancestor-path-cycle-guard code this
+note originally found nothing to reuse. `source/core/packages/observability/src/{errors,logger}/
+index.ts` are still 1-line stubs (`export {};`) — observability itself has not started calling
+`redact()` yet, so the ADR-0007 ordering above is still a design constraint the future
+implementation must satisfy, not something exercised by any code path today.
