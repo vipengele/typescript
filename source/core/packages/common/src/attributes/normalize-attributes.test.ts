@@ -32,6 +32,10 @@ test.for<[number, string]>([
   expect(normalizeAttributes({ value })).toEqual({ value: expected });
 });
 
+test("applies maxStringLength to a non-finite number's string form", () => {
+  expect(normalizeAttributes({ value: Number.POSITIVE_INFINITY }, { maxStringLength: 4 })).toEqual({ value: `Infi${CUT}` });
+});
+
 test("drops an undefined object property", () => {
   const result = normalizeAttributes({ kept: 1, dropped: undefined });
 

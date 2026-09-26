@@ -259,7 +259,7 @@ function normalizeValue(value: unknown, depth: number, state: State, honorToJSON
       // `NaN`/`Infinity`/`-Infinity` survive unchanged in memory but become `null` under
       // `JSON.stringify`, so a JSON sink and an in-memory one would otherwise see different
       // values for the same attribute. A stable string keeps every sink in agreement.
-      return Number.isFinite(value) ? value : String(value);
+      return Number.isFinite(value) ? value : truncateString(String(value), state);
     case "boolean":
       return value;
     case "bigint":
