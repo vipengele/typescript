@@ -60,10 +60,20 @@ _Avoid_: exception (that is one link of the chain), issue (a grouping on the bac
 **Scope**:
 The ambient context a Log Record and an Error Event are both enriched from, carried along an async
 call chain. Scopes form a tree: the root holds the environment and never changes; every other
-scope holds its own attributes and sees its ancestors', the innermost value winning. A scope that
-begins a Unit of Work also owns that unit's Breadcrumbs.
+scope holds its own attributes and sees its ancestors', the innermost value winning, except that no
+scope may `set` a key the root already holds. A scope created to begin a Unit of Work is a child of
+the root, not of whatever scope was current; every other new scope is a child of the current one.
+Either kind may carry a tag, its own Breadcrumb.
 _Avoid_: context (OpenTelemetry's word for its own propagation object), MDC, request context (the
 browser has no request)
+
+**Carrier**:
+What actually threads a value across an async call chain on one runtime: `AsyncLocalStorage` on
+Node, a native `AsyncContext.Variable`, or a synchronous stack as the universal fallback, tried in
+that fixed order (ADR-0004). An application may install its own ahead of the detected one
+(`useCarrier`). Scope is carried by one; the value it carries is the Scope tree, not the carrier
+itself.
+_Avoid_: context (see Scope's own _Avoid_ — the same OpenTelemetry collision applies here)
 
 **Resource**:
 The root Scope seen from outside the process: which service, release, environment and runtime is
@@ -75,8 +85,10 @@ One request, job or message handled end to end — the span of work whose Breadc
 together. In the browser the page is the only unit of work.
 
 **Breadcrumb**:
-A small record of something that happened before an error (a log record, a request, a navigation,
-a click), kept in a bounded buffer and attached to the next Error Event.
+The tag a scope was created with — a short label for the step it represents (a request's path, a
+click, a query). There is no separate record and no buffer: an Error Event's breadcrumb trail is
+the tagged ancestors of the Scope it was raised in, walked from the root down. Recording a
+breadcrumb for something is creating a scope for it.
 
 **Transport**:
 What delivers Error Events (and exported Log Records) out of the process: console, HTTP JSON, OTLP.
