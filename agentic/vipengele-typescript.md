@@ -27,9 +27,10 @@ Error Event, Scope, Breadcrumb, Transport) before naming things.
     error reporter (`./errors`), two entry points of one package.
 - `source/ts/` — `@vipengele/ts`, the framework's batteries-included umbrella package
   (`packages/ts/`, nested so `release.yml`'s publish-order globbing sees it). Its name is a
-  deliberate exception to the `@vipengele/ts-<project>-<package>` convention (ADR-0003); it
-  currently has no dependency on any other `@vipengele/*` package and re-exports nothing, since
-  nothing has ever been published to the registry for it to depend on.
+  deliberate exception to the `@vipengele/ts-<project>-<package>` convention (ADR-0003). It
+  depends on `@vipengele/ts-core-common` — a pin plus a `link:` override in its
+  `pnpm-workspace.yaml` (ADR-0009) — and re-exports `Numeric` from that package's
+  `./types/numeric` sub-path.
 - `.github/actions/changed-projects` — the projects a change affects; CI builds only those.
 - `docs/adr/` — architecture decision records. Read before revisiting a decision recorded there.
 - `docs/release-notes/` — one file per release, named after its tag (`vX.Y.Z.md`). The release
