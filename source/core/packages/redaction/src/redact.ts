@@ -48,9 +48,23 @@ function walk(value: unknown, context: WalkContext): unknown {
   }
 }
 
-/** Objects returned by reference: they hold no keyed data a key rule could match. */
+/**
+ * Objects returned by reference: either they hold no keyed data a key rule could match, or their
+ * state lives outside their own enumerable keys, so a generic walk would silently discard it and
+ * return `{}` — a `RegExp`'s pattern, a boxed primitive's wrapped value, a `Promise`'s resolution.
+ */
 function isOpaque(value: object): boolean {
-  return value instanceof Date || value instanceof ArrayBuffer || ArrayBuffer.isView(value);
+  return (
+    value instanceof Date ||
+    value instanceof ArrayBuffer ||
+    ArrayBuffer.isView(value) ||
+    value instanceof RegExp ||
+    value instanceof URL ||
+    value instanceof Promise ||
+    value instanceof String ||
+    value instanceof Number ||
+    value instanceof Boolean
+  );
 }
 
 function isPlainObject(value: object): boolean {
@@ -67,8 +81,14 @@ function walkContainer(value: object, context: WalkContext): unknown {
   return walkFields(value, context);
 }
 
-function walkFields(value: object, context: WalkContext, into: Record<string, unknown> = {}): Record<string, unknown> {
+function walkFields(
+  value: object,
+  context: WalkContext,
+  into: Record<string, unknown> = {},
+  skip?: ReadonlySet<string>,
+): Record<string, unknown> {
   for (const key of Object.keys(value)) {
+    if (skip?.has(key)) continue;
     setField(into, key, (value as Record<string, unknown>)[key], context);
   }
   return into;
@@ -82,10 +102,15 @@ function walkMap(value: Map<unknown, unknown>, context: WalkContext): Map<unknow
   return out;
 }
 
+const ERROR_OWN_FIELDS = new Set(["name", "message", "stack", "cause"]);
+
 /**
  * `name`, `message`, `stack` and `cause` are non-enumerable on an `Error`, so a walk over its own
  * enumerable keys alone returns an empty object and drops everything that describes the failure.
- * They are copied explicitly, then the enumerable walk picks up the fields a subclass adds.
+ * They are copied explicitly, then the enumerable walk picks up the fields a subclass adds. `cause`
+ * set by plain assignment (rather than the constructor option) is enumerable, so the enumerable
+ * walk skips these four names — otherwise a matched one would be redacted a second time, calling a
+ * function `Replacement` twice for the same value and keeping only the second result.
  */
 function walkError(error: Error, context: WalkContext): Record<string, unknown> {
   const out: Record<string, unknown> = {};
@@ -93,7 +118,7 @@ function walkError(error: Error, context: WalkContext): Record<string, unknown> 
   setField(out, "message", error.message, context);
   setField(out, "stack", error.stack, context);
   if ("cause" in error) setField(out, "cause", error.cause, context);
-  return walkFields(error, context, out);
+  return walkFields(error, context, out, ERROR_OWN_FIELDS);
 }
 
 function redactField(key: string, value: unknown, context: WalkContext): unknown {

@@ -160,6 +160,22 @@ describe("pass-through values", () => {
     }
   });
 
+  test("RegExps, URLs, Promises and boxed primitives are returned by reference, not walked into an empty object", () => {
+    const input = {
+      pattern: /^\d+$/,
+      link: new URL("https://example.com/password"),
+      pending: Promise.resolve("password"),
+      boxed: new String("password"),
+    };
+
+    const result = redact(input, policy) as typeof input;
+
+    expect(result).not.toBe(input);
+    for (const key of Object.keys(input) as (keyof typeof input)[]) {
+      expect(result[key]).toBe(input[key]);
+    }
+  });
+
   test("primitives and null are returned unchanged", () => {
     expect(redact("password", policy)).toBe("password");
     expect(redact(42n, policy)).toBe(42n);
@@ -214,6 +230,17 @@ describe("Error", () => {
     const result = redact(new Error("b", { cause: undefined }), policy) as Record<string, unknown>;
     expect(Object.hasOwn(result, "cause")).toBe(true);
     expect(result.cause).toBeUndefined();
+  });
+
+  test("a cause assigned directly, which makes it enumerable, is redacted exactly once", () => {
+    const error = new Error("wrapped");
+    error.cause = { token: "abc" };
+
+    const replacement = vi.fn(() => "[REDACTED]");
+    const result = redact(error, policy, { replacement }) as Record<string, unknown>;
+
+    expect(replacement).toHaveBeenCalledExactlyOnceWith("abc", "token");
+    expect(result.cause).toEqual({ token: "[REDACTED]" });
   });
 });
 

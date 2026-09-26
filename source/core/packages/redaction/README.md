@@ -1,8 +1,9 @@
 # @vipengele/ts-core-redaction
 
-Removes secrets and personal data from structured values before they are logged, reported or
-sent anywhere: rules match keys and value patterns, and depth and size limits bound what is
-walked. Usable on its own, and the redaction layer of `@vipengele/ts-core-observability`.
+Removes secrets and personal data from structured values before they are logged, reported or sent
+anywhere, by matching keys against a policy — value-pattern matching and depth/size limits are
+outside this package's scope. Usable on its own, and the redaction layer of
+`@vipengele/ts-core-observability`.
 
 ```sh
 pnpm add @vipengele/ts-core-redaction
@@ -27,8 +28,9 @@ function redact(value: unknown, policy: RedactionPolicy, options?: RedactOptions
 
 Returns a redacted copy of `value`. Every value found under a key the policy matches is replaced
 whole and never descended into; everything else is walked recursively. Plain objects, arrays,
-`Map`s, `Set`s, `Error`s and other class instances come back as copies; `Date`s, `ArrayBuffer`s and
-their views, functions and primitives are returned as-is. The input is never mutated.
+`Map`s, `Set`s, `Error`s and other class instances come back as copies; `Date`s, `RegExp`s, `URL`s,
+`Promise`s, boxed primitives, `ArrayBuffer`s and their views, functions and primitives are returned
+as-is. The input is never mutated.
 
 `RedactOptions.replacement` controls what a matched value is replaced with; see `Replacement`
 below. It defaults to the string `"[REDACTED]"`.
@@ -90,5 +92,14 @@ redact(payload, policy, { replacement: (value, key) => `[REDACTED:${key}]` });
   `"my_token_field"`, not only a key that equals `"token"` exactly. Anchor the pattern (`/^token$/`)
   if an exact match is required.
 - **`Map` key-matching only applies to string keys.** A `Map` entry whose key is not a string is
-  never tested against the policy — its value is still walked and redacted recursively, but the
-  key itself can never trigger a whole-value replacement.
+  never tested against the policy, and the key itself is carried into the output by reference,
+  unredacted — its value is still walked and redacted recursively, but sensitive data held on an
+  object used as a Map key reaches the output unchanged. Use string keys for any Map whose keys
+  might carry sensitive data.
+- **A class instance other than `Map`, `Set` or `Error` keeps only its own enumerable string
+  keys.** Anything whose state lives elsewhere — a `RegExp`'s pattern, a boxed primitive's wrapped
+  value, a `Promise`'s resolution — is returned by reference instead of being walked into an empty
+  object; `RegExp`, `URL`, `Promise` and boxed primitives are recognized this way, alongside `Date`
+  and `ArrayBuffer`/its views. A custom class with genuinely private state (a `#field` or a
+  `WeakMap`-backed value) loses that state in the copy, since only own enumerable string keys are
+  read.
