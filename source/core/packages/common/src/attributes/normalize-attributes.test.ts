@@ -79,6 +79,28 @@ test("turns a Map into a plain object with normalized values", () => {
   expect(normalizeAttributes({ map })).toEqual({ map: { name: "ada", 1: "1970-01-01T00:00:00.000Z" } });
 });
 
+test("disambiguates Map keys that stringify to the same value instead of overwriting", () => {
+  const a = { toString: () => "dup" };
+  const b = { toString: () => "dup" };
+  const map = new Map<unknown, unknown>([
+    [a, "first"],
+    [b, "second"],
+    ["dup", "third"],
+  ]);
+
+  expect(normalizeAttributes({ map })).toEqual({ map: { dup: "first", "dup#1": "second", "dup#2": "third" } });
+});
+
+test("applies maxBreadth to a Map and summarises the rest", () => {
+  const map = new Map([
+    ["a", 1],
+    ["b", 2],
+    ["c", 3],
+  ]);
+
+  expect(normalizeAttributes({ map }, { maxBreadth: 2 })).toEqual({ map: { a: 1, b: 2, "…": "[Truncated: 1 more]" } });
+});
+
 test("turns a Set into an array with normalized items", () => {
   expect(normalizeAttributes({ set: new Set([1, "two", 3n]) })).toEqual({ set: [1, "two", "3n"] });
 });

@@ -113,6 +113,42 @@ function normalizeArray(array: readonly unknown[], depth: number, state: State):
 }
 
 /**
+ * A `Map` key is rarely a string, and `Object.fromEntries` coerces every key to one with
+ * `String()` — two distinct object keys with no custom `toString` both become
+ * `"[object Object]"` and silently overwrite one another. Stringifying the key here the same
+ * way, then suffixing a repeat with `#<n>`, keeps every entry instead of losing one to a
+ * collision `Object.fromEntries` would not have reported.
+ */
+function normalizeMap(map: ReadonlyMap<unknown, unknown>, depth: number, state: State): { readonly [key: string]: AttributeValue } {
+  const entries: [string, AttributeValue][] = [];
+  const seen = new Map<string, number>();
+  let index = 0;
+
+  for (const [key, value] of map) {
+    if (index >= state.maxBreadth) {
+      break;
+    }
+    index++;
+
+    if (value === undefined) {
+      continue;
+    }
+
+    const stringKey = typeof key === "string" ? key : String(key);
+    const repeat = seen.get(stringKey) ?? 0;
+    seen.set(stringKey, repeat + 1);
+
+    entries.push([repeat > 0 ? `${stringKey}#${repeat}` : stringKey, normalizeValue(value, depth + 1, state)]);
+  }
+
+  if (map.size > state.maxBreadth) {
+    entries.push([BREADTH_TRUNCATION_KEY, breadthMarker(map.size, state)]);
+  }
+
+  return Object.fromEntries(entries);
+}
+
+/**
  * The error's own identity only. Its `cause` and `errors` are not followed: an attribute value
  * is context, and a chain of errors is the reporter's concern, not the normalizer's. A `message`
  * that is not a string reads as `"[Unreadable]"`.
@@ -141,7 +177,7 @@ function normalizeContainer(value: object, depth: number, state: State): Attribu
     return normalizeArray(Array.from(value), depth, state);
   }
   if (value instanceof Map) {
-    return normalizeRecord(Object.fromEntries(value), depth, state);
+    return normalizeMap(value, depth, state);
   }
   if (value instanceof Error) {
     return normalizeError(value, state);
