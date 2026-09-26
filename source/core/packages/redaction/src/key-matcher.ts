@@ -33,11 +33,11 @@ function normalize(matcher: KeyMatcher): NormalizedMatcher {
   // last one left off instead of from the start of the key.
   const flags = new Set(pattern.flags);
   if (caseInsensitive) flags.add("i");
-  // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp
   // `pattern` is a RedactionPolicy matcher the application author wrote, never untrusted input —
   // see the README's "trust boundary" caveat. There is no attacker-controlled pattern here to be
   // catastrophic, and no attacker-controlled subject string either: matchKey() only ever tests
   // this against short key names the walker visits.
+  // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp
   const regex = new RegExp(pattern.source, [...flags].join(""));
   return (key) => {
     regex.lastIndex = 0;
