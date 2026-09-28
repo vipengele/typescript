@@ -186,4 +186,40 @@ described as `"[<ConstructorName>: <byteLength> bytes]"` and never expanded, at 
 `Buffer` gives `"[Buffer: N bytes]"`, the same in Node and in the browser.
 
 **Errors** — an `Error` becomes `{ type, message, stack? }`, one level only. Its `cause` and
-`errors` are not followed: a chain of errors belongs to the error reporter (ADR-0007).
+`errors` are not followed; [`serializeError`](#serializeerror) is what serializes the chain.
+
+### `serializeError`
+
+`serializeError(value)` turns a thrown value and the chain behind it into a `SerializedError`, the
+one error shape the logger and the error reporter share (ADR-0007). It never throws.
+
+```ts
+import { serializeError } from "@vipengele/ts-core-common/serialization";
+
+const error = Object.assign(new Error("read failed", { cause: new Error("disk offline") }), { code: "EIO", path: "/tmp/a" });
+serializeError(error);
+// => { type: "Error", message: "read failed", code: "EIO", stack: "…",
+//      data: { code: "EIO", path: "/tmp/a" },
+//      cause: { type: "Error", message: "disk offline", stack: "…" } }
+
+serializeError("boom"); // => { type: "Error", message: "boom", synthetic: true }
+```
+
+- `type`, `message` and `stack` are exactly what `toJsonSafe` gives for the same `Error`.
+- `code` is a string `code` property: a `VipengeleError`'s code, or a Node errno code such as
+  `"ENOENT"`.
+- `data` holds the error's own enumerable properties, normalized as `normalizeAttributes` does.
+  `cause` and `errors` are left out of it even when assigned directly, which makes them enumerable.
+- `cause`, and every entry of an `errors` array such as an `AggregateError`'s, are serialized in
+  turn, up to five links from the outermost error. A link further than that becomes
+  `{ type: "[Truncated]", message: "the chain continues past 5 links" }`, and a link back to an
+  error already on the path `{ type: "[Circular]", message: "an error already on this chain" }`.
+  Beyond the first 100 entries of an `errors` array, one `"[Truncated]"` entry counts the rest.
+- A thrown value that is not an `Error` gives `synthetic: true`, typed `Error`, with its JSON-safe
+  form as the `message`: a string as it is, anything else as its JSON text.
+
+## Levels
+
+`Level` (`"trace" | "debug" | "info" | "warn" | "error" | "fatal"`) is the severity of a log record
+or an error event, and `Threshold` (`Level | "off"`) the lowest one a logger or sink lets through.
+Both are types only, exported from the package root.

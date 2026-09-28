@@ -185,18 +185,20 @@ function normalizeMap(map: ReadonlyMap<unknown, unknown>, depth: number, state: 
   return Object.fromEntries(entries);
 }
 
+/** An error's own identity: the fields every serialized error carries, whatever else it adds. */
+export type ErrorLeaf = { type: string; message: string; stack?: string };
+
 /**
- * The error's own identity only. Its `cause` and `errors` are not followed: a chain of errors is
- * the error reporter's concern (ADR-0007). A `message` that is not a string reads as
- * `"[Unreadable]"`.
+ * The error's own identity only. Its `cause` and `errors` are not followed: `serializeError` walks
+ * a chain of errors (ADR-0007). A `message` that is not a string reads as `"[Unreadable]"`.
  */
-function normalizeError(error: Error, state: State): JsonSafeRecord {
+function normalizeError(error: Error, state: State): ErrorLeaf {
   const errorClass = readProperty(error, "constructor");
   const name = typeof errorClass === "function" ? readProperty(errorClass, "name", null) : undefined;
   const message = readProperty(error, "message");
   const stack = readProperty(error, "stack");
 
-  const shape: Record<string, JsonSafeValue> = {
+  const shape: ErrorLeaf = {
     type: typeof name === "string" && name !== "" ? name : "Error",
     message: typeof message === "string" ? truncateString(message, state) : UNREADABLE,
   };
@@ -319,4 +321,20 @@ export function makeRecordJsonSafe(record: object, bounds?: Bounds): JsonSafeRec
   } catch {
     return {};
   }
+}
+
+/** The {@link ErrorLeaf} of `error`, exactly as {@link makeJsonSafe} gives it for an `Error`. */
+export function makeErrorLeaf(error: Error, bounds?: Bounds): ErrorLeaf {
+  return normalizeError(error, createState(bounds, new WeakSet()));
+}
+
+/**
+ * The {@link ErrorLeaf} of a thrown value that is not an `Error`: typed `Error`, with the value's
+ * JSON-safe form as its message — a string as it is, anything else as its JSON text, cut at the
+ * string length bound.
+ */
+export function makeThrownValueLeaf(value: unknown, bounds?: Bounds): ErrorLeaf {
+  const state = createState(bounds, new WeakSet());
+  const safe = normalizeValue(value, 1, state);
+  return { type: "Error", message: typeof safe === "string" ? safe : truncateString(JSON.stringify(safe), state) };
 }
