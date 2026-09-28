@@ -238,8 +238,9 @@ describe("Scope.useCarrier", () => {
 
   /** Installs `carrier` for the duration of `fn`, then puts back the carrier the scope store had before. */
   function withCarrier(carrier: ContextCarrier<Scope>, fn: () => void): void {
+    getScopeStore(); // fills the registry slot below, whichever test runs first
     const entry = getOrCreateRegistryEntry<Scope>("scope", () => {
-      throw new Error("the scope store fills its slot before a carrier is installed");
+      throw new Error("getScopeStore() should have filled this slot already");
     });
     const original = entry.get();
     Scope.useCarrier(carrier);

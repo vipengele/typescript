@@ -106,8 +106,8 @@ nothing about ancestry is exposed outside the framework's own code.
   zones survive `await` only in builds that transpile `async`/`await` away. OpenTelemetry's
   `ZoneContextManager` carries the same requirement.
 - **Carrying the Scope inside OpenTelemetry's `Context`** whenever `@opentelemetry/api` is present.
-  With the API but no SDK the context manager is a no-op and every `Scope.run` silently does nothing,
-  and the same code would behave differently depending on a dependency elsewhere in the
-  application. The Scope and OpenTelemetry's context are independent: on Node both ride
-  `AsyncLocalStorage` and follow the same chain; neither `Scope.run` nor `@isolatedScope` starts a
-  span, and starting a span creates no scope.
+  With the API but no SDK the context manager is a no-op and every `Scope.propagate`/`inherit`/
+  `isolated` silently does nothing, and the same code would behave differently depending on a
+  dependency elsewhere in the application. The Scope and OpenTelemetry's context are independent:
+  on Node both ride `AsyncLocalStorage` and follow the same chain; neither `Scope.inherit`/
+  `Scope.isolated` nor `@isolatedScope` starts a span, and starting a span creates no scope.
