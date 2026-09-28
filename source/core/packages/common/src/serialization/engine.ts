@@ -126,6 +126,26 @@ function normalizeArray(array: readonly unknown[], depth: number, state: State):
 }
 
 /**
+ * `ArrayBuffer.isView` recognises a typed array or `DataView` from any realm; `instanceof` only
+ * recognises a buffer created in this one.
+ */
+function isBinary(value: object): boolean {
+  return (
+    ArrayBuffer.isView(value) ||
+    value instanceof ArrayBuffer ||
+    (typeof SharedArrayBuffer !== "undefined" && value instanceof SharedArrayBuffer)
+  );
+}
+
+/** A constructor name or `byteLength` that cannot be read makes the whole value `"[Unreadable]"`. */
+function describeBinary(value: object): string {
+  const binaryClass = readProperty(value, "constructor", null);
+  const name = typeof binaryClass === "function" ? readProperty(binaryClass, "name", null) : null;
+  const byteLength = readProperty(value, "byteLength", null);
+  return typeof name === "string" && typeof byteLength === "number" ? `[${name}: ${byteLength} bytes]` : UNREADABLE;
+}
+
+/**
  * A `Map` key is rarely a string, and `Object.fromEntries` coerces every key to one with
  * `String()` — two distinct object keys with no custom `toString` both become
  * `"[object Object]"` and silently overwrite one another. Stringifying the key here the same
@@ -218,6 +238,12 @@ function normalizeObject(value: object, depth: number, state: State, honorToJSON
 
   state.visited.add(value);
   try {
+    // Ahead of `toJSON` and the depth check: a Node `Buffer` reads the same as in the browser,
+    // and a binary leaf keeps its description at any depth.
+    if (isBinary(value)) {
+      return describeBinary(value);
+    }
+
     if (value instanceof Date) {
       return Number.isNaN(value.getTime()) ? "Invalid Date" : value.toISOString();
     }

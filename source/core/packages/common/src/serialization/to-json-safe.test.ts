@@ -160,6 +160,108 @@ describe("an Error", () => {
   });
 });
 
+describe("binary values", () => {
+  type TypedArrayClass = new (length: number) => ArrayBufferView;
+
+  const float16Array = (globalThis as { Float16Array?: TypedArrayClass }).Float16Array;
+  const typedArrayClasses: [TypedArrayClass, number][] = [
+    [Int8Array, 1],
+    [Uint8Array, 1],
+    [Uint8ClampedArray, 1],
+    [Int16Array, 2],
+    [Uint16Array, 2],
+    [Int32Array, 4],
+    [Uint32Array, 4],
+    [Float32Array, 4],
+    [Float64Array, 8],
+    [BigInt64Array, 8],
+    [BigUint64Array, 8],
+    ...(float16Array === undefined ? [] : [[float16Array, 2] as [TypedArrayClass, number]]),
+  ];
+
+  test.for(typedArrayClasses.map(([TypedArray, bytesPerElement]) => [TypedArray.name, TypedArray, bytesPerElement] as const))(
+    "describes a %s by its class and byte length, at the root and nested",
+    ([name, TypedArray, bytesPerElement]) => {
+      const expected = `[${name}: ${3 * bytesPerElement} bytes]`;
+      const value = new TypedArray(3);
+
+      expect(toJsonSafe(value)).toBe(expected);
+      expect(toJsonSafe({ value })).toEqual({ value: expected });
+      expect(toJsonSafe([value])).toEqual([expected]);
+    },
+  );
+
+  test("describes a DataView and an ArrayBuffer by their class and byte length", () => {
+    const buffer = new ArrayBuffer(8);
+
+    expect(toJsonSafe(buffer)).toBe("[ArrayBuffer: 8 bytes]");
+    expect(toJsonSafe(new DataView(buffer, 2))).toBe("[DataView: 6 bytes]");
+  });
+
+  test.runIf(typeof SharedArrayBuffer !== "undefined")("describes a SharedArrayBuffer where the runtime has one", () => {
+    expect(toJsonSafe({ shared: new SharedArrayBuffer(16) })).toEqual({ shared: "[SharedArrayBuffer: 16 bytes]" });
+  });
+
+  test("describes binary values inside every kind of container", () => {
+    expect(
+      toJsonSafe({
+        record: { bytes: new Uint8Array(2) },
+        list: [new DataView(new ArrayBuffer(3))],
+        map: new Map([["buffer", new ArrayBuffer(4)]]),
+        set: new Set([new Float64Array(1)]),
+      }),
+    ).toEqual({
+      record: { bytes: "[Uint8Array: 2 bytes]" },
+      list: ["[DataView: 3 bytes]"],
+      map: { buffer: "[ArrayBuffer: 4 bytes]" },
+      set: ["[Float64Array: 8 bytes]"],
+    });
+  });
+
+  test("names a subclass by its own constructor", () => {
+    class Bytes extends Uint8Array {}
+
+    expect(toJsonSafe(new Bytes(5))).toBe("[Bytes: 5 bytes]");
+  });
+
+  test("keeps the description beyond maxDepth, where a container is truncated", () => {
+    expect(toJsonSafe({ bytes: new Uint8Array(2), list: [1] }, { maxDepth: 1 })).toEqual({
+      bytes: "[Uint8Array: 2 bytes]",
+      list: "[Truncated]",
+    });
+    expect(toJsonSafe(new ArrayBuffer(1), { maxDepth: 0 })).toBe("[ArrayBuffer: 1 bytes]");
+  });
+
+  test("describes a typed array rather than calling its toJSON", () => {
+    const bytes = new Uint8Array(2);
+    Object.defineProperty(bytes, "toJSON", { value: () => "custom" });
+
+    expect(toJsonSafe(bytes)).toBe("[Uint8Array: 2 bytes]");
+  });
+
+  test("marks a buffer whose constructor cannot be read unreadable", () => {
+    const opaque = new Proxy(new ArrayBuffer(8), {
+      get(): never {
+        throw new Error("no property");
+      },
+    });
+
+    expect(toJsonSafe({ opaque })).toEqual({ opaque: "[Unreadable]" });
+  });
+
+  test("marks a typed array whose constructor is not a function unreadable", () => {
+    const orphan = new Uint8Array(2);
+    Object.defineProperty(orphan, "constructor", { value: null });
+
+    expect(toJsonSafe(orphan)).toBe("[Unreadable]");
+  });
+
+  test("marks a buffer whose byteLength cannot be read unreadable", () => {
+    // The `byteLength` getter rejects any receiver that is not a real buffer, a `Proxy` included.
+    expect(toJsonSafe(new Proxy(new ArrayBuffer(8), {}))).toBe("[Unreadable]");
+  });
+});
+
 describe("toJSON", () => {
   test("replaces a value with its walked toJSON result, at the root and nested", () => {
     const value = { secret: "hidden", toJSON: () => ({ shown: 1n }) };
