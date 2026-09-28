@@ -79,7 +79,9 @@ const UNKNOWN_RESOURCE: Resource = {
 function rootOf(node: ScopeNode): ScopeNode {
   let current = node;
   while (current[PARENT] !== undefined) {
-    current = current[PARENT];
+    // Walks the private, Symbol-keyed ancestry link, never a dynamic attribute key — nothing here
+    // reads or writes the attribute bag, which is the thing that would need to be prototype-safe.
+    current = current[PARENT]; // nosemgrep: javascript.lang.security.audit.prototype-pollution.prototype-pollution-loop.prototype-pollution-loop
   }
   return current;
 }
@@ -97,7 +99,11 @@ class TreeScope implements ScopeNode {
   }
 
   get(key: string): unknown {
-    for (let node: ScopeNode | undefined = this; node !== undefined; node = node[PARENT]) {
+    // The bag each iteration reads is `Object.create(null)` (see [ATTRIBUTES] above), so it has no
+    // prototype to reach — `Object.hasOwn` plus a bracket read on a prototype-less object can never
+    // touch or expose `Object.prototype`, whatever `key` is.
+    // biome-ignore format: the nosemgrep directive must stay on this line, not wrap to its own
+    for (let node: ScopeNode | undefined = this; node !== undefined; node = node[PARENT]) { // nosemgrep: javascript.lang.security.audit.prototype-pollution.prototype-pollution-loop.prototype-pollution-loop
       if (Object.hasOwn(node[ATTRIBUTES], key)) {
         return node[ATTRIBUTES][key];
       }
