@@ -43,6 +43,10 @@
       "types": "./dist/attributes/index.d.ts",
       "default": "./dist/attributes/index.js"
     },
+    "./scope": {
+      "types": "./dist/scope/index.d.ts",
+      "default": "./dist/scope/index.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
