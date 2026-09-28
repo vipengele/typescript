@@ -25,7 +25,13 @@ Error Event, Scope, Breadcrumb, Transport) before naming things.
     stack, ADR-0004; state shared across dual-resolved copies of the package lives behind a
     `globalThis` registry, `agentic/rules/shared-realm-state-lives-behind-a-globalthis-symbol-slot.md`)
     is a tree-shakeable slice of the package's surface, not a separate package — a bundler-using
-    consumer imports only the sub-path it needs.
+    consumer imports only the sub-path it needs. `./scope` is one such sub-path: `Scope`
+    (`current`/`propagate`/`inherit`/`isolated`/`useCarrier`), the ambient context tree the logger
+    and the error reporter both read attributes from, built on `./context`'s store; its root holds
+    the four reserved `Resource` keys (`service.name`, `service.version`,
+    `deployment.environment.name`, `process.runtime.name`), and `@isolatedScope`/`@scoped` wrap a
+    method body in `Scope.isolated`/`Scope.inherit` under either decorator dialect
+    (`agentic/rules/method-decorator-supports-both-dialects.md`, ADR-0006).
   - `packages/redaction` — `@vipengele/ts-core-redaction`: the reusable redaction library.
   - `packages/observability` — `@vipengele/ts-core-observability`: the logger (`./logger`) and the
     error reporter (`./errors`), two entry points of one package.

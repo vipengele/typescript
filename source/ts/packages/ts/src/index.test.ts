@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { Numeric, normalizeAttributes, redact, VipengeleError } from "./index";
+import { Numeric, normalizeAttributes, redact, Scope, VipengeleError } from "./index";
 import type { AttributeValue, Attributes, AttributesInput, NormalizeAttributesOptions } from "./index";
 
 test("Numeric resolves from @vipengele/ts-core-common and round-trips a number", () => {
@@ -19,6 +19,10 @@ test("VipengeleError resolves from @vipengele/ts-core-common", () => {
 
   expect(error).toBeInstanceOf(Error);
   expect(error.code).toBe("test_error");
+});
+
+test("Scope resolves from @vipengele/ts-core-common/scope and isolates a tagged unit of work", () => {
+  expect(Scope.isolated("t", {}, () => Scope.current().tag)).toBe("t");
 });
 
 test("normalizeAttributes resolves from @vipengele/ts-core-common and produces an AttributeValue-safe record", () => {

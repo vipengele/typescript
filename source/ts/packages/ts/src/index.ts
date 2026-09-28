@@ -1,4 +1,5 @@
 export { Numeric } from "@vipengele/ts-core-common/types/numeric";
+export { Scope } from "@vipengele/ts-core-common/scope";
 export { redact } from "@vipengele/ts-core-redaction";
 export type { RedactionPolicy, KeyMatcher, RedactOptions, Replacement } from "@vipengele/ts-core-redaction";
 export { normalizeAttributes } from "@vipengele/ts-core-common/attributes";
