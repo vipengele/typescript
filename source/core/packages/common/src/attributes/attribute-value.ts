@@ -1,9 +1,11 @@
+import type { JsonSafeValue } from "../serialization/json-safe-value";
+
 /**
  * A value that survives `JSON.stringify` unchanged and means the same thing on every sink: no
  * `undefined`, no class instances, no cycles. Anything a caller hands over is brought into this
  * shape by {@link normalizeAttributes} before a sink or transport sees it.
  */
-export type AttributeValue = string | number | boolean | null | readonly AttributeValue[] | { readonly [key: string]: AttributeValue };
+export type AttributeValue = JsonSafeValue;
 
 /** A normalized attribute record: every value is an {@link AttributeValue}. */
 export type Attributes = Readonly<Record<string, AttributeValue>>;

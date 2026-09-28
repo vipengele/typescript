@@ -16,3 +16,11 @@ test("normalizeAttributes is reachable through the entry point", () => {
   expect(result).toEqual({ when: "1970-01-01T00:00:00.000Z", name: "value" });
   expect(when).toBe("1970-01-01T00:00:00.000Z");
 });
+
+test("toJsonSafe is reachable through the entry point", () => {
+  const options: entry.ToJsonSafeOptions = { maxDepth: 6 };
+
+  const result: entry.JsonSafeValue = entry.toJsonSafe({ count: 1n, when: new Date(0) }, options);
+
+  expect(result).toEqual({ count: "1n", when: "1970-01-01T00:00:00.000Z" });
+});

@@ -1,13 +1,11 @@
 ---
-about: disambiguating Map keys that stringify to the same value in normalizeAttributes needs a Set of already-emitted output keys, not a per-base-key repeat counter
+about: disambiguating Map keys that stringify to the same value in the JSON-safe engine (toJsonSafe, normalizeAttributes) needs a Set of already-emitted output keys, not a per-base-key repeat counter
 saw:
-  - source/core/packages/common/src/attributes/normalize-attributes.ts
-  - source/core/packages/common/src/attributes/normalize-attributes.test.ts
+  - source/core/packages/common/src/serialization/engine.ts
+  - source/core/packages/common/src/serialization/to-json-safe.test.ts
 ---
 
-Found via two successive `panel-code-review` passes while landing issue #14 slice 1.
-
-`normalizeMap` converts a `Map` into a plain object. Its keys are rarely strings, and
+`normalizeMap` (in `serialization/engine.ts`, shared by `toJsonSafe` and `normalizeAttributes`) converts a `Map` into a plain object. Its keys are rarely strings, and
 `Object.fromEntries(map)` coerces every key with `String()` — two distinct object keys with no
 custom `toString` both become `"[object Object]"` and silently overwrite one another (no
 sentinel, no trace).

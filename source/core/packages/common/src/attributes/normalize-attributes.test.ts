@@ -139,6 +139,12 @@ test("turns a Set into an array with normalized items", () => {
   expect(normalizeAttributes({ set: new Set([1, "two", 3n]) })).toEqual({ set: [1, "two", "3n"] });
 });
 
+test("describes a typed array, DataView or ArrayBuffer by its class and size", () => {
+  expect(
+    normalizeAttributes({ bytes: new Uint8Array([1, 2, 3]), view: new DataView(new ArrayBuffer(2)), buffer: new ArrayBuffer(4) }),
+  ).toEqual({ bytes: "[Uint8Array: 3 bytes]", view: "[DataView: 2 bytes]", buffer: "[ArrayBuffer: 4 bytes]" });
+});
+
 test("replaces a value with the normalized result of its toJSON", () => {
   const value = { secret: "hidden", toJSON: () => ({ shown: 1n }) };
 
