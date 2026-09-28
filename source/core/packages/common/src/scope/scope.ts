@@ -1,3 +1,4 @@
+import type { ContextCarrier } from "../context";
 import { createChildScope, getScopeTree, type Scope as ScopeHandle, type ScopeAttributes } from "./root";
 import { getScopeStore } from "./store";
 
@@ -48,6 +49,15 @@ function isolated<R>(tag: string, attributes: ScopeAttributes, fn: () => R): R {
 }
 
 /**
+ * Replaces the carrier the current scope rides on — a zone.js-backed carrier in an application that
+ * already runs under zone.js, say. The replacement is seen immediately by every copy of the package
+ * in the realm, and applies to every propagation made from then on.
+ */
+function useCarrier(carrier: ContextCarrier<Scope>): void {
+  getScopeStore().useCarrier(carrier);
+}
+
+/**
  * The realm's one scope tree, as an application reaches it. Every scope is entered through a
  * callback, so the scope current once that callback returns is always the one that was current
  * before it was called.
@@ -57,4 +67,5 @@ export const Scope = {
   propagate,
   inherit,
   isolated,
+  useCarrier,
 } as const;

@@ -1,6 +1,9 @@
 import { describe, expect, test } from "vitest";
+import type { ContextCarrier } from "../context";
+import { getOrCreateRegistryEntry } from "../context/global-registry";
 import { getScopeTree, isReservedScopeKeyError, ReservedScopeKeyError } from "./root";
 import { Scope } from "./scope";
+import { getScopeStore } from "./store";
 
 // Every scope below is entered through a callback, so nothing is left current between tests, and
 // no test writes to the realm's shared default scope.
@@ -207,5 +210,67 @@ describe("nesting", () => {
     expect(afterSubstep).toBe(step);
     expect(afterStep).toBe(request);
     expect(Scope.current()).toBe(defaultScope);
+  });
+});
+
+describe("Scope.useCarrier", () => {
+  /** A synchronous stack that records every call, so a test can tell it was the one used. */
+  function recordingCarrier(defaultValue: Scope): ContextCarrier<Scope> & { readonly calls: string[] } {
+    const stack: Scope[] = [];
+    const calls: string[] = [];
+    return {
+      calls,
+      current: () => {
+        calls.push("current");
+        return stack[stack.length - 1] ?? defaultValue;
+      },
+      run: (value, fn) => {
+        calls.push(`run:${value.tag}`);
+        stack.push(value);
+        try {
+          return fn();
+        } finally {
+          stack.pop();
+        }
+      },
+    };
+  }
+
+  /** Installs `carrier` for the duration of `fn`, then puts back the carrier the scope store had before. */
+  function withCarrier(carrier: ContextCarrier<Scope>, fn: () => void): void {
+    const entry = getOrCreateRegistryEntry<Scope>("scope", () => {
+      throw new Error("the scope store fills its slot before a carrier is installed");
+    });
+    const original = entry.get();
+    Scope.useCarrier(carrier);
+    try {
+      fn();
+    } finally {
+      entry.set(original);
+    }
+  }
+
+  test("routes current, propagate, inherit and isolated through the installed carrier", () => {
+    const carrier = recordingCarrier(getScopeTree().defaultScope);
+
+    withCarrier(carrier, () => {
+      expect(Scope.current()).toBe(getScopeTree().defaultScope);
+
+      const later = Scope.isolated("request", { "user.id": "u-1" }, () =>
+        Scope.inherit("step", {}, () => Scope.propagate(() => Scope.current().get("user.id"))),
+      );
+
+      expect(later()).toBe("u-1");
+      expect(carrier.calls).toEqual(["current", "run:request", "current", "run:step", "current", "run:step", "current"]);
+    });
+  });
+
+  test("applies to every handle on the scope store", () => {
+    const carrier = recordingCarrier(getScopeTree().defaultScope);
+
+    withCarrier(carrier, () => {
+      expect(getScopeStore().propagate(getScopeTree().defaultScope, () => "ran")).toBe("ran");
+      expect(carrier.calls).toEqual(["run:undefined"]);
+    });
   });
 });
