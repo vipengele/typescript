@@ -1,13 +1,13 @@
 ---
 about: biome's lint/security/noSecrets rule flags fixed, high-entropy-looking marker strings (like a truncation suffix) as possible secrets, even though they carry no secret material
 saw:
-  - source/core/packages/common/src/attributes/normalize-attributes.ts
-  - source/core/packages/common/src/attributes/normalize-attributes.test.ts
+  - source/core/packages/common/src/serialization/engine.ts
+  - source/core/packages/common/src/serialization/to-json-safe.test.ts
   - source/core/biome.json
 ---
 
-Found while landing issue #14 slice 1: `pnpm lint` failed on the literal constant
-`"…[truncated]"` (the string-truncation suffix `normalizeAttributes` appends to an over-length
+`pnpm lint` failed on the literal constant
+`"…[truncated]"` (the string-truncation suffix the JSON-safe engine appends to an over-length
 string), flagged by `lint/security/noSecrets` purely because of the string's entropy, not
 because it resembles a credential.
 
