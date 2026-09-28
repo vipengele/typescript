@@ -70,3 +70,64 @@ The result is bounded (depth, breadth and string length all default to a fixed l
 configurable), cycle-safe (an object that contains itself becomes `"[Circular]"` where it
 recurs), and never throws — a property that fails to read becomes `"[Unreadable]"` instead of
 aborting the whole call.
+
+It is a record-rooted wrapper over the same engine as [`toJsonSafe`](#serialization), which
+accepts any value as its root. Its root record is walked as a record — the root's own `toJSON` and
+type handling are not applied — and every nested value is converted exactly as `toJsonSafe`
+converts it.
+
+## `./serialization`
+
+`toJsonSafe(value, options?)` turns any value — a primitive, a `Date`, a `Map`, an `Error`, a
+typed array, an object that contains itself — into a JSON-safe one, bounded in size, and never
+throws.
+
+```ts
+import { toJsonSafe } from "@vipengele/ts-core-common/serialization";
+
+const order = { id: 9007199254740993n, placedAt: new Date(0), tags: new Set(["a"]), note: undefined };
+toJsonSafe(order);
+// => { id: "9007199254740993n", placedAt: "1970-01-01T00:00:00.000Z", tags: ["a"] }
+
+toJsonSafe(undefined); // => null
+toJsonSafe(new Uint8Array(4)); // => "[Uint8Array: 4 bytes]"
+```
+
+`undefined` becomes `null` at the root and as an array element; an object property whose value is
+`undefined` is dropped, as `JSON.stringify` does. A value's own `toJSON()` is honored before the
+generic handling.
+
+**Bounds** — three options, each defaulting when omitted:
+
+| Option            | Default | Effect                                                                        |
+| ----------------- | ------- | ----------------------------------------------------------------------------- |
+| `maxDepth`        | 6       | Levels of nesting kept, the input itself counting as the first level.         |
+| `maxBreadth`      | 100     | Entries kept per object or array; the rest are summarised by one marker.      |
+| `maxStringLength` | 8192    | Characters kept per string; the rest are cut and suffixed with a marker.      |
+
+**Markers** — a value that cannot be represented is replaced by a string that says why:
+
+- `"[Circular]"` — an object that contains itself, where it recurs. The same object appearing twice
+  as siblings is not circular and is walked in full both times.
+- `"[Truncated]"` — a container nested deeper than `maxDepth`, replaced whole.
+- `"[Truncated: N more]"` — the last item of an array, or the value under the `"…"` key of an
+  object, when `N` entries beyond `maxBreadth` were dropped.
+- `"[Unreadable]"` — a property whose getter throws, or a value that cannot be inspected at all,
+  such as a revoked `Proxy`.
+- `"…[truncated]"` — the suffix of a string cut at `maxStringLength`.
+
+```ts
+toJsonSafe({ a: { b: { c: 1 } } }, { maxDepth: 2 }); // => { a: { b: "[Truncated]" } }
+toJsonSafe([1, 2, 3, 4], { maxBreadth: 2 }); // => [1, 2, "[Truncated: 2 more]"]
+toJsonSafe("abcdef", { maxStringLength: 3 }); // => "abc…[truncated]"
+```
+
+Markers are advisory. An input string that happens to equal a marker is not escaped, so a reader
+cannot tell it from the marker the serializer would have produced.
+
+**Binary data** — a typed array, `DataView`, `ArrayBuffer` and `SharedArrayBuffer` are leaves,
+described as `"[<ConstructorName>: <byteLength> bytes]"` and never expanded, at any depth. A Node
+`Buffer` gives `"[Buffer: N bytes]"`, the same in Node and in the browser.
+
+**Errors** — an `Error` becomes `{ type, message, stack? }`, one level only. Its `cause` and
+`errors` are not followed: a chain of errors belongs to the error reporter (ADR-0007).

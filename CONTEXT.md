@@ -39,6 +39,12 @@ What a matched Key Matcher's value becomes: `"[REDACTED]"` by default, or a call
 function of the matched value and key, so partial masking and pseudonymization are additional
 Replacements, not a different mechanism.
 
+**JSON-safe**:
+Describes a value that survives `JSON.stringify` unchanged in meaning and is bounded in size: no
+cycles, no `bigint`, `Map`, `Set`, function or symbol, and capped depth, breadth and string length.
+Every value a Sink or Transport receives is JSON-safe. Owned by `@vipengele/ts-core-common`.
+_Avoid_: serialized (that is a value already turned into text), sanitized
+
 **Logger**:
 A handle bound to one Category that emits Log Records. Obtained from
 `@vipengele/ts-core-observability/logger`.
