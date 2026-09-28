@@ -39,6 +39,10 @@
       "types": "./dist/context/index.d.ts",
       "default": "./dist/context/index.js"
     },
+    "./attributes": {
+      "types": "./dist/attributes/index.d.ts",
+      "default": "./dist/attributes/index.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [

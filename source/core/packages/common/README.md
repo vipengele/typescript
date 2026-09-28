@@ -52,3 +52,21 @@ const captured = store.current();
 await somethingAsync();
 store.propagate(captured, () => afterTheGap());
 ```
+
+## Attributes
+
+`normalizeAttributes` converts arbitrary caller data — a `Date`, a `Map`, an `Error`, an object
+with a throwing getter — into an `Attributes` record every sink and transport can serialise as
+JSON.
+
+```ts
+import { normalizeAttributes } from "@vipengele/ts-core-common/attributes";
+
+normalizeAttributes({ userId: 42, seenAt: new Date() });
+// => { userId: 42, seenAt: "2024-01-01T00:00:00.000Z" }
+```
+
+The result is bounded (depth, breadth and string length all default to a fixed limit and are
+configurable), cycle-safe (an object that contains itself becomes `"[Circular]"` where it
+recurs), and never throws — a property that fails to read becomes `"[Unreadable]"` instead of
+aborting the whole call.
