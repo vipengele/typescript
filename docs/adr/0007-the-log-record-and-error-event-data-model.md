@@ -45,7 +45,7 @@ interface ErrorEvent {
   exception?: ExceptionRecord;    // absent only for a captured message
   mechanism: Mechanism;
   attributes: Attributes;
-  breadcrumbs: Breadcrumb[];      // a copy of the Unit of Work's buffer at capture
+  breadcrumbs: Breadcrumb[];      // superseded by ADR-0006: the tagged ancestors of the capturing Scope, not a buffer
   fingerprint?: string[];
   trace?: { traceId: string; spanId: string; flags: number };
 }
@@ -138,9 +138,10 @@ payload, and Sinks receive it alongside each record.
   alerting and crash-free rates; `global.rejection` points straight at a missing `await`.
   Integrations use `integration.<name>`, so a new one needs no change to the type.
 - **Breadcrumbs** are the trail of recent events in the Unit of Work — records, requests,
-  navigations, clicks — copied at capture because the buffer keeps rolling. A debug record can be a
-  breadcrumb without being written anywhere, which makes them cheap context while logging stays
-  quiet.
+  navigations, clicks. **Superseded by ADR-0006**: there is no separate buffer, and a scope's `tag`
+  is its Breadcrumb, so the `Breadcrumb[]` shape and rolling-buffer description above belong to a
+  design this repo no longer builds. An Error Event's trail is the tagged ancestors of the Scope it
+  was raised in, read by walking up from that Scope, not copied at capture.
 - **No separate `tags`, `extra` or `user`**, unlike Sentry: everything is `attributes`, and
   `Scope.setUser` writes OpenTelemetry's `user.*` keys. Which attributes a backend indexes is the
   Transport's decision.
