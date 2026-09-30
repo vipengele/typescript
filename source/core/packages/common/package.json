@@ -47,6 +47,7 @@
     "./serialization": {
       "types": "./dist/serialization/index.d.ts",
       "default": "./dist/serialization/index.js"
+    },
     "./scope": {
       "types": "./dist/scope/index.d.ts",
       "default": "./dist/scope/index.js"

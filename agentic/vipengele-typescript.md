@@ -31,10 +31,19 @@ Error Event, Scope, Breadcrumb, Transport) before naming things.
     the four reserved `Resource` keys (`service.name`, `service.version`,
     `deployment.environment.name`, `process.runtime.name`), and `@isolatedScope`/`@scoped` wrap a
     method body in `Scope.isolated`/`Scope.inherit` under either decorator dialect
-    (`agentic/rules/method-decorator-supports-both-dialects.md`, ADR-0006).
+    (`agentic/rules/method-decorator-supports-both-dialects.md`, ADR-0006). `./serialization`'s
+    `serializeError` is the one place a thrown value's whole `cause`/`errors` chain is walked into
+    a `SerializedError`, the shape the logger and the error reporter share (ADR-0007); `Level`
+    (`"trace"` through `"fatal"`) and `Threshold` (`Level | "off"`) are exported from the package
+    root, not a sub-path, since every package that logs or reports needs them.
   - `packages/redaction` — `@vipengele/ts-core-redaction`: the reusable redaction library.
   - `packages/observability` — `@vipengele/ts-core-observability`: the logger (`./logger`) and the
-    error reporter (`./errors`), two entry points of one package.
+    error reporter (`./errors`), two entry points of one package. `./errors`'s `createReporter`
+    builds a `Reporter` from a `ReporterBuilder`; `captureException`/`captureMessage` run every
+    event through a five-stage pipeline (normalize, enrich, processors, filter, transport) and hand
+    the survivor to a `Transport`, the fire-and-forget delivery contract (ADR-0010;
+    `agentic/rules/transport-send-is-fire-and-forget.md`) every transport — the built-in
+    `createConsoleTransport` and `createTestTransport` included — implements.
 - `source/ts/` — `@vipengele/ts`, the framework's batteries-included umbrella package
   (`packages/ts/`, nested so `release.yml`'s publish-order globbing sees it). Its name is a
   deliberate exception to the `@vipengele/ts-<project>-<package>` convention (ADR-0003). It
