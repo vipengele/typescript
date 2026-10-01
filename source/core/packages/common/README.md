@@ -109,6 +109,48 @@ try {
 }
 ```
 
+## `./runtime`
+
+`detectRuntime` names the runtime family code is executing in, and `detectCapability` says whether
+that runtime offers one behaviour that differs between runtimes.
+
+```ts
+import { detectCapability, detectRuntime } from "@vipengele/ts-core-common/runtime";
+
+detectRuntime(); // "browser" | "worker" | "node" | "deno" | "bun" | "edge" | "unknown"
+detectCapability("ansiColour"); // true when standard output renders ANSI colour escapes
+```
+
+**Runtimes** — checked most specific first, the first match wins: `deno`, `bun`, `edge`
+(Cloudflare Workers, or a global `EdgeRuntime`), `node` (`process.versions.node`), `worker`
+(`WorkerGlobalScope`), `browser` (`window` and `document`), else `unknown`. Deno, Bun and edge
+runtimes can define a Node-compatible `process`, and jsdom defines `window` inside Node, so each is
+ruled out before the check it could be mistaken for.
+
+**Capabilities** — each is detected on its own:
+
+- `consoleStyling` — the console renders `%c` CSS directives: browsers, web workers and Deno.
+- `ansiColour` — standard output renders ANSI colour escapes. A non-empty `NO_COLOR` forces it off
+  and wins over everything; `FORCE_COLOR` forces it on unless it is `"0"` or `"false"`; otherwise it
+  follows whether stdout is a TTY and `TERM` is not `dumb`.
+- `asyncContext` — the engine offers `AsyncLocalStorage` or `AsyncContext.Variable`. It says a
+  carrier can be built, not that a store is propagating a value.
+- `sendBeacon` — `navigator.sendBeacon` can queue a request that outlives the page.
+- `processExitHooks` — `process.on` can register a handler that runs as the process exits.
+
+**Memoisation** — without a `source`, each answer is read from `globalThis` lazily, the first time
+it is asked for, and memoised (the runtime once, each capability on its own) for the life of the
+module. An injected `RuntimeSource` — a plain object standing in for `globalThis` — is read afresh
+on every call and bypasses the memo, which is how a test forces the answer of a runtime the suite
+does not run in:
+
+```ts
+detectRuntime({ Deno: {} }); // "deno"
+detectCapability("sendBeacon", { navigator: { sendBeacon() {} } }); // true
+```
+
+The umbrella `@vipengele/ts` does not re-export `./runtime`; import it from this package.
+
 ## Attributes
 
 `normalizeAttributes` converts arbitrary caller data — a `Date`, a `Map`, an `Error`, an object

@@ -52,6 +52,10 @@
       "types": "./dist/scope/index.d.ts",
       "default": "./dist/scope/index.js"
     },
+    "./runtime": {
+      "types": "./dist/runtime/index.d.ts",
+      "default": "./dist/runtime/index.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
