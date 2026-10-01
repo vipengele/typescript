@@ -1,7 +1,5 @@
+import { type Clock, systemClock } from "@vipengele/ts-core-common";
 import type { Transport } from "./transport";
-
-/** Returns the current time as epoch ms, with a sub-ms fraction that keeps events within one millisecond ordered. */
-export type Clock = () => number;
 
 /** What a {@link ReporterBuilder} builds: the settings one Reporter holds for its whole life. */
 export interface ReporterSettings {
@@ -11,20 +9,12 @@ export interface ReporterSettings {
 }
 
 /**
- * `performance.timeOrigin + performance.now()`: epoch ms whose fraction comes from the monotonic
- * high-resolution timer, where `Date.now()` has none (ADR-0007).
- */
-function defaultClock(): number {
-  return performance.timeOrigin + performance.now();
-}
-
-/**
  * Composes a Reporter's settings, starting from the defaults: no transport, and the
  * high-resolution epoch clock. Every method returns the builder, so calls chain.
  */
 export class ReporterBuilder {
   #transport: Transport | undefined;
-  #clock: Clock = defaultClock;
+  #clock: Clock = systemClock;
 
   /** Where captured events go. A later call replaces the transport an earlier one set. */
   transport(transport: Transport): this {

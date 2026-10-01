@@ -1,3 +1,4 @@
+export type { Clock } from "@vipengele/ts-core-common";
 export { ReporterBuilder } from "./builder";
 export type { ErrorEvent, ExceptionRecord, Mechanism, StackFrame } from "./event";
 export { createReporter } from "./reporter";
