@@ -25,6 +25,12 @@ test("the severity table and isLevel are reachable through the entry point", () 
   expect(entry.isLevel("off")).toBe(false);
 });
 
+test("systemClock is reachable through the entry point", () => {
+  const clock: entry.Clock = entry.systemClock;
+
+  expect(clock()).toBeTypeOf("number");
+});
+
 test("toJsonSafe is reachable through the entry point", () => {
   const options: entry.ToJsonSafeOptions = { maxDepth: 6 };
 
