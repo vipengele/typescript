@@ -6,17 +6,17 @@ anchors:
   - path: source/*/packages/*/package.json
     matches:
       - path: source/core/packages/common/package.json
-        blob: 9f41e3c73ba2
+        blob: bb7c27c0466f
       - path: source/core/packages/observability/package.json
-        blob: f27cf10262ed
+        blob: b0ecf68b6fc8
       - path: source/core/packages/redaction/package.json
-        blob: 287f01ca8eac
+        blob: a3ef04c30096
       - path: source/ts/packages/ts/package.json
-        blob: 3d18717ee2dd
+        blob: dd2eef23496c
   - path: source/*/packages/*/tsup.config.ts
     matches:
       - path: source/core/packages/common/tsup.config.ts
-        blob: 3f3d16e7cd8f
+        blob: 2816c14a21e7
       - path: source/core/packages/observability/tsup.config.ts
         blob: d2c1588f4b2f
       - path: source/core/packages/redaction/tsup.config.ts
@@ -29,7 +29,7 @@ confidence: verified
 ---
 
 Every package's `build` script is `tsup && tsc -p tsconfig.build.json`. Examples:
-`source/core/packages/common/package.json:45` and `source/ts/packages/ts/package.json:38`.
+`source/core/packages/common/package.json:66` and `source/ts/packages/ts/package.json:38`.
 
 The two tools write to the same `dist/`:
 

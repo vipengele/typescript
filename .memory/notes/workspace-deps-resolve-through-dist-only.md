@@ -6,25 +6,25 @@ anchors:
   - path: source/*/packages/*/package.json
     matches:
       - path: source/core/packages/common/package.json
-        blob: 9f41e3c73ba2
+        blob: bb7c27c0466f
       - path: source/core/packages/observability/package.json
-        blob: f27cf10262ed
+        blob: b0ecf68b6fc8
       - path: source/core/packages/redaction/package.json
-        blob: 287f01ca8eac
+        blob: a3ef04c30096
       - path: source/ts/packages/ts/package.json
-        blob: 3d18717ee2dd
+        blob: dd2eef23496c
   - path: source/core/turbo.json
     blob: 5a8e82c329f3
   - path: source/core/tsconfig.base.json
     blob: 09df051657eb
   - path: .lydite/components.yml
-    blob: 9fa06ecb5afd
+    blob: 24498044da15
 confidence: verified
 ---
 
 In every package's `exports`, the `types` condition points into `./dist/` only. There is no
 `source` or `development` condition and no path fallback: see
-`source/core/packages/common/package.json:29-39` and
+`source/core/packages/common/package.json:30-60` and
 `source/core/packages/observability/package.json:37,41`. `tsconfig.base.json` has no `paths`
 (`source/core/tsconfig.base.json:6-23`, `moduleResolution: "bundler"`). A package that imports a
 sibling can therefore see only the sibling's build output, never its source.
@@ -39,7 +39,7 @@ This is why:
   That is expected; the workspace link is not broken.
 - lydite runs each component's suite itself, with no build graph. So `core-observability`
   hand-wires `depends_on` plus two `pnpm --filter ... run build` `setup` steps
-  (`.lydite/components.yml:19-27`). Nothing keeps that block in sync with `package.json`
+  (`.lydite/components.yml:16-27`; the `ts` component at `:29-38` needs the same for its cross-project links, ADR-0009). Nothing keeps that block in sync with `package.json`
   dependencies. A new package with a workspace dependency needs its own block written by hand,
   while turbo's `^build` picks up the new edge on its own. Leave the block out and lydite tests
   against a stale or missing `dist/`. That looks like a flaky result, not a config error.
