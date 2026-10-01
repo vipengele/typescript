@@ -36,7 +36,9 @@ Error Event, Scope, Breadcrumb, Transport) before naming things.
     a `SerializedError`, the shape the logger and the error reporter share (ADR-0007); `Level`
     (`"trace"` through `"fatal"`) and `Threshold` (`Level | "off"`) are exported from the package
     root, not a sub-path, since every package that logs or reports needs them.
-  - `packages/redaction` — `@vipengele/ts-core-redaction`: the reusable redaction library.
+  - `packages/redaction` — `@vipengele/ts-core-redaction`: the reusable redaction library. A `RedactionPolicy` matches keys by exact string, regex or
+    `{ segments }` (word-segment match), carves exceptions out with `except`, and composes through
+    `composePolicies`; `secretKeys` is the frozen preset (ADR-0011).
   - `packages/observability` — `@vipengele/ts-core-observability`: the logger (`./logger`) and the
     error reporter (`./errors`), two entry points of one package. `./errors`'s `createReporter`
     builds a `Reporter` from a `ReporterBuilder`; `captureException`/`captureMessage` run every
