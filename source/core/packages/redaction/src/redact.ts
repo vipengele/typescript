@@ -3,6 +3,7 @@ import {
   breadthMarker,
   breadthMarkerKey,
   exceedsBreadth,
+  isBreadthFull,
   keepWithinBreadth,
   type Limits,
   resolveLimits,
@@ -173,15 +174,31 @@ function walkContainer(value: object, context: WalkContext, depth: number): unkn
   if (isPlainObject(value)) return walkFields(value, context, depth);
   if (Array.isArray(value)) return walkItems(value, context, depth);
   if (isMapInstance(value)) return walkMap(value as Map<unknown, unknown>, context, depth);
-  if (isSetInstance(value)) return new Set(walkItems([...(value as Set<unknown>)], context, depth));
+  if (isSetInstance(value)) return walkSet(value as Set<unknown>, context, depth);
   if (isErrorTagged(value)) return walkError(value as Error, context, depth);
   return walkFields(value, context, depth);
 }
 
-/** Copies an array's or a `Set`'s first `maxBreadth` items, then a marker item for the rest. */
+/** Copies an array's first `maxBreadth` items, then a marker item for the rest. */
 function walkItems(items: readonly unknown[], context: WalkContext, depth: number): unknown[] {
   const out = keepWithinBreadth(items, context.limits).map((item: unknown) => walk(item, context, depth));
   if (exceedsBreadth(items.length, context.limits)) out.push(breadthMarker(items.length, context.limits));
+  return out;
+}
+
+/**
+ * Pulls only the first `maxBreadth` members from the `Set`, so a huge one costs no more than the
+ * bounded tree; the marker's count comes from `size`.
+ */
+function walkSet(value: Set<unknown>, context: WalkContext, depth: number): Set<unknown> {
+  const out = new Set<unknown>();
+  let kept = 0;
+  for (const item of value) {
+    if (isBreadthFull(kept, context.limits)) break;
+    kept++;
+    out.add(walk(item, context, depth));
+  }
+  if (exceedsBreadth(value.size, context.limits)) out.add(breadthMarker(value.size, context.limits));
   return out;
 }
 
@@ -209,10 +226,16 @@ function walkFields(
   return into;
 }
 
-/** Keys are kept as they are; the breadth marker's key is chosen against the kept string keys. */
+/**
+ * Keys are kept as they are; the breadth marker's key is chosen against the kept string keys. Only
+ * the first `maxBreadth` entries are pulled from the `Map`, and the marker's count comes from `size`.
+ */
 function walkMap(value: Map<unknown, unknown>, context: WalkContext, depth: number): Map<unknown, unknown> {
   const out = new Map<unknown, unknown>();
-  for (const [key, entry] of keepWithinBreadth([...value], context.limits)) {
+  let kept = 0;
+  for (const [key, entry] of value) {
+    if (isBreadthFull(kept, context.limits)) break;
+    kept++;
     out.set(key, typeof key === "string" ? redactField(key, entry, context, depth) : walk(entry, context, depth));
   }
   if (exceedsBreadth(value.size, context.limits)) {

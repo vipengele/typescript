@@ -56,6 +56,14 @@ export function exceedsBreadth(total: number, limits: Limits): boolean {
 }
 
 /**
+ * Whether `kept` entries already fill `maxBreadth`, so a walk that counts as it iterates can stop
+ * pulling more. `NaN` compares false, so a `NaN` limit never fills.
+ */
+export function isBreadthFull(kept: number, limits: Limits): boolean {
+  return kept + 1 > limits.maxBreadth;
+}
+
+/**
  * The first `maxBreadth` of `items`, or `items` itself when it fits. Slicing only once the limit is
  * exceeded keeps a `NaN` limit from emptying the container, and leaves an array's holes in place.
  */

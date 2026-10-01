@@ -7,6 +7,7 @@ import {
   DEFAULT_MAX_DEPTH,
   DEFAULT_MAX_STRING_LENGTH,
   exceedsBreadth,
+  isBreadthFull,
   keepWithinBreadth,
   resolveLimits,
   STRING_TRUNCATION_SUFFIX,
@@ -76,6 +77,14 @@ describe("breadth", () => {
     const limits = resolveLimits({ maxBreadth: Number.NaN });
     expect(keepWithinBreadth([1, 2, 3], limits)).toEqual([1, 2, 3]);
     expect(exceedsBreadth(3, limits)).toBe(false);
+  });
+
+  test("a count is full once it reaches the limit, and never under NaN", () => {
+    const limits = resolveLimits({ maxBreadth: 2 });
+    expect(isBreadthFull(1, limits)).toBe(false);
+    expect(isBreadthFull(2, limits)).toBe(true);
+    expect(isBreadthFull(2, resolveLimits({ maxBreadth: Number.NaN }))).toBe(false);
+    expect(isBreadthFull(2, resolveLimits({ maxBreadth: 2.5 }))).toBe(true);
   });
 
   test("the marker key is raised past every key already in use", () => {

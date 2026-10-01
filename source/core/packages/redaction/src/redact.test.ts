@@ -581,6 +581,38 @@ describe("breadth limit", () => {
     );
   });
 
+  test("a Map and a Set are pulled from only up to maxBreadth entries", () => {
+    const entries = Array.from({ length: 1000 }, (_, index): [string, number] => [`k${index}`, index]);
+    let pulledFromMap = 0;
+    let pulledFromSet = 0;
+    const map = new Map(entries);
+    const set = new Set(entries.map(([key]) => key));
+    const mapIterator = map[Symbol.iterator].bind(map);
+    const setIterator = set[Symbol.iterator].bind(set);
+    map[Symbol.iterator] = function* () {
+      for (const entry of mapIterator()) {
+        pulledFromMap++;
+        yield entry;
+      }
+      return undefined;
+    };
+    set[Symbol.iterator] = function* () {
+      for (const item of setIterator()) {
+        pulledFromSet++;
+        yield item;
+      }
+      return undefined;
+    };
+
+    const redactedMap = redact(map, policy, { maxBreadth: 2 }) as Map<unknown, unknown>;
+    const redactedSet = redact(set, policy, { maxBreadth: 2 }) as Set<unknown>;
+
+    expect(pulledFromMap).toBeLessThanOrEqual(3);
+    expect(pulledFromSet).toBeLessThanOrEqual(3);
+    expect(redactedMap.get("…")).toBe("[Truncated: 998 more]");
+    expect(redactedSet.has("[Truncated: 998 more]")).toBe(true);
+  });
+
   test("Infinity and NaN keep every entry", () => {
     const items = Array.from({ length: 150 }, (_, index) => index);
 
