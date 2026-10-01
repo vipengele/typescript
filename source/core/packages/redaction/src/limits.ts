@@ -88,3 +88,16 @@ export function breadthMarkerKey(used: ReadonlySet<string>): string {
   }
   return key;
 }
+
+/**
+ * A kept `Set` member can itself equal the breadth marker, and adding the marker to the `Set` would
+ * then be a no-op that leaves the cut members without a trace. Raising a `#<n>` suffix until `has`
+ * no longer reports the candidate keeps the marker a member of its own.
+ */
+export function uniqueBreadthMarker(marker: string, has: (candidate: string) => boolean): string {
+  let candidate = marker;
+  for (let suffix = 1; has(candidate); suffix++) {
+    candidate = `${marker}#${suffix}`;
+  }
+  return candidate;
+}

@@ -13,6 +13,7 @@ import {
   STRING_TRUNCATION_SUFFIX,
   TRUNCATED,
   truncateString,
+  uniqueBreadthMarker,
 } from "./limits";
 
 describe("defaults and markers", () => {
@@ -91,5 +92,13 @@ describe("breadth", () => {
     expect(breadthMarkerKey(new Set(["a"]))).toBe("…");
     expect(breadthMarkerKey(new Set(["…"]))).toBe("…#1");
     expect(breadthMarkerKey(new Set(["…", "…#1"]))).toBe("…#2");
+  });
+
+  test("the marker text is raised past every member already in use", () => {
+    const marker = "[Truncated: 1 more]";
+
+    expect(uniqueBreadthMarker(marker, (candidate) => new Set(["a"]).has(candidate))).toBe(marker);
+    expect(uniqueBreadthMarker(marker, (candidate) => new Set([marker]).has(candidate))).toBe(`${marker}#1`);
+    expect(uniqueBreadthMarker(marker, (candidate) => new Set([marker, `${marker}#1`]).has(candidate))).toBe(`${marker}#2`);
   });
 });

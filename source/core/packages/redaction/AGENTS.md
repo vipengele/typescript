@@ -31,6 +31,7 @@ pnpm format:check
   bounded by either reads the same. Change them in both places or in neither.
 - Limit values are not validated: they are applied with `>` comparisons, so `NaN` disables a
   limit.
-- The breadth marker key (`…`) is made unique against kept keys (`breadthMarkerKey`), so it
-  never overwrites a real entry.
+- The breadth marker key (`…`) is made unique against kept keys (`breadthMarkerKey`), and a `Set`
+  marker against its kept members (`uniqueBreadthMarker`), so the marker never overwrites or
+  merges into a real entry.
 - Lengths are UTF-16 code units; the truncation suffix is not counted.

@@ -104,7 +104,8 @@ The markers:
 - `"[Truncated: N more]"` follows the first `maxBreadth` entries of a container, `N` being the
   number left out. It is an extra item of an array or member of a `Set`, and an entry under the key
   `"…"` of an object or `Map`. When a kept key already holds `"…"`, the marker takes `"…#1"`, then
-  `"…#2"`, and so on. An `Error`'s `name`, `message`, `stack` and `cause` are always kept; only the
+  `"…#2"`, and so on; a `Set` member already equal to the marker likewise makes the marker take a
+  `#1`, `#2`, … suffix. An `Error`'s `name`, `message`, `stack` and `cause` are always kept; only the
   fields it adds count toward `maxBreadth`.
 - `"…[truncated]"` is appended to a string cut to `maxStringLength`; the suffix is not counted.
 

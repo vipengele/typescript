@@ -9,6 +9,7 @@ import {
   resolveLimits,
   TRUNCATED,
   truncateString,
+  uniqueBreadthMarker,
 } from "./limits";
 import { applyReplacement, type Replacement } from "./replacement";
 
@@ -198,7 +199,9 @@ function walkSet(value: Set<unknown>, context: WalkContext, depth: number): Set<
     kept++;
     out.add(walk(item, context, depth));
   }
-  if (exceedsBreadth(value.size, context.limits)) out.add(breadthMarker(value.size, context.limits));
+  if (exceedsBreadth(value.size, context.limits)) {
+    out.add(uniqueBreadthMarker(breadthMarker(value.size, context.limits), (candidate) => out.has(candidate)));
+  }
   return out;
 }
 

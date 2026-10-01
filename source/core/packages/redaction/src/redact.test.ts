@@ -549,6 +549,13 @@ describe("breadth limit", () => {
     expect(redact(new Set([1, 2, 3, 4]), policy, { maxBreadth: 2 })).toEqual(new Set([1, 2, "[Truncated: 2 more]"]));
   });
 
+  test("a Set whose kept member equals the marker still ends with a marker member, raised to #1, #2", () => {
+    const marker = "[Truncated: 1 more]";
+
+    expect(redact(new Set([marker, 2]), policy, { maxBreadth: 1 })).toEqual(new Set([marker, `${marker}#1`]));
+    expect(redact(new Set([marker, `${marker}#1`, 3]), policy, { maxBreadth: 2 })).toEqual(new Set([marker, `${marker}#1`, `${marker}#2`]));
+  });
+
   test("an Error always keeps name, message, stack and cause, and bounds only its other own fields", () => {
     class DetailedError extends Error {
       readonly first = 1;
