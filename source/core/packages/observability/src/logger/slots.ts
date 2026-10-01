@@ -34,8 +34,17 @@ function registry(): Registry {
   return globalThis as unknown as Registry;
 }
 
+/**
+ * The slot symbols, resolved on first use so importing this module touches no registry. `Symbol.for`
+ * returns the same symbol for a key in every copy, so holding it here shares nothing extra and
+ * spares each `Logger.enabled()` a global symbol-registry lookup.
+ */
+let levelsSymbol: symbol | undefined;
+let providerSymbol: symbol | undefined;
+
 function levelsSlot(): symbol {
-  return Symbol.for(LEVELS_SLOT_KEY);
+  levelsSymbol ??= Symbol.for(LEVELS_SLOT_KEY);
+  return levelsSymbol;
 }
 
 /** The default level table, `{ "*": "warn" }`, as a fresh frozen, prototype-less object. */
@@ -160,7 +169,8 @@ export function resolveSharedEntry(category: string): LevelEntry {
  * record-protocol version agrees on its shape.
  */
 export function getOrCreateDefaultProvider<T>(create: () => T): T {
-  const slot = Symbol.for(PROVIDER_SLOT_KEY);
+  providerSymbol ??= Symbol.for(PROVIDER_SLOT_KEY);
+  const slot = providerSymbol;
   if (registry()[slot] === undefined) {
     registry()[slot] = create();
   }
