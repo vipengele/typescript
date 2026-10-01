@@ -26,13 +26,16 @@ process. Owned by `@vipengele/ts-core-redaction`.
 _Avoid_: scrubbing, sanitizing (sanitizing also means escaping for output)
 
 **Redaction Policy**:
-What keys to redact and how: a set of Key Matchers and the Replacement applied where one matches.
-Composable presets and exceptions are `@vipengele/ts-core-redaction`'s own concern to add on top,
-not a separate glossary term.
+What keys to redact and how: a set of Key Matchers, optionally a set of exceptions (Key Matchers
+whose keys are never redacted, even when a rule matches them), and the Replacement applied where a
+rule matches. Composable presets are `@vipengele/ts-core-redaction`'s own concern to add on top,
+not a separate glossary term: a preset is a Redaction Policy.
 
 **Key Matcher**:
-One rule a Redaction Policy tests an object key against: an exact string, a regular expression, or
-either compared case-insensitively.
+One rule a Redaction Policy tests an object key against: an exact string, a regular expression,
+either compared case-insensitively, or a word-segment match that finds whole words in a key
+regardless of its casing or separators (`api key` matches `APIKey` and `x-api-key`, and `token`
+matches `csrfToken` but not `tokenizer`).
 
 **Replacement**:
 What a matched Key Matcher's value becomes: `"[REDACTED]"` by default, or a caller-supplied
