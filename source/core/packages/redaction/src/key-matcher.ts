@@ -90,7 +90,7 @@ function segment(text: string): string[] {
     } else {
       if (previous === "digit" || (kind === "upper" && previous === "lower")) {
         close();
-      } else if (kind === "lower" && previous === "upper" && current.length > previousChar.length) {
+      } else if (kind === "lower" && previous === "upper") {
         // The last capital of an acronym run starts the next word: `APIKey` is `API`, `Key`.
         current = current.slice(0, -previousChar.length);
         close();
@@ -106,10 +106,7 @@ function segment(text: string): string[] {
 }
 
 function containsRun(haystack: readonly string[], needle: readonly string[]): boolean {
-  for (let start = 0; start + needle.length <= haystack.length; start++) {
-    if (needle.every((part, offset) => haystack[start + offset] === part)) return true;
-  }
-  return false;
+  return haystack.some((_, start) => needle.every((part, offset) => haystack[start + offset] === part));
 }
 
 function normalizeSegments(spec: string): NormalizedMatcher {
