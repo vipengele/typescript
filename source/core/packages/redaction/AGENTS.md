@@ -29,8 +29,9 @@ pnpm format:check
   suffix) and never throws.
 - The defaults deliberately match `toJsonSafe` in `@vipengele/ts-core-common`, so a value
   bounded by either reads the same. Change them in both places or in neither.
-- Limit values are not validated: they are applied with `>` comparisons, so `NaN` disables a
-  limit.
+- Limits are applied with `>` comparisons, so `NaN` disables a limit and `Infinity` opts out.
+  `resolveLimits` floors `maxBreadth` and clamps it at 0, so every kept count and marker count is
+  exact; `maxDepth` and `maxStringLength` are used as given.
 - The breadth marker key (`…`) is made unique against kept keys (`breadthMarkerKey`), and a `Set`
   marker against its kept members (`uniqueBreadthMarker`), so the marker never overwrites or
   merges into a real entry.

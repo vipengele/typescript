@@ -33,14 +33,17 @@ export interface Limits {
 }
 
 /**
- * Fills in each limit the caller left out. Values are not validated: every limit is applied by
- * a `>` comparison, so `NaN` compares false everywhere and disables its limit, and `Infinity`
- * never trips one.
+ * Fills in each limit the caller left out. Every limit is applied by a `>` comparison, so `NaN`
+ * compares false everywhere and disables its limit, and `Infinity` never trips one. `maxBreadth`
+ * counts whole entries, so it is floored and clamped at 0: a fractional or negative value would
+ * otherwise keep a different number of entries than its `[Truncated: N more]` marker reports.
+ * `maxDepth` and `maxStringLength` are used as given.
  */
 export function resolveLimits(options?: LimitOptions): Limits {
+  const maxBreadth = options?.maxBreadth;
   return {
     maxDepth: options?.maxDepth ?? DEFAULT_MAX_DEPTH,
-    maxBreadth: options?.maxBreadth ?? DEFAULT_MAX_BREADTH,
+    maxBreadth: maxBreadth === undefined ? DEFAULT_MAX_BREADTH : Math.max(0, Math.floor(maxBreadth)),
     maxStringLength: options?.maxStringLength ?? DEFAULT_MAX_STRING_LENGTH,
   };
 }

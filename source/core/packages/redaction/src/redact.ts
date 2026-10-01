@@ -16,8 +16,9 @@ import { applyReplacement, type Replacement } from "./replacement";
 /**
  * How a redaction pass rewrites the values it matches, and how far it walks. A limit only ever
  * drops data: a value under a matched key is replaced even when it lies past `maxDepth`, and a
- * container past `maxDepth` is never read at all. No limit is validated — `NaN` disables it, and
- * `Infinity` turns it off on purpose.
+ * container past `maxDepth` is never read at all. `NaN` disables a limit and `Infinity` turns it
+ * off on purpose; `maxBreadth` is floored and clamped at 0, while `maxDepth` and `maxStringLength`
+ * are used as given.
  */
 export interface RedactOptions {
   /** What a matched value is replaced with. Defaults to the string `"[REDACTED]"`. */
@@ -33,6 +34,7 @@ export interface RedactOptions {
    * enumerable fields per `Error` (its `name`, `message`, `stack` and `cause` are always kept);
    * the rest are summarised by one `"[Truncated: N more]"` marker — an extra item or member, or a
    * field under the key `"…"` (`"…#1"`, `"…#2"`… when a kept key already holds it). Defaults to 100.
+   * Floored and clamped at 0, since entries are whole.
    */
   maxBreadth?: number;
   /**

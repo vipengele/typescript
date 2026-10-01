@@ -620,6 +620,46 @@ describe("breadth limit", () => {
     expect(redactedSet.has("[Truncated: 998 more]")).toBe(true);
   });
 
+  test("a negative maxBreadth keeps nothing, and an empty container carries no marker", () => {
+    const options = { maxBreadth: -1 };
+
+    expect(redact([], policy, options)).toEqual([]);
+    expect(redact(new Set(), policy, options)).toEqual(new Set());
+    expect(redact(new Map(), policy, options)).toEqual(new Map());
+    expect(redact({}, policy, options)).toEqual({});
+    expect(redact([1, 2, 3, 4, 5], policy, options)).toEqual(["[Truncated: 5 more]"]);
+    expect(redact(new Set([1, 2, 3, 4, 5]), policy, options)).toEqual(new Set(["[Truncated: 5 more]"]));
+    expect(redact(new Map(Object.entries(fields(5))), policy, options)).toEqual(new Map([["…", "[Truncated: 5 more]"]]));
+    expect(redact(fields(5), policy, options)).toEqual({ "…": "[Truncated: 5 more]" });
+  });
+
+  test("a fractional maxBreadth is floored, so the kept entries and the marker count agree", () => {
+    const options = { maxBreadth: 2.5 };
+
+    expect(redact([1, 2, 3, 4, 5], policy, options)).toEqual([1, 2, "[Truncated: 3 more]"]);
+    expect(redact(new Set([1, 2, 3, 4, 5]), policy, options)).toEqual(new Set([1, 2, "[Truncated: 3 more]"]));
+    expect(
+      redact(
+        new Map([
+          ["a", 1],
+          ["b", 2],
+          ["c", 3],
+          ["d", 4],
+          ["e", 5],
+        ]),
+        policy,
+        options,
+      ),
+    ).toEqual(
+      new Map<string, unknown>([
+        ["a", 1],
+        ["b", 2],
+        ["…", "[Truncated: 3 more]"],
+      ]),
+    );
+    expect(redact(fields(5), policy, options)).toEqual({ k0: 0, k1: 1, "…": "[Truncated: 3 more]" });
+  });
+
   test("Infinity and NaN keep every entry", () => {
     const items = Array.from({ length: 150 }, (_, index) => index);
 

@@ -120,8 +120,9 @@ A limit only ever drops data, so two cases involve a matched key:
   `Replacement` is called fewer times than it would be without limits.
 
 `Infinity` turns a limit off. With `maxDepth: Infinity`, a deep enough input can overflow the
-stack. Limits are not validated: `NaN` silently disables the limit it is given, `maxBreadth`
-included.
+stack. `NaN` silently disables the limit it is given, `maxBreadth` included. `maxBreadth` counts
+whole entries, so it is floored and clamped at 0: `2.5` keeps 2, and `-1` keeps none. `maxDepth` and
+`maxStringLength` are used as given.
 
 Chaining `redact` into `toJsonSafe` (from `@vipengele/ts-core-common`) with both left at their
 equal breadth defaults miscounts: the second step drops the first step's `"[Truncated: N more]"`

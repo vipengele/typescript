@@ -35,12 +35,20 @@ describe("resolveLimits", () => {
     expect(resolveLimits({})).toEqual({ maxDepth: 6, maxBreadth: 100, maxStringLength: 8192 });
   });
 
-  test("keeps every limit given, Infinity and NaN included, without validating it", () => {
+  test("keeps every limit given, Infinity and NaN included", () => {
     expect(resolveLimits({ maxDepth: 2, maxBreadth: Number.POSITIVE_INFINITY, maxStringLength: Number.NaN })).toEqual({
       maxDepth: 2,
       maxBreadth: Number.POSITIVE_INFINITY,
       maxStringLength: Number.NaN,
     });
+    expect(resolveLimits({ maxBreadth: Number.NaN }).maxBreadth).toBeNaN();
+  });
+
+  test("maxBreadth is floored and clamped at 0, while maxDepth and maxStringLength are used as given", () => {
+    expect(resolveLimits({ maxBreadth: 2.5 }).maxBreadth).toBe(2);
+    expect(resolveLimits({ maxBreadth: -1 }).maxBreadth).toBe(0);
+    expect(resolveLimits({ maxBreadth: 0 }).maxBreadth).toBe(0);
+    expect(resolveLimits({ maxDepth: 2.5, maxStringLength: -1 })).toMatchObject({ maxDepth: 2.5, maxStringLength: -1 });
   });
 });
 
