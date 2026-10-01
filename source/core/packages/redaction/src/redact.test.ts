@@ -1,5 +1,6 @@
 import { describe, expect, test, vi } from "vitest";
 import type { RedactionPolicy } from "./key-matcher";
+import { STRING_TRUNCATION_SUFFIX } from "./limits";
 import { redact } from "./redact";
 
 const policy: RedactionPolicy = { keys: ["password", "token", "secret"] };
@@ -394,5 +395,229 @@ describe("immutability", () => {
     redact(input, policy);
 
     expect(input).toEqual(snapshot);
+  });
+});
+
+/** `{ child: { child: … { leaf: true } } }`, `levels` containers deep, built without recursion. */
+function nest(levels: number): Record<string, unknown> {
+  let value: Record<string, unknown> = { leaf: true };
+  for (let level = 1; level < levels; level++) value = { child: value };
+  return value;
+}
+
+/** Follows `child` `steps` times. */
+function descend(value: unknown, steps: number): unknown {
+  let current = value;
+  for (let step = 0; step < steps; step++) current = (current as Record<string, unknown>).child;
+  return current;
+}
+
+describe("depth limit", () => {
+  test("by default six levels of containers are kept and the seventh is [Truncated], however deep the input", () => {
+    const result = redact(nest(100_000), policy);
+
+    expect(descend(result, 5)).toEqual({ child: "[Truncated]" });
+  });
+
+  test("the input itself is the first level, and a container past maxDepth is replaced whole", () => {
+    expect(redact({ a: { b: { c: 1 } } }, policy, { maxDepth: 2 })).toEqual({ a: { b: "[Truncated]" } });
+    expect(redact({ a: 1 }, policy, { maxDepth: 0 })).toBe("[Truncated]");
+  });
+
+  test("only containers count: primitives and pass-through values past the limit are kept", () => {
+    const date = new Date(0);
+
+    expect(redact({ n: 1, s: "x", date, nested: {} }, policy, { maxDepth: 1 })).toEqual({ n: 1, s: "x", date, nested: "[Truncated]" });
+  });
+
+  test("arrays, Maps, Sets and Errors are each a level", () => {
+    const limited = { maxDepth: 1 };
+
+    expect(redact([[1]], policy, limited)).toEqual(["[Truncated]"]);
+    expect(redact(new Map([["a", [1]]]), policy, limited)).toEqual(new Map([["a", "[Truncated]"]]));
+    expect(redact(new Set([[1]]), policy, limited)).toEqual(new Set(["[Truncated]"]));
+    expect(redact({ error: new Error("boom") }, policy, limited)).toEqual({ error: "[Truncated]" });
+    const error = redact(new Error("boom", { cause: { id: 1 } }), policy, limited) as Record<string, unknown>;
+    expect(error.message).toBe("boom");
+    expect(error.cause).toBe("[Truncated]");
+  });
+
+  test("Infinity keeps every level", () => {
+    const result = redact(nest(50), policy, { maxDepth: Number.POSITIVE_INFINITY });
+
+    expect(descend(result, 49)).toEqual({ leaf: true });
+  });
+
+  test("NaN disables the limit", () => {
+    expect(descend(redact(nest(20), policy, { maxDepth: Number.NaN }), 19)).toEqual({ leaf: true });
+  });
+
+  test("a reference back to an ancestor at the depth limit is [Circular], not [Truncated]", () => {
+    const input: Record<string, unknown> = { id: 1 };
+    input.self = input;
+    input.other = {};
+
+    expect(redact(input, policy, { maxDepth: 1 })).toEqual({ id: 1, self: "[Circular]", other: "[Truncated]" });
+  });
+});
+
+describe("depth limit and matched keys", () => {
+  test("a matched key's container value past maxDepth is still replaced, not truncated", () => {
+    const token = { raw: { deeper: "abc" } };
+    const replacement = vi.fn(() => "[REDACTED]");
+
+    const result = redact({ session: { token } }, policy, { maxDepth: 2, replacement });
+
+    expect(result).toEqual({ session: { token: "[REDACTED]" } });
+    expect(replacement).toHaveBeenCalledExactlyOnceWith(token, "token");
+  });
+
+  test("a replacement's output is neither walked nor bounded", () => {
+    const long = "x".repeat(20);
+    const output = { a: { b: { c: long } } };
+
+    const result = redact({ secret: 1 }, policy, { maxDepth: 1, maxStringLength: 4, replacement: () => output });
+
+    expect((result as Record<string, unknown>).secret).toBe(output);
+  });
+
+  test("a key inside a container past maxDepth is never read, so a replacement function is called fewer times", () => {
+    const input = { a: { password: "x" }, b: { token: "y" } };
+    const bounded = vi.fn(() => "[REDACTED]");
+    const unbounded = vi.fn(() => "[REDACTED]");
+
+    expect(redact(input, policy, { maxDepth: 1, replacement: bounded })).toEqual({ a: "[Truncated]", b: "[Truncated]" });
+    redact(input, policy, { maxDepth: Number.POSITIVE_INFINITY, replacement: unbounded });
+
+    expect(bounded).not.toHaveBeenCalled();
+    expect(unbounded).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("breadth limit", () => {
+  function fields(count: number): Record<string, number> {
+    const out: Record<string, number> = {};
+    for (let index = 0; index < count; index++) out[`k${index}`] = index;
+    return out;
+  }
+
+  test("by default an object keeps 100 fields and summarises the rest under the key …", () => {
+    const result = redact(fields(105), policy) as Record<string, unknown>;
+
+    expect(Object.keys(result)).toHaveLength(101);
+    expect(result.k99).toBe(99);
+    expect(Object.hasOwn(result, "k100")).toBe(false);
+    expect(result["…"]).toBe("[Truncated: 5 more]");
+  });
+
+  test("an object exactly at the limit carries no marker, and an own toJSON does not count toward it", () => {
+    const input = { ...fields(2), toJSON: () => "leak" };
+
+    expect(redact(input, policy, { maxBreadth: 2 })).toEqual({ k0: 0, k1: 1 });
+  });
+
+  test("by default an array keeps 100 items and appends a marker item", () => {
+    const result = redact(
+      Array.from({ length: 103 }, (_, index) => index),
+      policy,
+    ) as unknown[];
+
+    expect(result).toHaveLength(101);
+    expect(result[99]).toBe(99);
+    expect(result[100]).toBe("[Truncated: 3 more]");
+  });
+
+  test("a Map keeps its first maxBreadth entries and stays a Map, with the marker under the key …", () => {
+    const input = new Map<unknown, unknown>([
+      [1, "a"],
+      ["password", "b"],
+      ["c", "c"],
+    ]);
+
+    const result = redact(input, policy, { maxBreadth: 2 });
+
+    expect(result).toEqual(
+      new Map<unknown, unknown>([
+        [1, "a"],
+        ["password", "[REDACTED]"],
+        ["…", "[Truncated: 1 more]"],
+      ]),
+    );
+  });
+
+  test("a Set keeps its first maxBreadth members and stays a Set, with a marker member", () => {
+    expect(redact(new Set([1, 2, 3, 4]), policy, { maxBreadth: 2 })).toEqual(new Set([1, 2, "[Truncated: 2 more]"]));
+  });
+
+  test("an Error always keeps name, message, stack and cause, and bounds only its other own fields", () => {
+    class DetailedError extends Error {
+      readonly first = 1;
+      readonly second = 2;
+      readonly third = 3;
+    }
+    const error = new DetailedError("boom", { cause: "root" });
+
+    const result = redact(error, policy, { maxBreadth: 1 });
+
+    expect(result).toEqual({ name: "Error", message: "boom", stack: error.stack, cause: "root", first: 1, "…": "[Truncated: 2 more]" });
+  });
+
+  test("the marker key is raised to …#1, …#2 when kept keys already hold it", () => {
+    expect(redact({ "…": 1, "…#1": 2, other: 3 }, policy, { maxBreadth: 2 })).toEqual({ "…": 1, "…#1": 2, "…#2": "[Truncated: 1 more]" });
+    expect(
+      redact(
+        new Map([
+          ["…", 1],
+          ["x", 2],
+        ]),
+        policy,
+        { maxBreadth: 1 },
+      ),
+    ).toEqual(
+      new Map<string, unknown>([
+        ["…", 1],
+        ["…#1", "[Truncated: 1 more]"],
+      ]),
+    );
+  });
+
+  test("Infinity and NaN keep every entry", () => {
+    const items = Array.from({ length: 150 }, (_, index) => index);
+
+    expect(redact(items, policy, { maxBreadth: Number.POSITIVE_INFINITY })).toEqual(items);
+    expect(redact(items, policy, { maxBreadth: Number.NaN })).toEqual(items);
+  });
+});
+
+describe("string length limit", () => {
+  const limited = { maxStringLength: 4 };
+  const cut = `abcd${STRING_TRUNCATION_SUFFIX}`;
+
+  test("by default a string is cut at 8192 characters and suffixed", () => {
+    expect(redact("x".repeat(8192), policy)).toBe("x".repeat(8192));
+    expect(redact("x".repeat(8193), policy)).toBe(`${"x".repeat(8192)}${STRING_TRUNCATION_SUFFIX}`);
+  });
+
+  test("every walked string value is cut: fields, items, members and Map values", () => {
+    expect(redact({ s: "abcdef" }, policy, limited)).toEqual({ s: cut });
+    expect(redact(["abcdef"], policy, limited)).toEqual([cut]);
+    expect(redact(new Set(["abcdef"]), policy, limited)).toEqual(new Set([cut]));
+    expect(redact(new Map([["k", "abcdef"]]), policy, limited)).toEqual(new Map([["k", cut]]));
+  });
+
+  test("an Error's message and stack are cut", () => {
+    const result = redact(new Error("abcdef"), policy, limited) as Record<string, unknown>;
+
+    expect(result.message).toBe(cut);
+    expect(result.stack).toMatch(/^.{4}…\[truncated\]$/su);
+  });
+
+  test("keys are never cut, in objects or Maps", () => {
+    expect(redact({ abcdef: 1 }, policy, limited)).toEqual({ abcdef: 1 });
+    expect(redact(new Map([["abcdef", 1]]), policy, limited)).toEqual(new Map([["abcdef", 1]]));
+  });
+
+  test("a matched key's replacement is not cut", () => {
+    expect(redact({ password: "x" }, policy, { ...limited, replacement: "[REDACTED]" })).toEqual({ password: "[REDACTED]" });
   });
 });
