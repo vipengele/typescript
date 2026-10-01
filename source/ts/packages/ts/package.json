@@ -1,6 +1,6 @@
 {
   "name": "@vipengele/ts",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "The batteries-included umbrella package of the vipengele TypeScript framework.",
   "keywords": [
     "vipengele",
@@ -40,7 +40,7 @@
     "test": "vitest run --coverage"
   },
   "dependencies": {
-    "@vipengele/ts-core-common": "0.0.1",
-    "@vipengele/ts-core-redaction": "0.0.1"
+    "@vipengele/ts-core-common": "0.0.2",
+    "@vipengele/ts-core-redaction": "0.0.2"
   }
 }
