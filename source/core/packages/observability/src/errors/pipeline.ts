@@ -1,5 +1,12 @@
-import { type AttributesInput, type Level, normalizeAttributes, type SerializedError, serializeError } from "@vipengele/ts-core-common";
-import type { Clock } from "./builder";
+import {
+  type AttributesInput,
+  type Clock,
+  isLevel,
+  type Level,
+  normalizeAttributes,
+  type SerializedError,
+  serializeError,
+} from "@vipengele/ts-core-common";
 import type { ErrorEvent, ExceptionRecord, Mechanism } from "./event";
 import { createEventId } from "./event-id";
 import type { Transport } from "./transport";
@@ -29,22 +36,9 @@ export interface Pipeline {
 /** An event after normalization, before enrichment: the payload a caller handed over, and nothing else. */
 type NormalizedPayload = Pick<ErrorEvent, "message" | "exception">;
 
-/**
- * The level table. Membership is an own-key check, so a name that exists only on
- * `Object.prototype`, such as `"constructor"`, is not a level.
- */
-const LEVELS: Readonly<Record<Level, true>> = Object.freeze({
-  trace: true,
-  debug: true,
-  info: true,
-  warn: true,
-  error: true,
-  fatal: true,
-});
-
 /** Anything that is not one of the six levels becomes `"error"`. */
 function toLevel(level: unknown): Level {
-  return typeof level === "string" && Object.hasOwn(LEVELS, level) ? (level as Level) : "error";
+  return isLevel(level) ? level : "error";
 }
 
 /** Lifts a serialized error to an {@link ExceptionRecord}, giving every link of its `cause`/`errors` chain its own `frames`. */
