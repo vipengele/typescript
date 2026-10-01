@@ -1,0 +1,19 @@
+// A `node:` specifier survives into `dist/` unless the import naming it is erased at compile time,
+// and a bundler targeting the browser then has a Node built-in to resolve, stub or externalize.
+// Only `import type` is erased whole, so it is the one form allowed to name a `node:` specifier;
+// a Node built-in is reached through `process.getBuiltinModule("node:…")`, whose argument is a
+// plain string rather than a specifier (ADR-0004). `import { type X }` keeps the module as a
+// side-effect import under `verbatimModuleSyntax`, so it is not exempt. A bare specifier such as
+// `"fs"` is not matched. Which files the rule covers is set by the plugin's `includes` in biome.json.
+language js
+
+pattern type_only_import() { JsImport() as $import where { $import <: r"import\s+type\s*(?:\{|\*|[\w$]+\s+from\s)[\s\S]*" } }
+
+or {
+  JsModuleSource() as $specifier where { not $specifier <: within type_only_import() },
+  `require($specifier)`,
+  `import($specifier)`
+} where {
+  $specifier <: r"[\"'`]node:[\s\S]*",
+  register_diagnostic(span=$specifier, message="Only `import type` may name a `node:` specifier in shipped code; reach a Node built-in through `process.getBuiltinModule` behind feature detection (ADR-0004).", severity="error")
+}

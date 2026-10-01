@@ -13,6 +13,12 @@
     "indentStyle": "space",
     "lineWidth": 140
   },
+  "plugins": [
+    {
+      "path": "./biome/no-node-imports.grit",
+      "includes": ["**/src/**/*.ts", "!**/*.test.ts"]
+    }
+  ],
   "linter": {
     "enabled": true,
     "rules": {
@@ -28,6 +34,17 @@
         "rules": {
           "complexity": {
             "noStaticOnlyClass": "off"
+          }
+        }
+      }
+    },
+    {
+      "includes": ["biome/*.mjs"],
+      "linter": {
+        "rules": {
+          "correctness": {
+            "noNodejsModules": "off",
+            "noProcessGlobal": "off"
           }
         }
       }

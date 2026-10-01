@@ -1,0 +1,3 @@
+# Every fixture here is linted only by check-node-import-ban.mjs, which expects the must-fail ones
+# to fail; the project-wide `biome lint .` would otherwise report them.
+*

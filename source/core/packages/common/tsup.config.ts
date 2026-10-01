@@ -8,6 +8,7 @@ export default defineConfig({
     "src/attributes/index.ts",
     "src/serialization/index.ts",
     "src/scope/index.ts",
+    "src/runtime/index.ts",
   ],
   format: ["esm"],
   target: "es2022",

@@ -77,6 +77,13 @@ frames, its mechanism (handled or unhandled, and what caught it), its scope's co
 breadcrumbs.
 _Avoid_: exception (that is one link of the chain), issue (a grouping on the backend)
 
+**Runtime identity**:
+The family `detectRuntime` from `@vipengele/ts-core-common/runtime` reports code is executing in:
+`browser`, `worker`, `node`, `deno`, `bun`, `edge` or `unknown`. Wider than the two tested
+Runtimes — Node and Chromium — which are the only ones every suite runs in; the rest are detected
+and branched on, not exercised.
+_Avoid_: platform, environment
+
 **Scope**:
 The ambient context a Log Record and an Error Event are both enriched from, carried along an async
 call chain. Scopes form a tree: the root holds the environment and never changes; every other

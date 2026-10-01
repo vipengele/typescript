@@ -6,7 +6,7 @@
     "build": "turbo run build",
     "type-check": "turbo run type-check",
     "test": "turbo run test",
-    "lint": "biome lint . --error-on-warnings",
+    "lint": "biome lint . --error-on-warnings && node biome/check-node-import-ban.mjs",
     "format": "biome format --write .",
     "format:check": "biome format ."
   },
