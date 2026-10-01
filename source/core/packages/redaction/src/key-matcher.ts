@@ -1,25 +1,126 @@
 /**
  * One rule naming the keys whose values are redacted. A bare string matches a key exactly and
- * case-sensitively; a bare `RegExp` is tested against the key with its own flags. The object form
- * adds `caseInsensitive`, which applies the `i` flag to either kind of pattern.
+ * case-sensitively; a bare `RegExp` is tested against the key with its own flags. The
+ * `{ pattern }` form adds `caseInsensitive`, which applies the `i` flag to either kind of pattern.
+ *
+ * The `{ segments }` form matches by word rather than by character. The key and the spec are each
+ * split into lower-cased segments — at every character that is not a letter or a digit, at a
+ * lower-to-upper case change, before the last capital of an acronym run (`APIKey` is `api`, `key`;
+ * `OAuthToken` is `o`, `auth`, `token`), and around every run of digits (`oauth2Token` is `oauth`,
+ * `2`, `token`) — and the key matches when the spec's segments appear contiguously among its own.
+ * So `{ segments: "api key" }` matches `APIKey`, `x-api-key` and `apiKeyId`, but not
+ * `api_secret_key` or `apikey`; `{ segments: "token" }` matches `csrfToken` but not `tokenizer`.
+ * Segmenting is always case-insensitive, so `caseInsensitive` is not accepted alongside it. A
+ * spec with no letters or digits — empty, or only whitespace and punctuation — has no segments
+ * and matches no key.
  */
-export type KeyMatcher = string | RegExp | { pattern: string | RegExp; caseInsensitive?: boolean };
+export type KeyMatcher =
+  | string
+  | RegExp
+  | { pattern: string | RegExp; caseInsensitive?: boolean; segments?: never }
+  | { segments: string; pattern?: never; caseInsensitive?: never };
 
-/** The keys a redaction pass treats as sensitive. */
+/**
+ * The keys a redaction pass treats as sensitive. A key is redacted when any `keys` matcher
+ * matches it and no `except` matcher does, so `except` carves exemptions out of a broad rule —
+ * `{ keys: [{ segments: "token" }], except: ["tokenCount"] }`.
+ */
 export interface RedactionPolicy {
   keys: readonly KeyMatcher[];
+  except?: readonly KeyMatcher[];
 }
 
 type NormalizedMatcher = (key: string) => boolean;
 
+interface NormalizedPolicy {
+  readonly keys: readonly NormalizedMatcher[];
+  readonly except: readonly NormalizedMatcher[];
+}
+
 /**
  * Normalized matchers per policy object. A policy is read once, on its first match, so mutating
- * `keys` afterwards has no effect — a caller who needs different rules passes a new policy.
+ * `keys` or `except` afterwards has no effect — a caller who needs different rules passes a new
+ * policy.
  */
-const normalizedByPolicy = new WeakMap<RedactionPolicy, readonly NormalizedMatcher[]>();
+const normalizedByPolicy = new WeakMap<RedactionPolicy, NormalizedPolicy>();
+
+// Each of these tests exactly one character against a fixed class, so its cost is constant per
+// character; segmenting never builds or runs a pattern derived from a key or a spec.
+const UPPER = /^[\p{Lu}\p{Lt}]$/u;
+const LOWER = /^\p{Ll}$/u;
+const LETTER = /^\p{L}$/u;
+const DIGIT = /^\p{N}$/u;
+
+type CharKind = "upper" | "lower" | "letter" | "digit" | "separator";
+
+function kindOf(char: string): CharKind {
+  if (UPPER.test(char)) return "upper";
+  if (LOWER.test(char)) return "lower";
+  if (LETTER.test(char)) return "letter";
+  if (DIGIT.test(char)) return "digit";
+  return "separator";
+}
+
+/**
+ * Splits `text` into lower-cased word segments, walking it one code point at a time. A letter
+ * without case (`letter`) never opens a boundary of its own; it only continues the segment it
+ * follows.
+ */
+function segment(text: string): string[] {
+  const segments: string[] = [];
+  let current = "";
+  let previous: CharKind = "separator";
+  let previousChar = "";
+  const close = (): void => {
+    if (current !== "") segments.push(current.toLowerCase());
+    current = "";
+  };
+  for (const char of text) {
+    const kind = kindOf(char);
+    if (kind === "separator") {
+      close();
+    } else if (kind === "digit") {
+      if (previous !== "digit") close();
+      current += char;
+    } else {
+      if (previous === "digit" || (kind === "upper" && previous === "lower")) {
+        close();
+      } else if (kind === "lower" && previous === "upper" && current.length > previousChar.length) {
+        // The last capital of an acronym run starts the next word: `APIKey` is `API`, `Key`.
+        current = current.slice(0, -previousChar.length);
+        close();
+        current = previousChar;
+      }
+      current += char;
+    }
+    previous = kind;
+    previousChar = char;
+  }
+  close();
+  return segments;
+}
+
+function containsRun(haystack: readonly string[], needle: readonly string[]): boolean {
+  for (let start = 0; start + needle.length <= haystack.length; start++) {
+    if (needle.every((part, offset) => haystack[start + offset] === part)) return true;
+  }
+  return false;
+}
+
+function normalizeSegments(spec: string): NormalizedMatcher {
+  const wanted = segment(spec);
+  if (wanted.length === 0) return () => false;
+  return (key) => containsRun(segment(key), wanted);
+}
 
 function normalize(matcher: KeyMatcher): NormalizedMatcher {
-  const { pattern, caseInsensitive } = typeof matcher === "string" || matcher instanceof RegExp ? { pattern: matcher } : matcher;
+  if (typeof matcher === "object" && !(matcher instanceof RegExp) && typeof matcher.segments === "string") {
+    return normalizeSegments(matcher.segments);
+  }
+  const { pattern, caseInsensitive } =
+    typeof matcher === "string" || matcher instanceof RegExp
+      ? { pattern: matcher, caseInsensitive: false }
+      : (matcher as { pattern: string | RegExp; caseInsensitive?: boolean });
   if (typeof pattern === "string") {
     if (!caseInsensitive) return (key) => key === pattern;
     const lowered = pattern.toLowerCase();
@@ -45,16 +146,17 @@ function normalize(matcher: KeyMatcher): NormalizedMatcher {
   };
 }
 
-function normalizedMatchers(policy: RedactionPolicy): readonly NormalizedMatcher[] {
-  let matchers = normalizedByPolicy.get(policy);
-  if (matchers === undefined) {
-    matchers = policy.keys.map(normalize);
-    normalizedByPolicy.set(policy, matchers);
+function normalizedPolicy(policy: RedactionPolicy): NormalizedPolicy {
+  let normalized = normalizedByPolicy.get(policy);
+  if (normalized === undefined) {
+    normalized = { keys: policy.keys.map(normalize), except: (policy.except ?? []).map(normalize) };
+    normalizedByPolicy.set(policy, normalized);
   }
-  return matchers;
+  return normalized;
 }
 
-/** Whether `key` is matched by any of the policy's key matchers. */
+/** Whether `key` is matched by any of the policy's key matchers and by none of its exceptions. */
 export function matchKey(policy: RedactionPolicy, key: string): boolean {
-  return normalizedMatchers(policy).some((matches) => matches(key));
+  const { keys, except } = normalizedPolicy(policy);
+  return keys.some((matches) => matches(key)) && !except.some((matches) => matches(key));
 }
