@@ -40,25 +40,112 @@ below. It defaults to the string `"[REDACTED]"`.
 ```ts
 interface RedactionPolicy {
   keys: readonly KeyMatcher[];
+  except?: readonly KeyMatcher[];
 }
 
-type KeyMatcher = string | RegExp | { pattern: string | RegExp; caseInsensitive?: boolean };
+type KeyMatcher =
+  | string
+  | RegExp
+  | { pattern: string | RegExp; caseInsensitive?: boolean; segments?: never }
+  | { segments: string; pattern?: never; caseInsensitive?: never };
 ```
 
-A policy is a list of `KeyMatcher`s, each naming keys whose values are sensitive. A key matches if
-any matcher in the list matches:
+A policy is a list of `KeyMatcher`s, each naming keys whose values are sensitive. A key is
+redacted if and only if a matcher in `keys` matches it and no matcher in `except` does. `except`
+is optional and carves exemptions out of a broad rule; it takes the same `KeyMatcher`s as `keys`.
 
 - A bare `string` matches a key exactly and case-sensitively.
 - A bare `RegExp` is tested against the key with its own flags.
 - The object form, `{ pattern, caseInsensitive? }`, wraps either a string or a `RegExp` pattern and
   adds `caseInsensitive`, which case-insensitively matches the string or applies the `i` flag to
   the pattern.
+- The `{ segments: string }` form matches by word rather than by character; see below.
 
 ```ts
 const policy: RedactionPolicy = {
   keys: ["password", /token/, { pattern: "email", caseInsensitive: true }],
+  except: ["tokenCount"],
 };
 ```
+
+### `{ segments }`
+
+The key and the spec are each tokenized into lower-cased segments:
+
+- at every character that is not a letter or a digit,
+- at a lower-to-upper case change, and before the last capital of an acronym run, and
+- around every run of digits, so each digit run is its own segment.
+
+The key matches when the spec's segments appear contiguously among the key's own segments.
+Segmenting is always case-insensitive, so `caseInsensitive` alongside `segments` is a type error. A
+spec with no letters or digits (empty, or only whitespace and punctuation) has no segments, matches
+no key, and does not throw.
+
+| Key             | Segments              | `{ segments: "api key" }` | `{ segments: "token" }` | `{ segments: "session" }` | `{ segments: "secret" }` |
+| --------------- | --------------------- | ------------------------- | ----------------------- | ------------------------- | ------------------------ |
+| `APIKey`        | `api`, `key`          | matches                   |                         |                           |                          |
+| `x-api-key`     | `x`, `api`, `key`     | matches                   |                         |                           |                          |
+| `OAuthToken`    | `o`, `auth`, `token`  |                           | matches                 |                           |                          |
+| `oauth2Token`   | `oauth`, `2`, `token` |                           | matches                 |                           |                          |
+| `csrfToken`     | `csrf`, `token`       |                           | matches                 |                           |                          |
+| `tokenizer`     | `tokenizer`           |                           | does not match          |                           |                          |
+| `session2`      | `session`, `2`        |                           |                         | matches                   |                          |
+| `api_secret_key` | `api`, `secret`, `key` | does not match (not contiguous) |                    |                           | matches                  |
+
+`{ segments: "oauth" }` does not match `OAuthToken`, since `oauth` is not one of its segments.
+
+```ts
+const policy: RedactionPolicy = {
+  keys: [{ segments: "api key" }, { segments: "token" }],
+  except: [{ segments: "token count" }],
+};
+```
+
+## `secretKeys`
+
+```ts
+const secretKeys: RedactionPolicy;
+```
+
+A frozen `RedactionPolicy` preset for the keys that conventionally hold credentials. Every entry
+is a `{ segments }` matcher for one of: `password`, `passwd`, `pwd`, `secret`, `token`,
+`authorization`, `cookie`, `api key`, `private key`, `access key`, `session`, `credential`,
+`bearer`. So `token` also covers `refresh_token` and `csrfToken`, `cookie` covers `Set-Cookie`, and
+`api key` covers `x-api-key` and `APIKey`.
+
+Bare `auth` and `key` are excluded as too broad: `auth` matches `auth.method` and `authMode`, and
+`key` matches every `primaryKey` and `cacheKey`. Compose either in with `composePolicies` when an
+application wants it.
+
+```ts
+import { redact, secretKeys } from "@vipengele/ts-core-redaction";
+
+redact({ user: "ana", "x-api-key": "k-123" }, secretKeys);
+// => { user: "ana", "x-api-key": "[REDACTED]" }
+```
+
+## `composePolicies`
+
+```ts
+function composePolicies(...parts: RedactionPolicy[]): RedactionPolicy;
+```
+
+Returns a new frozen policy whose `keys` are every part's `keys` and whose `except` is every
+part's `except`, each in order. The parts are never mutated. `except` is policy-wide after
+composition: an exemption from one part also exempts a key another part matches.
+
+```ts
+import { composePolicies, redact, secretKeys } from "@vipengele/ts-core-redaction";
+
+const policy = composePolicies(secretKeys, {
+  keys: [{ segments: "auth" }],
+  except: ["tokenCount"],
+});
+```
+
+Compose once at startup and reuse the result. A policy is normalized once per object, and
+`composePolicies` returns a new object on every call, so composing per call re-normalizes every
+matcher every time.
 
 ## `Replacement`
 
@@ -81,9 +168,15 @@ redact(payload, policy, { replacement: (value, key) => `[REDACTED:${key}]` });
 ## Caveats
 
 - **A policy's matchers are normalized once, on first use, and cached by policy object identity.**
-  Mutating a policy's `keys` array after it has already been passed to `redact()` has no effect on
-  later calls with that same policy object. Build a new `RedactionPolicy` object instead of
-  mutating an existing one.
+  Mutating a policy's `keys` or `except` array after it has already been passed to `redact()` has
+  no effect on later calls with that same policy object. Build a new `RedactionPolicy` object
+  instead of mutating an existing one.
+- **`tokenCount` matches `{ segments: "token" }`, so `secretKeys` redacts it.** Segment matching
+  is by word, and `tokenCount` has the segments `token`, `count`. Use `except` to exempt such keys:
+  `composePolicies(secretKeys, { keys: [], except: ["tokenCount"] })`.
+- **`except` exempts from every rule in the policy, not only the rule beside it.** After
+  `composePolicies`, an `except` matcher from any part exempts a key that any other part's `keys`
+  matched.
 - **`toJSON()` is not honored, and an own `toJSON` is dropped from a copy rather than carried
   over.** `redact()` walks a value's own enumerable properties directly; it never calls `toJSON()`
   first. `@vipengele/ts-core-observability`'s error normalization honors `toJSON()` (ADR-0007);
