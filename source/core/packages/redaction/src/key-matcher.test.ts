@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { type KeyMatcher, matchKey, type RedactionPolicy } from "./key-matcher";
 
 describe("string matchers", () => {
@@ -203,5 +203,38 @@ describe("policies", () => {
     expect(matchKey(policy, "ssn")).toBe(true);
 
     expect(matchKey({ ...policy, except: [...except] }, "ssn")).toBe(false);
+  });
+
+  describe("segmenting the key", () => {
+    // Segmenting walks the key with `for...of`, the only place matching iterates a string, so the
+    // iterator's call count is the number of times the key was segmented. Each policy is matched
+    // once before counting, so segmenting its specs is not counted.
+    function iterationsWhileMatching(policy: RedactionPolicy, key: string): { matched: boolean; iterations: number } {
+      matchKey(policy, "warm-up");
+      const iterator = vi.spyOn(String.prototype, Symbol.iterator);
+      try {
+        const matched = matchKey(policy, key);
+        return { matched, iterations: iterator.mock.calls.length };
+      } finally {
+        iterator.mockRestore();
+      }
+    }
+
+    const manySegments: KeyMatcher[] = ["secret", "password", "api key", "token", "cookie"].map((spec) => ({ segments: spec }));
+
+    test("happens once per call, however many segments matchers the key is tested against", () => {
+      expect(iterationsWhileMatching({ keys: manySegments }, "userName")).toEqual({ matched: false, iterations: 1 });
+    });
+
+    test("happens once per call when keys and except both hold segments matchers", () => {
+      const policy: RedactionPolicy = { keys: [...manySegments, { segments: "user" }], except: manySegments };
+      expect(iterationsWhileMatching(policy, "userName")).toEqual({ matched: true, iterations: 1 });
+      expect(iterationsWhileMatching(policy, "userToken")).toEqual({ matched: false, iterations: 1 });
+    });
+
+    test("never happens when no segments matcher is reached", () => {
+      expect(iterationsWhileMatching({ keys: ["password", /token$/] }, "userName")).toEqual({ matched: false, iterations: 0 });
+      expect(iterationsWhileMatching({ keys: ["password", ...manySegments] }, "password")).toEqual({ matched: true, iterations: 0 });
+    });
   });
 });

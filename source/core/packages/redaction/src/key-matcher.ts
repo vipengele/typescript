@@ -30,7 +30,12 @@ export interface RedactionPolicy {
   except?: readonly KeyMatcher[];
 }
 
-type NormalizedMatcher = (key: string) => boolean;
+/**
+ * Tests one key. `segments` returns the key's word segments; a `{ segments }` matcher is the only
+ * kind that calls it, and every matcher in one `matchKey` call shares the same memoized getter, so
+ * the key is segmented at most once per call however many `{ segments }` matchers the policy has.
+ */
+type NormalizedMatcher = (key: string, segments: () => readonly string[]) => boolean;
 
 interface NormalizedPolicy {
   readonly keys: readonly NormalizedMatcher[];
@@ -110,7 +115,7 @@ function containsRun(haystack: readonly string[], needle: readonly string[]): bo
 function normalizeSegments(spec: string): NormalizedMatcher {
   const wanted = segment(spec);
   if (wanted.length === 0) return () => false;
-  return (key) => containsRun(segment(key), wanted);
+  return (_key, segments) => containsRun(segments(), wanted);
 }
 
 function normalize(matcher: KeyMatcher): NormalizedMatcher {
@@ -158,5 +163,10 @@ function normalizedPolicy(policy: RedactionPolicy): NormalizedPolicy {
 /** Whether `key` is matched by any of the policy's key matchers and by none of its exceptions. */
 export function matchKey(policy: RedactionPolicy, key: string): boolean {
   const { keys, except } = normalizedPolicy(policy);
-  return keys.some((matches) => matches(key)) && !except.some((matches) => matches(key));
+  let keySegments: readonly string[] | undefined;
+  const segments = (): readonly string[] => {
+    keySegments ??= segment(key);
+    return keySegments;
+  };
+  return keys.some((matches) => matches(key, segments)) && !except.some((matches) => matches(key, segments));
 }
