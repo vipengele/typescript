@@ -75,7 +75,13 @@ Every package runs unchanged in the browser and in Node 24+. `vitest.shared.ts` 
 `*.test.ts` in both a `node` and a `chromium` Vitest project; a suite that only makes sense in one
 runtime is named `*.node.test.ts` or `*.browser.test.ts`. Coverage is the union of both runs.
 Runtime-specific code is chosen by feature detection or conditional `exports`, never by assuming
-`window` or `process` exists.
+`window` or `process` exists. `@vipengele/ts-core-common/runtime` (`detectRuntime`,
+`detectCapability`) is where that detection lives.
+
+Shipped `src/` never imports a `node:` specifier outside `import type`: a Biome grit plugin
+(`source/<project>/biome/no-node-imports.grit`, run by `pnpm lint` and checked against its
+fixtures by `biome/check-node-import-ban.mjs`) rejects it, and a Node built-in is reached through
+`process.getBuiltinModule("node:…")` (ADR-0004). Test files are exempt.
 
 ## Packages
 
