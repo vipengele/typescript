@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { Numeric, normalizeAttributes, redact, Scope, VipengeleError } from "./index";
+import { composePolicies, Numeric, normalizeAttributes, redact, Scope, secretKeys, VipengeleError } from "./index";
 import type { AttributeValue, Attributes, AttributesInput, NormalizeAttributesOptions } from "./index";
 
 test("Numeric resolves from @vipengele/ts-core-common and round-trips a number", () => {
@@ -8,6 +8,20 @@ test("Numeric resolves from @vipengele/ts-core-common and round-trips a number",
 
 test("redact resolves from @vipengele/ts-core-redaction and redacts a matched key", () => {
   expect(redact({ password: "x" }, { keys: ["password"] })).toEqual({ password: "[REDACTED]" });
+});
+
+test("secretKeys resolves from @vipengele/ts-core-redaction and redacts a secret key", () => {
+  expect(redact({ password: "x", name: "n" }, secretKeys)).toEqual({ password: "[REDACTED]", name: "n" });
+});
+
+test("composePolicies resolves from @vipengele/ts-core-redaction and composes policies end to end", () => {
+  const policy = composePolicies(secretKeys, { keys: [{ segments: "ssn" }], except: ["tokenCount"] });
+
+  expect(redact({ password: "x", ssn: "1", tokenCount: 3 }, policy)).toEqual({
+    password: "[REDACTED]",
+    ssn: "[REDACTED]",
+    tokenCount: 3,
+  });
 });
 
 test("VipengeleError resolves from @vipengele/ts-core-common", () => {

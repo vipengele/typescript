@@ -56,6 +56,41 @@ describe("matched keys", () => {
   });
 });
 
+describe("segments and except", () => {
+  test("segment matchers and exceptions apply at every depth of a nested value", () => {
+    const segmentPolicy: RedactionPolicy = {
+      keys: [{ segments: "token" }, { segments: "api key" }],
+      except: [{ segments: "token count" }, "tokenizer"],
+    };
+    const input = {
+      auth: { OAuthToken: "a", csrfToken: "b", tokenCount: 3 },
+      headers: new Map<string, unknown>([
+        ["x-api-key", "c"],
+        ["x-request-id", "d"],
+      ]),
+      config: [{ APIKey: "e", api_secret_key: "f", tokenizer: "g" }],
+    };
+
+    expect(redact(input, segmentPolicy)).toEqual({
+      auth: { OAuthToken: "[REDACTED]", csrfToken: "[REDACTED]", tokenCount: 3 },
+      headers: new Map<string, unknown>([
+        ["x-api-key", "[REDACTED]"],
+        ["x-request-id", "d"],
+      ]),
+      config: [{ APIKey: "[REDACTED]", api_secret_key: "f", tokenizer: "g" }],
+    });
+  });
+
+  test("an exempted key is walked rather than replaced, so a match beneath it is still redacted", () => {
+    const exemptPolicy: RedactionPolicy = { keys: [{ segments: "session" }, "password"], except: ["sessionInfo"] };
+
+    expect(redact({ sessionInfo: { userId: 1, password: "x" }, sessionId: "abc" }, exemptPolicy)).toEqual({
+      sessionInfo: { userId: 1, password: "[REDACTED]" },
+      sessionId: "[REDACTED]",
+    });
+  });
+});
+
 describe("cycles", () => {
   test("a plain object referencing itself resolves the reference to [Circular]", () => {
     const input: Record<string, unknown> = { id: 1, password: "x" };
