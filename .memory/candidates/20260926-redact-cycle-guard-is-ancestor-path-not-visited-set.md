@@ -4,7 +4,7 @@ saw:
   - source/core/packages/redaction/src/redact.ts
 ---
 
-`walk()` (`source/core/packages/redaction/src/redact.ts:40-49`) adds a container to
+`walk()` (`source/core/packages/redaction/src/redact.ts:86-97`) adds a container to
 `context.ancestors` (a `WeakSet`) on entering its recursive walk and deletes it in a `finally`
 block on leaving. Only a container still in `ancestors` at the point it is re-encountered — i.e.
 still its own ancestor — resolves to `"[Circular]"`.

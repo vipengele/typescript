@@ -4,7 +4,7 @@ saw:
   - source/core/packages/redaction/src/redact.ts
 ---
 
-`walkError()` (`source/core/packages/redaction/src/redact.ts:105-122`) explicitly copies `name`,
+`walkError()` (`source/core/packages/redaction/src/redact.ts:248-266`) explicitly copies `name`,
 `message`, `stack`, and `cause` (when present) before running the generic `Object.keys()` walk
 that picks up a subclass's own fields (e.g. `code` on a `VipengeleError`). Without this, `Object
 .keys(new Error("x"))` returns `[]` — those four properties are non-enumerable on `Error.prototype`

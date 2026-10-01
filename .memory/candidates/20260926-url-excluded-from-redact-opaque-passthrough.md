@@ -4,7 +4,7 @@ saw:
   - source/core/packages/redaction/src/redact.ts
 ---
 
-`isOpaque()` (`source/core/packages/redaction/src/redact.ts:51-68`) passes `Date`, `ArrayBuffer`
+`isOpaque()` (`source/core/packages/redaction/src/redact.ts:142-152`) passes `Date`, `ArrayBuffer`
 and its views, `RegExp`, `Promise`, and boxed primitives (`String`/`Number`/`Boolean` wrapper
 objects) through by reference, because their state lives in internal slots or prototype getters
 rather than own enumerable keys — a generic instance-walk would silently return `{}` for them.
