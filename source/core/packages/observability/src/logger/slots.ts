@@ -21,8 +21,8 @@ const FALLBACK_LEVEL = "warn";
 const LEVELS_BY_SEVERITY = (Object.keys(SEVERITY_NUMBERS) as Level[]).sort((a, b) => SEVERITY_NUMBERS[a] - SEVERITY_NUMBERS[b]);
 
 /**
- * Normalised views of foreign tables, keyed by the published table's identity, so repeated reads
- * of one published table return one view and `resolveEntry`'s identity-keyed memo stays warm. Each
+ * Resolved tables, keyed by the published table's identity (a canonical table maps to itself), so
+ * repeated reads of one published table skip the scan and `resolveEntry`'s identity-keyed memo stays warm. Each
  * copy keeps its own: a view is derived from the slot, never shared through it.
  */
 const views = new WeakMap<object, LevelTable>();
@@ -89,29 +89,34 @@ export function normalizeEntry(value: unknown): LevelEntry {
 
 /**
  * The table this copy resolves against for `published`, a value read from the levels slot. A table
- * whose every entry is already understood is returned as-is; otherwise a normalised view is built
- * once per published table and reused, so the view's identity is stable between reads. `published`
- * itself is never written to. A non-object reads as the default table.
+ * whose every entry is already understood is returned as-is; otherwise a normalised view is built.
+ * Either outcome is cached by the published table's identity, so a repeat read neither rescans the
+ * table nor changes the view's identity. This relies on a published table being replaced, never
+ * mutated, the same contract as `resolveEntry`'s memo. `published` itself is never written to. A
+ * non-object reads as the default table.
  */
 export function normalizeTable(published: unknown): LevelTable {
   if (typeof published !== "object" || published === null) {
     fallbackTable ??= defaultTable();
     return fallbackTable;
   }
+  const cached = views.get(published);
+  if (cached !== undefined) {
+    return cached;
+  }
   const source = published as Readonly<Record<string, unknown>>;
   const keys = Object.keys(source);
+  let view: LevelTable;
   if (keys.every((key) => isCanonicalEntry(source[key]))) {
-    return source as LevelTable;
-  }
-  let view = views.get(published);
-  if (view === undefined) {
+    view = source as LevelTable;
+  } else {
     const entries: Record<string, LevelEntry> = Object.create(null);
     for (const key of keys) {
       entries[key] = normalizeEntry(source[key]);
     }
     view = freezeTable(entries);
-    views.set(published, view);
   }
+  views.set(published, view);
   return view;
 }
 

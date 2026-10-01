@@ -180,6 +180,29 @@ describe("normalizeTable", () => {
     expect(normalizeTable(source)).toBe(normalizeTable(source));
   });
 
+  test("scans a published table once, however often it is read", () => {
+    const scans = vi.fn();
+    const watch = (target: Record<string, unknown>) =>
+      new Proxy(target, {
+        ownKeys(t) {
+          scans();
+          return Reflect.ownKeys(t);
+        },
+      });
+    const canonical = watch({ "*": entryFor("warn"), app: entryFor("debug") });
+    expect(normalizeTable(canonical)).toBe(canonical);
+    expect(normalizeTable(canonical)).toBe(canonical);
+    expect(scans).toHaveBeenCalledTimes(1);
+
+    const foreign = watch({ "*": { level: "notice", severity: 11 } });
+    const view = normalizeTable(foreign);
+    expect(normalizeTable(foreign)).toBe(view);
+    expect(scans).toHaveBeenCalledTimes(2);
+
+    normalizeTable(watch({ "*": entryFor("warn") }));
+    expect(scans).toHaveBeenCalledTimes(3);
+  });
+
   test("returns one default table for every non-object", () => {
     const fromNull = normalizeTable(null);
     expect({ ...fromNull }).toEqual({ "*": entryFor("warn") });
