@@ -264,4 +264,35 @@ serializeError("boom"); // => { type: "Error", message: "boom", synthetic: true 
 
 `Level` (`"trace" | "debug" | "info" | "warn" | "error" | "fatal"`) is the severity of a log record
 or an error event, and `Threshold` (`Level | "off"`) the lowest one a logger or sink lets through.
-Both are types only, exported from the package root.
+Both types, and the values below, are exported from the package root.
+
+`SEVERITY_NUMBERS` is a frozen table of each `Level`'s OpenTelemetry severity number — `trace` 1,
+`debug` 5, `info` 9, `warn` 13, `error` 17, `fatal` 21 — and `SeverityNumber` is the type of those
+six numbers. `isLevel(value)` narrows an `unknown` to a `Level`. It looks the string up as an own
+property of the table, so inherited names such as `"constructor"` and the `"off"` threshold are
+not levels.
+
+```ts
+import { isLevel, SEVERITY_NUMBERS } from "@vipengele/ts-core-common";
+
+SEVERITY_NUMBERS.warn; // 13
+
+isLevel("warn"); // true
+isLevel("off"); // false
+isLevel("constructor"); // false
+```
+
+## Clock
+
+`Clock` (`() => number`) is a source of the current time as epoch milliseconds, carrying a
+sub-millisecond fraction. `systemClock` is the default one, `performance.timeOrigin +
+performance.now()`: the fraction comes from the monotonic high-resolution timer, so consecutive
+calls never decrease, unlike `Date.now()`, which follows the adjustable wall clock. Both are
+exported from the package root.
+
+```ts
+import { type Clock, systemClock } from "@vipengele/ts-core-common";
+
+systemClock(); // e.g. 1704067200000.4
+const fixed: Clock = () => 0; // a stand-in for a test
+```

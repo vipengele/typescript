@@ -18,7 +18,8 @@ Runs in the browser and in Node 24+. ESM only, side-effect free.
 ## `./errors`
 
 `createReporter` builds a `Reporter` from a builder, starting from the defaults — no transport,
-the high-resolution epoch clock — and a `configure` callback that adds to them:
+`systemClock` from `@vipengele/ts-core-common` as the clock (the `Clock` type is exported from
+`./errors`, to name what `builder.clock()` takes) — and a `configure` callback that adds to them:
 
 ```ts
 import { createConsoleTransport, createReporter } from "@vipengele/ts-core-observability/errors";
