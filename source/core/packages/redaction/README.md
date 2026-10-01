@@ -1,8 +1,8 @@
 # @vipengele/ts-core-redaction
 
 Removes secrets and personal data from structured values before they are logged, reported or sent
-anywhere, by matching keys against a policy — value-pattern matching and depth/size limits are
-outside this package's scope. Usable on its own, and the redaction layer of
+anywhere, by matching keys against a policy, bounding how deep, wide and long the walk goes.
+Value-pattern matching is outside this package's scope. Usable on its own, and the redaction layer of
 `@vipengele/ts-core-observability`.
 
 ```sh
@@ -77,6 +77,70 @@ a function `Replacement` runs per match, every time.
 ```ts
 redact(payload, policy, { replacement: (value, key) => `[REDACTED:${key}]` });
 ```
+
+## Limits
+
+```ts
+interface RedactOptions {
+  replacement?: Replacement;
+  maxDepth?: number;
+  maxBreadth?: number;
+  maxStringLength?: number;
+}
+```
+
+The walk is bounded by three limits, each on by default. A breach leaves a marker in the copy and
+never throws.
+
+| Option            | Default | Bounds                                                                                          |
+| ----------------- | ------- | ----------------------------------------------------------------------------------------------- |
+| `maxDepth`        | `6`     | Levels of nesting kept, the input itself counting as the first. Only containers count.          |
+| `maxBreadth`      | `100`   | Fields per object, items per array, entries per `Map`, members per `Set`, own fields per `Error`. |
+| `maxStringLength` | `8192`  | UTF-16 code units per string value. Keys are never cut.                                         |
+
+The markers:
+
+- `"[Truncated]"` replaces a container deeper than `maxDepth`.
+- `"[Truncated: N more]"` follows the first `maxBreadth` entries of a container, `N` being the
+  number left out. It is an extra item of an array or member of a `Set`, and an entry under the key
+  `"…"` of an object or `Map`. When a kept key already holds `"…"`, the marker takes `"…#1"`, then
+  `"…#2"`, and so on. An `Error`'s `name`, `message`, `stack` and `cause` are always kept; only the
+  fields it adds count toward `maxBreadth`.
+- `"…[truncated]"` is appended to a string cut to `maxStringLength`; the suffix is not counted.
+
+A reference back to a container that is still being walked is `"[Circular]"`, checked ahead of the
+depth limit, so a cycle at the depth limit reads `"[Circular]"`.
+
+A limit only ever drops data, so two cases involve a matched key:
+
+- A matched key gets its replacement even when its value is a container past the depth limit,
+  because the key is matched before the value is walked.
+- A container past `maxDepth` is never read, so none of the keys inside it are matched. A function
+  `Replacement` is called fewer times than it would be without limits.
+
+`Infinity` turns a limit off. With `maxDepth: Infinity`, a deep enough input can overflow the
+stack. Limits are not validated: `NaN` silently disables the limit it is given, `maxBreadth`
+included.
+
+Chaining `redact` into `toJsonSafe` (from `@vipengele/ts-core-common`) with both left at their
+equal breadth defaults miscounts: the second step drops the first step's `"[Truncated: N more]"`
+marker as an ordinary entry and appends its own. Bound in one step and pass `Infinity` in the
+other.
+
+```ts
+redact(payload, policy, { maxBreadth: Infinity, maxDepth: Infinity, maxStringLength: Infinity });
+```
+
+## Cost model
+
+Work is linear in the bounded tree: the containers kept, the entries kept in them and the
+characters kept in their strings. A reference shared between branches, without being a cycle, is
+walked once per path that reaches it, so an adversarially shared acyclic graph costs up to about
+100^6 = 10^12 node visits at the defaults. Lower `maxBreadth` or `maxDepth` for input that is not
+trusted to be a tree.
+
+The output of a function `Replacement` is neither walked nor bounded. With `maxDepth: Infinity`,
+stack depth grows with the input's depth.
 
 ## Caveats
 
