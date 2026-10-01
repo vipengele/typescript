@@ -46,7 +46,14 @@ components:
 # infrastructure, not a source/ package — no component's `dir` covers them, and a
 # lasting automated fixture-test suite for them is scope beyond issue #71; each was
 # hand-verified against fixtures instead.
+#
+# Each project's biome/ directory holds lint tooling run by `pnpm lint`: the check
+# script and the fixtures it lints against the project's real biome.json. The
+# fixtures are deliberately violating or deliberately passing sources with no tests
+# of their own, and no component's `dir` contains them.
 excludes:
+  - "source/core/biome/**"
+  - "source/ts/biome/**"
   - "source/core/vitest.shared.ts"
   - "source/ts/vitest.shared.ts"
   - ".github/actions/build-cross-project-deps/build.sh"
