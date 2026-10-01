@@ -174,6 +174,12 @@ redact(payload, policy, { replacement: (value, key) => `[REDACTED:${key}]` });
 - **`tokenCount` matches `{ segments: "token" }`, so `secretKeys` redacts it.** Segment matching
   is by word, and `tokenCount` has the segments `token`, `count`. Use `except` to exempt such keys:
   `composePolicies(secretKeys, { keys: [], except: ["tokenCount"] })`.
+- **`secretKeys` matches whole words, so plurals and run-together spellings are not covered.**
+  `credentials`, `tokens`, `apikey`, `apiKeys` (`api`, `keys`), `accesstoken`, `sessionid` and
+  `clientsecret` each have a segment that differs from the listed `credential`, `token`, `api key`,
+  `session` and `secret`, so none of them is redacted; `accessToken` (`access`, `token`) is. List
+  such keys explicitly:
+  `composePolicies(secretKeys, { keys: [{ segments: "credentials" }, { segments: "apikey" }] })`.
 - **`except` exempts from every rule in the policy, not only the rule beside it.** After
   `composePolicies`, an `except` matcher from any part exempts a key that any other part's `keys`
   matched.

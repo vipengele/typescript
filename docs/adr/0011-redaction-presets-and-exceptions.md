@@ -37,7 +37,9 @@ tokenization is public API: changing where it splits changes which keys a policy
 
 - **Substring or regular-expression defaults.** A substring `token` also matches `tokenizer`, and
   a regular expression that avoids that is one every application would have to read and trust.
-  Whole-word matching gives the defaults a meaning that can be stated in one line.
+  Whole-word matching gives the defaults a meaning that can be stated in one line. Its cost is
+  that plurals and run-together spellings (`credentials`, `apikey`, `sessionid`) are not covered
+  by the preset, and an application lists the spellings its data uses.
 - **A separate `Preset` type.** A preset is a set of keys to redact, which is what a policy is.
   A second type would need its own composition rules and its own way into `redact`.
 - **A sub-path export.** The surface is two names. Like `redact`, they are root exports, and a
