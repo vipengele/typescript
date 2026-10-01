@@ -17,6 +17,14 @@ test("normalizeAttributes is reachable through the entry point", () => {
   expect(when).toBe("1970-01-01T00:00:00.000Z");
 });
 
+test("the severity table and isLevel are reachable through the entry point", () => {
+  const info: entry.SeverityNumber = entry.SEVERITY_NUMBERS.info;
+
+  expect(info).toBe(9);
+  expect(entry.isLevel("info")).toBe(true);
+  expect(entry.isLevel("off")).toBe(false);
+});
+
 test("toJsonSafe is reachable through the entry point", () => {
   const options: entry.ToJsonSafeOptions = { maxDepth: 6 };
 
