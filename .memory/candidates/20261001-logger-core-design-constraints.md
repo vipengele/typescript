@@ -1,28 +1,33 @@
 ---
-about: the logger's shape is already decided by ADR-0005/0007 (shared globalThis level table, warn default, Object.hasOwn validation, LoggingConfigError); common already exports Level/Threshold/SEVERITY_NUMBERS/isLevel
+about: the logger core's shape — shared globalThis slots, identity-keyed memos, the frozen Logging facade, and what the test runtimes cannot simulate
 saw:
   - docs/adr/0005-logging-is-configured-through-a-shared-default-provider-and-a-builder.md
-  - docs/adr/0007-the-log-record-and-error-event-data-model.md
-  - docs/adr/0006-one-scope-tree-shared-by-the-logger-and-the-reporter.md
+  - source/core/packages/observability/src/logger/slots.ts
+  - source/core/packages/observability/src/logger/levels.ts
+  - source/core/packages/observability/src/logger/logging.ts
+  - source/core/packages/observability/src/logger/logging.test.ts
+  - source/core/packages/observability/src/logger/spec.test.ts
   - source/core/packages/common/src/levels/severity.ts
-  - source/core/packages/common/src/levels/level.ts
-  - source/core/packages/common/src/context/global-registry.ts
-  - source/core/packages/observability/src/logger/index.ts
 ---
-Cost: reading ADRs 0004-0007 plus common/levels and the registry.
+Cost: working out the slot protocol, the cache contract and the lint/test-runtime limits by building them.
 
-- Level table must be shared: ADR-0005 "What two versions of the package share" keys it
-  `Symbol.for('vipengele.logger.levels')` (dot style), format public and never incompatible; an unknown
-  level name resolves to the nearest known one. Provider/Sink state is `Symbol.for('vipengele.logger.provider.v1')`.
-  Only existing code precedent (global-registry.ts:30) uses `vipengele:async-context-store:<key>` (colon style).
-  Naming mismatch is unresolved; the observability package has no globalThis use yet (grep of src/ found none).
-- Default `'*': 'warn'` (ADR-0005 "Quiet by default"). `off` is a Threshold, not a Level (ADR-0007 "Levels").
-- Level validation by `Object.hasOwn` already exists as `isLevel` in common (severity.ts:19-21); compare via
-  `SEVERITY_NUMBERS` (severity.ts:6-13: 1,5,9,13,17,21). `Level`/`Threshold` are at common root (index.ts:5-7).
-- Errors: bad level in code throws `LoggingConfigError` (ADR-0002 code + guard); bad entry in an env/URL/storage spec
-  string is skipped with its own `warn` (ADR-0005 "How configuration changes"). Spec parsing from env is lazy
-  (VPG_LOG), never at import ("sideEffects": false).
-- ADR-0005 `override(cat, null)` removes one override; `configure` rebuilds whole and validates before swap.
-- Logger and reporter share the Scope tree (ADR-0006), not level config; no ADR makes them share thresholds.
-- logger/index.ts is `export {};` (empty stub); its test only checks the entry loads.
-- Package scaffold: tsup entries logger+errors, `build` = tsup && tsc; 100% coverage thresholds in vitest.shared.ts.
+- The levels slot (`Symbol.for('vipengele.logger.levels')`) holds a plain table of category to `{ level, severity }`;
+  the default provider sits behind `Symbol.for('vipengele.logger.provider.v1')`. Both keys are dotted, unlike the
+  colon-style key in common's `context/global-registry.ts`; `slots.ts` records ADR-0005 as the reason. Both are created
+  lazily inside functions, never at module load.
+- Tables are replaced, never mutated: `resolveEntry` (levels.ts) memoises per table identity in a WeakMap, and
+  `normalizeTable` (slots.ts) caches its result per published table identity too. Mutating a published table leaves both
+  caches stale. `publishLevelTable` stores a frozen, prototype-less copy.
+- An entry with a level name this copy does not know resolves by its carried `severity` to the nearest known level at or
+  above it (never "everything on"); a malformed entry falls back to `warn`.
+- `Object.hasOwn` guards every lookup (`isLevel` in common's severity.ts, `resolveEntry`), so `constructor` and
+  `__proto__` are not levels. `__proto__` is a valid category name, so category-keyed objects are built with
+  `Object.create(null)`.
+- `Logging` is a frozen object, not a static class: biome lint rejects static-only classes under `--error-on-warnings`.
+- The warn target (`setWarnTarget`) is per-copy module state, so a `configure` through another copy's default provider
+  reports through that copy's target.
+- Under Vitest's Chromium project `vi.resetModules` does not yield a second module instance, so `logging.test.ts`
+  simulates a second copy by wiring a provider like the default one and writing the slots directly. Vitest isolates per
+  file, not per test, so tests delete both symbol properties in `afterEach`.
+- In `spec.test.ts` the `__proto__` key is read through a variable: biome's `useLiteralKeys` and
+  `noDeprecatedProperty` flag the literal forms.
