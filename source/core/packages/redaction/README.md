@@ -165,6 +165,144 @@ a function `Replacement` runs per match, every time.
 redact(payload, policy, { replacement: (value, key) => `[REDACTED:${key}]` });
 ```
 
+## `redactUrl`, `redactQueryString` and `redactHeaders`
+
+`redact` walks structured values by key. Secrets in transit sit in strings and header lists
+instead, so three helpers redact those. They share one options type and read their input as text
+or as a header list; none of them throws on its contents or mutates its input.
+
+```ts
+import { redactHeaders, redactQueryString, redactUrl } from "@vipengele/ts-core-redaction";
+
+redactUrl("https://bob:pw@example.com/p?token=abc&page=2#access_token=x");
+// => "https://[REDACTED]:[REDACTED]@example.com/p?token=[REDACTED]&page=2#access_token=[REDACTED]"
+
+redactQueryString("?refresh_token=abc&page=2");
+// => "?refresh_token=[REDACTED]&page=2"
+
+redactHeaders({ Authorization: "Bearer x", Accept: "text/plain" });
+// => { Authorization: "[REDACTED]", Accept: "text/plain" }
+```
+
+```ts
+function redactUrl(url: string, options?: RedactStringOptions): string;
+function redactQueryString(query: string, options?: RedactStringOptions): string;
+function redactHeaders(headers: Headers, options?: RedactStringOptions): Headers;
+function redactHeaders(headers: HeaderTuples, options?: RedactStringOptions): HeaderTuples;
+function redactHeaders(headers: HeaderRecord, options?: RedactStringOptions): HeaderRecord;
+
+interface RedactStringOptions {
+  policy?: RedactionPolicy;
+  replacement?: Replacement;
+  maxStringLength?: number;
+  maxBreadth?: number;
+}
+
+type HeaderRecord = Record<string, string | string[]>;
+type HeaderTuples = [string, string][];
+```
+
+### Options
+
+| Option            | Default      | Meaning                                                                                       |
+| ----------------- | ------------ | --------------------------------------------------------------------------------------------- |
+| `policy`          | `secretKeys` | Which parameter or header names have their values redacted.                                   |
+| `replacement`     | `"[REDACTED]"` | What a matched value is replaced with; see `Replacement`.                                   |
+| `maxStringLength` | `8192`       | UTF-16 code units kept of the redacted URL or query string, or of each header value.          |
+| `maxBreadth`      | `100`        | Parameters kept in a query string, or headers kept in a header list.                          |
+
+The limit defaults are the ones `redact` uses, and the same markers apply: `"…[truncated]"` ends a
+cut string and `"[Truncated: N more]"` stands for the parameters or headers left out. There is no
+`maxDepth`, since a string has no nesting. Redaction runs first and truncation after, so a secret
+past the cut is still replaced. A function `Replacement` receives the percent-decoded value and the
+key described below; a non-string return is converted with `String()` and written as-is, without
+percent-encoding.
+
+### `redactUrl`
+
+Returns `url` with its userinfo replaced and the value of every query and fragment parameter whose
+name the policy matches replaced.
+
+- **Userinfo is always redacted, whatever the policy.** `https://bob:pw@host` becomes
+  `https://[REDACTED]:[REDACTED]@host`, and a username with no password gives
+  `https://[REDACTED]@host`. A function `Replacement` is called with key `"username"` or
+  `"password"`.
+- **Userinfo is found the way a WHATWG parser finds it, and fails closed.** It follows `scheme://`
+  or two leading separators, each `/` or `\` (`//host`, `\\host`, `/\host`), and for a special scheme (`http`, `https`, `ws`, `wss`, `ftp`, `file`, in any
+  case) any run of `/` and `\`, so `https:u:pw@host` and `https:\\u:pw@host` are redacted; a tab,
+  LF or CR in the scheme or between the slashes is ignored. When the authority has the `user:pass`
+  shape (a `:` before the first `/`, `?` or `#`), the userinfo runs to its first `@`, and on through
+  any further `@` before the next `/`, `?` or `#`. A password holding an unencoded `#`, `?`, `/` or
+  `@` is replaced whole, and an `@` in the path or query after it (`https://u:pw@host/x?e=a@b`) is
+  kept. A host with a port and a later `@` (`https://host:8080/a@b`) has the same shape and is
+  over-redacted up to that `@`. Without a `:`, an `@` in the path, query or fragment
+  (`https://host/p@x`, `https://host?e=a@b`) is not userinfo.
+- **The URL is read as text and never parsed into a `URL`.** Relative, scheme-less,
+  protocol-relative and malformed input is accepted, and every byte outside a redacted value is
+  kept as written: `%20` stays `%20`, `+` stays `+`, `~` and `!` stay unencoded, separators and
+  empty segments stay. Re-serialising through `URLSearchParams` would rewrite all of those.
+- **Parameter names are decoded before matching**: `%` escapes are decoded and `+` is a space, so
+  `to%6Ben=x` matches `token`. A name that cannot be decoded (a malformed `%` escape) has its value
+  redacted, so an undecodable name fails closed. A function `Replacement` receives the decoded name
+  as its key.
+- **A segment without `=` is kept**, since it holds no value. A repeated name is redacted every
+  time it appears.
+- **A fragment is a parameter list only if it holds a `name=value` pair with a non-empty name.**
+  `#access_token=x` is one, so its matched values are redacted; `#section-2` and `#=` are not, and
+  are kept whole. A parameter list in a fragment is matched like a query, so
+  `#access_token=x&token_type=bearer` redacts both values, as `secretKeys` matches `token_type` by
+  its `token` word.
+- `maxBreadth` bounds the query and the fragment separately.
+
+### `redactQueryString`
+
+Returns `query` with matched parameter values replaced, under the rules above. A leading `?` is
+accepted and kept; without one the input is the bare parameter list.
+
+### `redactHeaders`
+
+Returns the kind it was given: a new `Headers` for a `Headers`, a new record for a record, new
+`[name, value]` pairs for pairs.
+
+- **A matched header has its whole value replaced.** No scheme is kept (`Bearer` goes with the
+  token) and no cookie is parsed.
+- **Every `Set-Cookie` entry is replaced on its own.** A `Headers` is read through iteration, never
+  `get("set-cookie")`, which joins cookies with `", "` and is ambiguous. A function `Replacement`
+  receives `"set-cookie"` as the key of a cookie entry, whatever its casing.
+- **Names keep their casing in records and pairs**, and names that differ only in case are separate
+  entries. A `Headers` lower-cases names, so with a `Headers` input a string matcher in the policy
+  matches the lower-cased name (`"authorization"`, not `"Authorization"`), and a function
+  `Replacement` receives the lower-cased name. A `{ segments }` matcher is case-insensitive either
+  way.
+- **A `Headers` result stores any value it rejects as `"[REDACTED]"`.** A `Headers` value must be
+  a byte string, so every truncated value (the `"…[truncated]"` suffix is not one) and any
+  replacement outside Latin-1 is stored whole as `"[REDACTED]"` instead.
+- The breadth marker of a `Headers` is stored under the name `...`, since a header name cannot hold
+  `…`; records and pairs use `…`, made unique against the kept names.
+- `maxBreadth` bounds the headers kept, and a record's list of values is bounded to `maxBreadth`
+  elements as well.
+
+### Known gaps in the default policy
+
+`secretKeys` matches whole words, so the parameter names `apikey`, `sig` and `signature`, common in
+signed URLs, are not matched. Compose them in:
+
+```ts
+import { composePolicies, redactUrl, secretKeys } from "@vipengele/ts-core-redaction";
+
+const policy = composePolicies(secretKeys, {
+  keys: [{ segments: "apikey" }, { segments: "sig" }, { segments: "signature" }],
+});
+
+redactUrl("https://example.com/f?apikey=k1&sig=s1&page=2", { policy });
+// => "https://example.com/f?apikey=[REDACTED]&sig=[REDACTED]&page=2"
+```
+
+### Cost
+
+The helpers are O(n) in the length of the input whatever `maxStringLength` is: the whole input is
+read before the result is cut. A URL cut to `maxStringLength` is no longer a valid URL.
+
 ## Limits
 
 ```ts
@@ -233,6 +371,9 @@ stack depth grows with the input's depth.
 
 ## Caveats
 
+- **`redact` still returns `Headers`, `URL` and `URLSearchParams` as `{}`.** They keep their state
+  in internal slots, not own enumerable keys, so the walk finds nothing to copy. Redact them with
+  `redactHeaders`, `redactUrl` (on `url.href`) and `redactQueryString` (on `params.toString()`).
 - **A policy's matchers are normalized once, on first use, and cached by policy object identity.**
   Mutating a policy's `keys` or `except` array after it has already been passed to `redact()` has
   no effect on later calls with that same policy object. Build a new `RedactionPolicy` object

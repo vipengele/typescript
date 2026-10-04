@@ -41,7 +41,10 @@ Error Event, Scope, Breadcrumb, Transport) before naming things.
     root, not a sub-path, since every package that logs or reports needs them.
   - `packages/redaction` — `@vipengele/ts-core-redaction`: the reusable redaction library. A `RedactionPolicy` matches keys by exact string, regex or
     `{ segments }` (word-segment match), carves exceptions out with `except`, and composes through
-    `composePolicies`; `secretKeys` is the frozen preset (ADR-0011).
+    `composePolicies`; `secretKeys` is the frozen preset (ADR-0011). `redactUrl`,
+    `redactQueryString` and `redactHeaders` redact secrets in transit — they read a URL or query
+    string as text and a header list by name, always replace URL userinfo, and replace a matched
+    header's whole value (ADR-0012).
   - `packages/observability` — `@vipengele/ts-core-observability`: the logger (`./logger`) and the
     error reporter (`./errors`), two entry points of one package. `./logger`'s `Logging` facade
     configures the default `LoggerProvider` through a layered builder or a spec string
@@ -65,8 +68,9 @@ Error Event, Scope, Breadcrumb, Transport) before naming things.
   depends on `@vipengele/ts-core-common` and `@vipengele/ts-core-redaction` — a pin plus a
   `link:` override in its `pnpm-workspace.yaml` for each (ADR-0009) — and re-exports `Numeric`
   from `@vipengele/ts-core-common`'s `./types/numeric` sub-path, `Locale` (with `HourCycle`,
-  `IsoWeekday`, `NameStyle`) from its `./locale` sub-path, and `redact`, `secretKeys` and
-  `composePolicies` (with `RedactionPolicy`, `KeyMatcher`, `RedactOptions`, `Replacement`) from
+  `IsoWeekday`, `NameStyle`) from its `./locale` sub-path, and `redact`, `secretKeys`,
+  `composePolicies`, `redactUrl`, `redactQueryString` and `redactHeaders` (with `RedactionPolicy`,
+  `KeyMatcher`, `RedactOptions`, `RedactStringOptions`, `Replacement`) from
   `@vipengele/ts-core-redaction`.
 - A sub-path of `@vipengele/ts-core-common` needs both a `tsup.config.ts` entry and a
   `package.json` `exports` key; `src/package-exports.test.ts` fails when either is missing.
