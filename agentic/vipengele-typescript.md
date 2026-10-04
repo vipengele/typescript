@@ -53,9 +53,12 @@ Error Event, Scope, Breadcrumb, Transport) before naming things.
   deliberate exception to the `@vipengele/ts-<project>-<package>` convention (ADR-0003). It
   depends on `@vipengele/ts-core-common` and `@vipengele/ts-core-redaction` — a pin plus a
   `link:` override in its `pnpm-workspace.yaml` for each (ADR-0009) — and re-exports `Numeric`
-  from `@vipengele/ts-core-common`'s `./types/numeric` sub-path and `redact`, `secretKeys` and
+  from `@vipengele/ts-core-common`'s `./types/numeric` sub-path, `Locale` (with `HourCycle`,
+  `IsoWeekday`, `NameStyle`) from its `./locale` sub-path, and `redact`, `secretKeys` and
   `composePolicies` (with `RedactionPolicy`, `KeyMatcher`, `RedactOptions`, `Replacement`) from
   `@vipengele/ts-core-redaction`.
+- A sub-path of `@vipengele/ts-core-common` needs both a `tsup.config.ts` entry and a
+  `package.json` `exports` key; `src/package-exports.test.ts` fails when either is missing.
 - `.github/actions/changed-projects` — the projects a change affects; CI builds only those.
 - `docs/adr/` — architecture decision records. Read before revisiting a decision recorded there.
 - `docs/release-notes/` — one file per release, named after its tag (`vX.Y.Z.md`). The release
