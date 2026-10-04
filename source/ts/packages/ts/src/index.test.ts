@@ -1,6 +1,18 @@
+// biome-ignore-all lint/security/noSecrets: the redaction fixtures are URL and header strings, flagged only for their entropy
 import { expect, test } from "vitest";
-import { composePolicies, Numeric, normalizeAttributes, redact, Scope, secretKeys, VipengeleError } from "./index";
-import type { AttributeValue, Attributes, AttributesInput, NormalizeAttributesOptions } from "./index";
+import {
+  composePolicies,
+  Numeric,
+  normalizeAttributes,
+  redact,
+  redactHeaders,
+  redactQueryString,
+  redactUrl,
+  Scope,
+  secretKeys,
+  VipengeleError,
+} from "./index";
+import type { AttributeValue, Attributes, AttributesInput, NormalizeAttributesOptions, RedactStringOptions } from "./index";
 
 test("Numeric resolves from @vipengele/ts-core-common and round-trips a number", () => {
   expect(Numeric.parse(Numeric.format(1234.5, "en-US"), "en-US")).toBe(1234.5);
@@ -12,6 +24,20 @@ test("redact resolves from @vipengele/ts-core-redaction and redacts a matched ke
 
 test("secretKeys resolves from @vipengele/ts-core-redaction and redacts a secret key", () => {
   expect(redact({ password: "x", name: "n" }, secretKeys)).toEqual({ password: "[REDACTED]", name: "n" });
+});
+
+test("redactUrl resolves from @vipengele/ts-core-redaction and redacts a matched query parameter", () => {
+  const options: RedactStringOptions = { policy: secretKeys };
+
+  expect(redactUrl("https://u:p@h/?token=x", options)).toBe("https://[REDACTED]:[REDACTED]@h/?token=[REDACTED]");
+});
+
+test("redactQueryString resolves from @vipengele/ts-core-redaction and redacts a matched query parameter", () => {
+  expect(redactQueryString("?token=x&a=1")).toBe("?token=[REDACTED]&a=1");
+});
+
+test("redactHeaders resolves from @vipengele/ts-core-redaction and redacts a matched header", () => {
+  expect(redactHeaders({ Authorization: "Bearer x", Accept: "a" })).toEqual({ Authorization: "[REDACTED]", Accept: "a" });
 });
 
 test("composePolicies resolves from @vipengele/ts-core-redaction and composes policies end to end", () => {

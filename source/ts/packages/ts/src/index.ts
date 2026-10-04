@@ -1,7 +1,7 @@
 export { Numeric } from "@vipengele/ts-core-common/types/numeric";
 export { Scope } from "@vipengele/ts-core-common/scope";
-export { composePolicies, redact, secretKeys } from "@vipengele/ts-core-redaction";
-export type { RedactionPolicy, KeyMatcher, RedactOptions, Replacement } from "@vipengele/ts-core-redaction";
+export { composePolicies, redact, redactHeaders, redactQueryString, redactUrl, secretKeys } from "@vipengele/ts-core-redaction";
+export type { RedactionPolicy, KeyMatcher, RedactOptions, RedactStringOptions, Replacement } from "@vipengele/ts-core-redaction";
 export { normalizeAttributes } from "@vipengele/ts-core-common/attributes";
 export type { AttributeValue, Attributes, AttributesInput, NormalizeAttributesOptions } from "@vipengele/ts-core-common/attributes";
 export { VipengeleError } from "@vipengele/ts-core-common";
