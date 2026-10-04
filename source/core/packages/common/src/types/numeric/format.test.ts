@@ -97,3 +97,27 @@ test("an omitted locale is read on every call rather than fixed at the first", (
 test("two Locale instances for the same tag format alike", () => {
   expect(format(1234.5, new Locale("sv-SE"))).toBe(format(1234.5, new Locale("sv-se")));
 });
+
+describe("formatter cache", () => {
+  test("constructs one Intl.NumberFormat per locale tag and maximumFractionDigits", () => {
+    const spy = vi.spyOn(Intl, "NumberFormat");
+
+    try {
+      const locale = new Locale("nl-BE");
+      expect(format(1234.5, locale)).toBe(format(1234.5, locale));
+      expect(spy).toHaveBeenCalledTimes(1);
+
+      expect(format(1.23456, locale, { maximumFractionDigits: 2 })).toBe("1,23");
+      expect(spy).toHaveBeenCalledTimes(2);
+
+      format(1.23456, locale, { maximumFractionDigits: 2 });
+      format(1234.5, locale);
+      expect(spy).toHaveBeenCalledTimes(2);
+
+      format(1234.5, new Locale("nl-BE"), { maximumFractionDigits: 2 });
+      expect(spy).toHaveBeenCalledTimes(2);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
