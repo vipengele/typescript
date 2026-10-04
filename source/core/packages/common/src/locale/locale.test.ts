@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { Locale } from "./index";
+import { readFirstDayOfWeek, type WeekInfoSource } from "./locale";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -114,5 +115,55 @@ describe("weekdayNames", () => {
 
   test("names follow the locale", () => {
     expect(new Locale("de-DE").weekdayNames("long")[0]).toBe("Montag");
+  });
+});
+
+describe("first day of the week", () => {
+  test.each([
+    ["en-US", 7],
+    ["de-DE", 1],
+    ["ar-EG", 6],
+  ] as const)("%s starts its week on ISO day %i", (tag, expected) => {
+    expect(new Locale(tag).firstDayOfWeek).toBe(expected);
+  });
+
+  test("reads getWeekInfo() when the engine offers it", () => {
+    const source = class {
+      getWeekInfo() {
+        return { firstDay: 6 };
+      }
+      get weekInfo() {
+        return { firstDay: 3 };
+      }
+    } satisfies WeekInfoSource;
+
+    expect(readFirstDayOfWeek("en-US", source)).toBe(6);
+  });
+
+  test("reads the weekInfo property when getWeekInfo() is absent", () => {
+    const source = class {
+      readonly weekInfo = { firstDay: 7 };
+    } satisfies WeekInfoSource;
+
+    expect(readFirstDayOfWeek("en-US", source)).toBe(7);
+  });
+
+  test("falls back to Monday when the engine exposes no week info", () => {
+    const source = class {} satisfies WeekInfoSource;
+
+    expect(readFirstDayOfWeek("en-US", source)).toBe(1);
+  });
+
+  test("passes the tag to the source", () => {
+    const tags: string[] = [];
+    const source = class {
+      constructor(tag: string) {
+        tags.push(tag);
+      }
+    } satisfies WeekInfoSource;
+
+    readFirstDayOfWeek("ar-EG", source);
+
+    expect(tags).toEqual(["ar-EG"]);
   });
 });

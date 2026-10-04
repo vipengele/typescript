@@ -1,1 +1,1 @@
-export { Locale, type HourCycle, type NameStyle } from "./locale";
+export { Locale, type HourCycle, type IsoWeekday, type NameStyle } from "./locale";
