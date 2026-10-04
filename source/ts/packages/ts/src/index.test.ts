@@ -1,7 +1,13 @@
 // biome-ignore-all lint/security/noSecrets: the redaction fixtures are URL and header strings, flagged only for their entropy
 import { expect, test } from "vitest";
 import {
+  awsAccessKey,
+  bearerToken,
   composePolicies,
+  creditCard,
+  email,
+  githubToken,
+  jwt,
   Locale,
   Numeric,
   normalizeAttributes,
@@ -11,12 +17,15 @@ import {
   redactUrl,
   Scope,
   secretKeys,
+  stripeKey,
+  valueDetectors,
   VipengeleError,
 } from "./index";
 import type {
   AttributeValue,
   Attributes,
   AttributesInput,
+  Detector,
   HourCycle,
   IsoWeekday,
   NameStyle,
@@ -72,6 +81,43 @@ test("composePolicies resolves from @vipengele/ts-core-redaction and composes po
     ssn: "[REDACTED]",
     tokenCount: 3,
   });
+});
+
+test("valueDetectors resolves from @vipengele/ts-core-redaction and redacts a value inside a string", () => {
+  const policy = composePolicies(secretKeys, { keys: [], detectors: valueDetectors });
+
+  expect(redact({ message: "contact alice@example.com today" }, policy)).toEqual({ message: "contact [REDACTED] today" });
+});
+
+test("jwt resolves from @vipengele/ts-core-redaction as a detector", () => {
+  const detector: Detector = jwt;
+
+  expect(detector.pattern.test("eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2ln")).toBe(true);
+});
+
+test("bearerToken resolves from @vipengele/ts-core-redaction as a detector", () => {
+  expect(bearerToken.pattern.test("Bearer abc.def")).toBe(true);
+});
+
+test("creditCard resolves from @vipengele/ts-core-redaction as a detector with a validator", () => {
+  expect(creditCard.pattern.test("4242 4242 4242 4242")).toBe(true);
+  expect(creditCard.validate?.("4242 4242 4242 4242")).toBe(true);
+});
+
+test("email resolves from @vipengele/ts-core-redaction as a detector", () => {
+  expect(email.pattern.test("alice@example.com")).toBe(true);
+});
+
+test("awsAccessKey resolves from @vipengele/ts-core-redaction as a detector", () => {
+  expect(awsAccessKey.pattern.test("AKIAIOSFODNN7EXAMPLE")).toBe(true);
+});
+
+test("githubToken resolves from @vipengele/ts-core-redaction as a detector", () => {
+  expect(githubToken.pattern.test(`ghp_${"a".repeat(36)}`)).toBe(true);
+});
+
+test("stripeKey resolves from @vipengele/ts-core-redaction as a detector", () => {
+  expect(stripeKey.pattern.test(`sk_live_${"a".repeat(24)}`)).toBe(true);
 });
 
 test("VipengeleError resolves from @vipengele/ts-core-common", () => {
