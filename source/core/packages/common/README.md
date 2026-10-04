@@ -1,8 +1,8 @@
 # @vipengele/ts-core-common
 
 Shared types and primitives of the vipengele TypeScript core: context propagation, error
-normalization, runtime detection, locales and locale-aware numbers. It exists so the other `@vipengele/ts-core-*` packages agree
-on one definition of each; applications rarely import it directly.
+normalization, runtime detection, locales, locale-aware numbers and civil dates and times. It exists so the other
+`@vipengele/ts-core-*` packages agree on one definition of each; applications rarely import it directly.
 
 ```sh
 pnpm add @vipengele/ts-core-common
@@ -167,6 +167,78 @@ Numeric.tryParse("1.234,5", de); // { success: true, value: 1234.5 }
 
 Each takes a `Locale`, not a string: a malformed tag is rejected by `new Locale(tag)`, once, with a
 `RangeError`, not by every call.
+
+## `./types/date-time`
+
+`LocalDate`, `LocalTime` and `LocalDateTime` are validated, immutable, zoneless civil values: a
+calendar date, a wall-clock time, or both, with no time zone or offset. A value that exists is a
+valid one — `of` throws an `InvalidDateTimeError` for fields that name no date or time.
+
+```ts
+import { LocalDate, LocalDateTime, LocalTime } from "@vipengele/ts-core-common/types/date-time";
+
+const date = LocalDate.of(2024, 3, 9);
+date.toString(); // "2024-03-09"
+date.dayOfWeek; // 6 (Saturday, ISO-numbered)
+date.plusMonths(1).toString(); // "2024-04-09"
+LocalDate.of(2024, 1, 31).plusMonths(1).toString(); // "2024-02-29", clamped to the month's end
+
+LocalTime.of(15, 30).toString(); // "15:30"
+LocalDateTime.ofFields(2024, 3, 9, 15, 30).toString(); // "2024-03-09T15:30"
+LocalDate.now().toString(); // today's date on the clock's local calendar
+```
+
+- `of(...)` (`LocalDateTime.ofFields(...)` for the flat form, `LocalDateTime.of(date, time)` to
+  combine two values) — validates its fields; `LocalDate` runs from 0001-01-01 to 9999-12-31.
+- `parse(str)` reads ISO 8601 and throws a `DateTimeParseError`; `tryParse(str)` returns
+  `{ success: true, value }` or `{ success: false }`. `toString()` writes ISO 8601. Check the errors
+  with `isInvalidDateTimeError` and `isDateTimeParseError`, never `instanceof`.
+- `plusDays`, `minusDays`, `plusMonths` and `minusMonths` on `LocalDate` and `LocalDateTime`;
+  `dayOfWeek` and `lengthOfMonth` on `LocalDate`; `compare` and `equals` on all three.
+- `now(clock?)` — the current civil value, read from a `Clock` (`systemClock` by default). A
+  `Clock` is epoch milliseconds, so a fixed one makes a test deterministic.
+
+**Localized text** — `format(locale?)`, `parseLocalized(str, locale?)` and
+`tryParseLocalized(str, locale?)` write and read a locale's own numeric pattern. Omitting the locale
+means `Locale.default()`.
+
+```ts
+import { Locale } from "@vipengele/ts-core-common/locale";
+
+const de = new Locale("de-DE");
+const us = new Locale("en-US");
+
+date.format(de); // "09.03.2024"
+date.format(us); // "03/09/2024"
+LocalDate.parseLocalized("09.03.2024", de).toString(); // "2024-03-09"
+LocalDate.tryParseLocalized("not a date", de); // { success: false }
+
+const time = LocalTime.of(15, 30);
+time.format(de); // "15:30"
+time.format(us); // "03:30 PM"
+LocalTime.parseLocalized("3:30 PM", us).toString(); // "15:30"
+
+LocalDateTime.ofFields(2024, 3, 9, 15, 30).format(us); // "03/09/2024, 03:30 PM"
+```
+
+A time or date-time is localized to hour and minute only, so parsing one gives second and
+millisecond `0`. The locale's hour cycle is honoured: a 12-hour locale prints a day-period marker
+and a 24-hour one never prints hour 24. The pattern is derived from `Intl`, with the Gregorian
+calendar and ASCII digits forced.
+
+**Segments** — `LocalDate#segments(locale?)` returns the date pattern as `DateSegment[]`, each a
+`{ type: "year" | "month" | "day" | "literal", value }`, for a date input that lays out its own
+fields in the locale's order.
+
+```ts
+date.segments(us);
+// => [{ type: "month", value: "03" }, { type: "literal", value: "/" },
+//     { type: "day", value: "09" }, { type: "literal", value: "/" },
+//     { type: "year", value: "2024" }]
+```
+
+`DateSegment`, `DateSegmentType`, `DateTimeTryParseResult` and `IsoDayOfWeek` are exported
+alongside the values.
 
 ## `./runtime`
 
