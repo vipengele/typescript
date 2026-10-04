@@ -2,6 +2,7 @@
 import { expect, test } from "vitest";
 import {
   composePolicies,
+  Locale,
   Numeric,
   normalizeAttributes,
   redact,
@@ -12,10 +13,33 @@ import {
   secretKeys,
   VipengeleError,
 } from "./index";
-import type { AttributeValue, Attributes, AttributesInput, NormalizeAttributesOptions, RedactStringOptions } from "./index";
+import type {
+  AttributeValue,
+  Attributes,
+  AttributesInput,
+  HourCycle,
+  IsoWeekday,
+  NameStyle,
+  NormalizeAttributesOptions,
+  RedactStringOptions,
+} from "./index";
 
 test("Numeric resolves from @vipengele/ts-core-common and round-trips a number", () => {
-  expect(Numeric.parse(Numeric.format(1234.5, "en-US"), "en-US")).toBe(1234.5);
+  const locale = new Locale("en-US");
+
+  expect(Numeric.parse(Numeric.format(1234.5, locale), locale)).toBe(1234.5);
+});
+
+test("Locale resolves from @vipengele/ts-core-common/locale and exposes its calendar conventions", () => {
+  const locale = new Locale("en-us");
+  const style: NameStyle = "long";
+  const firstDay: IsoWeekday = locale.firstDayOfWeek;
+  const cycle: HourCycle = locale.hourCycle;
+
+  expect(locale.tag).toBe("en-US");
+  expect(firstDay).toBe(7);
+  expect(["h11", "h12"]).toContain(cycle);
+  expect(locale.monthNames(style)[0]).toBe("January");
 });
 
 test("redact resolves from @vipengele/ts-core-redaction and redacts a matched key", () => {

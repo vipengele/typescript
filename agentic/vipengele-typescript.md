@@ -18,8 +18,10 @@ Error Event, Scope, Breadcrumb, Transport) before naming things.
   published range (ADR-0009).
 - `source/core/` — the framework's foundation:
   - `packages/common` — `@vipengele/ts-core-common`: shared types and primitives (context
-    propagation, error normalization, runtime detection) the other packages agree on. A
-    sub-path like `./types/numeric` (the locale-aware `Numeric.parse`/`tryParse`/`format`) or
+    propagation, error normalization, runtime detection, locales) the other packages agree on. A
+    sub-path like `./types/numeric` (`Numeric.parse`/`tryParse`/`format`, which take a `./locale`
+    `Locale` — a validated BCP 47 tag with month and weekday names, hour cycle and first day of the
+    week — ADR-0013) or
     `./context` (`createAsyncContextStore`, a value carried across an async call chain behind a
     fixed carrier fallback — `AsyncLocalStorage`, then `AsyncContext.Variable`, then a synchronous
     stack, ADR-0004; state shared across dual-resolved copies of the package lives behind a
@@ -43,7 +45,13 @@ Error Event, Scope, Breadcrumb, Transport) before naming things.
     string as text and a header list by name, always replace URL userinfo, and replace a matched
     header's whole value (ADR-0012).
   - `packages/observability` — `@vipengele/ts-core-observability`: the logger (`./logger`) and the
-    error reporter (`./errors`), two entry points of one package. `./errors`'s `createReporter`
+    error reporter (`./errors`), two entry points of one package. `./logger`'s `Logging` facade
+    configures the default `LoggerProvider` through a layered builder or a spec string
+    (`parseSpec`; a bad entry in a spec string is skipped with a warning, a bad level given in code
+    throws `LoggingConfigError`); the level table and the default provider live in two
+    `globalThis` slots (`vipengele.logger.levels`, `vipengele.logger.provider.v1`) so every
+    resolved copy of the package agrees (ADR-0005), and a category with nothing configured
+    resolves to `warn`. `./errors`'s `createReporter`
     builds a `Reporter` from a `ReporterBuilder`; `captureException`/`captureMessage` run every
     event through a five-stage pipeline (normalize, enrich, processors, filter, transport) and hand
     the survivor to a `Transport`, the fire-and-forget delivery contract (ADR-0010;
@@ -54,10 +62,13 @@ Error Event, Scope, Breadcrumb, Transport) before naming things.
   deliberate exception to the `@vipengele/ts-<project>-<package>` convention (ADR-0003). It
   depends on `@vipengele/ts-core-common` and `@vipengele/ts-core-redaction` — a pin plus a
   `link:` override in its `pnpm-workspace.yaml` for each (ADR-0009) — and re-exports `Numeric`
-  from `@vipengele/ts-core-common`'s `./types/numeric` sub-path and `redact`, `secretKeys`,
+  from `@vipengele/ts-core-common`'s `./types/numeric` sub-path, `Locale` (with `HourCycle`,
+  `IsoWeekday`, `NameStyle`) from its `./locale` sub-path, and `redact`, `secretKeys`,
   `composePolicies`, `redactUrl`, `redactQueryString` and `redactHeaders` (with `RedactionPolicy`,
   `KeyMatcher`, `RedactOptions`, `RedactStringOptions`, `Replacement`) from
   `@vipengele/ts-core-redaction`.
+- A sub-path of `@vipengele/ts-core-common` needs both a `tsup.config.ts` entry and a
+  `package.json` `exports` key; `src/package-exports.test.ts` fails when either is missing.
 - `.github/actions/changed-projects` — the projects a change affects; CI builds only those.
 - `docs/adr/` — architecture decision records. Read before revisiting a decision recorded there.
 - `docs/release-notes/` — one file per release, named after its tag (`vX.Y.Z.md`). The release

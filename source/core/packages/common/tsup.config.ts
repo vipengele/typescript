@@ -9,6 +9,7 @@ export default defineConfig({
     "src/serialization/index.ts",
     "src/scope/index.ts",
     "src/runtime/index.ts",
+    "src/locale/index.ts",
   ],
   format: ["esm"],
   target: "es2022",

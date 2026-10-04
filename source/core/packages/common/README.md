@@ -1,7 +1,7 @@
 # @vipengele/ts-core-common
 
 Shared types and primitives of the vipengele TypeScript core: context propagation, error
-normalization and runtime detection. It exists so the other `@vipengele/ts-core-*` packages agree
+normalization, runtime detection, locales and locale-aware numbers. It exists so the other `@vipengele/ts-core-*` packages agree
 on one definition of each; applications rarely import it directly.
 
 ```sh
@@ -108,6 +108,65 @@ try {
   }
 }
 ```
+
+## `./locale`
+
+`Locale` is a BCP 47 language tag and the calendar and clock conventions it carries. It is the
+locale argument every locale-aware type in the package takes.
+
+```ts
+import { Locale } from "@vipengele/ts-core-common/locale";
+
+const de = new Locale("de-DE");
+de.tag; // "de-DE"
+de.uses24Hour; // true
+de.firstDayOfWeek; // 1 (Monday)
+de.monthNames("long"); // ["Januar", "Februar", "März", …, "Dezember"]
+de.weekdayNames("short"); // ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"]
+
+Locale.default(); // the runtime's own locale, read on every call
+```
+
+- `new Locale(tag)` canonicalizes `tag` and throws a `RangeError` when it is not a well-formed
+  BCP 47 language tag, `""` included.
+- `Locale.default()` — the runtime's own locale.
+- `tag` — the canonicalized tag.
+- `hourCycle` (`"h11" | "h12" | "h23" | "h24"`) and `uses24Hour` — the clock the locale counts
+  hours on.
+- `monthNames(style)` and `weekdayNames(style)` — `style` is `"long"`, `"short"` or `"narrow"`.
+  Months run January..December and weekdays Monday..Sunday (ISO order), whatever the locale's own
+  first day of the week.
+- `firstDayOfWeek` — the locale's first day of the week, ISO-numbered (`1` Monday..`7` Sunday);
+  Monday when the engine exposes no week info.
+
+`HourCycle`, `IsoWeekday` and `NameStyle` are exported alongside it.
+
+## `./types/numeric`
+
+`Numeric` formats and parses numbers for a `Locale`. Omitting the locale means
+`Locale.default()`.
+
+```ts
+import { Locale } from "@vipengele/ts-core-common/locale";
+import { Numeric } from "@vipengele/ts-core-common/types/numeric";
+
+const de = new Locale("de-DE");
+
+Numeric.format(1234.5, de); // "1.234,5"
+Numeric.parse("1.234,5", de); // 1234.5
+Numeric.tryParse("abc", de); // { success: false }
+Numeric.tryParse("1.234,5", de); // { success: true, value: 1234.5 }
+```
+
+- `Numeric.format(value, locale?, options?)` — digits are always ASCII 0-9; the locale's
+  separators are kept. `maximumFractionDigits` defaults to 20.
+- `Numeric.parse(str, locale?)` — accepts the locale's own separators and their ASCII
+  equivalents, and throws a `NumericParseError` (check it with `isNumericParseError`) when `str`
+  does not spell a number.
+- `Numeric.tryParse(str, locale?)` — the non-throwing form, returning `{ success, value }`.
+
+Each takes a `Locale`, not a string: a malformed tag is rejected by `new Locale(tag)`, once, with a
+`RangeError`, not by every call.
 
 ## `./runtime`
 
