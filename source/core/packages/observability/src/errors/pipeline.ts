@@ -1,4 +1,5 @@
 import {
+  type Attributes,
   type AttributesInput,
   type Clock,
   isLevel,
@@ -7,6 +8,7 @@ import {
   type SerializedError,
   serializeError,
 } from "@vipengele/ts-core-common";
+import { Scope, snapshot } from "@vipengele/ts-core-common/scope";
 import type { ErrorEvent, ExceptionRecord, Mechanism } from "./event";
 import { createEventId } from "./event-id";
 import { markInApp } from "./stack/in-app";
@@ -65,6 +67,29 @@ function normalize(input: CaptureInput, pipeline: Pipeline): NormalizedPayload {
     : { message: input.message };
 }
 
+/**
+ * The current Scope's attributes, from the default scope inward, never the Resource. A throw while
+ * reading or normalizing them yields an empty record, so the event still goes out with the call's
+ * own attributes instead of being dropped.
+ */
+function scopeAttributes(): Attributes {
+  try {
+    return normalizeAttributes(snapshot(Scope.current()));
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * The scope's attributes beneath the call's own, the call's winning on a shared key. Each side is
+ * normalized on its own, so the breadth bound applies per side and a large scope chain cannot push
+ * a call attribute into the truncation marker. `Object.fromEntries` defines every key as an own
+ * data property, so a `__proto__` key stays a key instead of replacing the result's prototype.
+ */
+function mergeAttributes(scope: Attributes, call: Attributes): Attributes {
+  return Object.fromEntries([...Object.entries(scope), ...Object.entries(call)]);
+}
+
 /** Stage 2: stamps what the pipeline knows about the event rather than what the caller handed over. */
 function enrich(payload: NormalizedPayload, input: CaptureInput, mechanism: Mechanism, id: string, pipeline: Pipeline): ErrorEvent {
   return {
@@ -73,7 +98,7 @@ function enrich(payload: NormalizedPayload, input: CaptureInput, mechanism: Mech
     level: toLevel(input.level),
     ...payload,
     mechanism,
-    attributes: normalizeAttributes(input.attributes ?? {}),
+    attributes: mergeAttributes(scopeAttributes(), normalizeAttributes(input.attributes ?? {})),
   };
 }
 

@@ -16,6 +16,10 @@ export interface ErrorEvent {
   /** Absent only for a captured message. */
   exception?: ExceptionRecord;
   mechanism: Mechanism;
+  /**
+   * The ambient Scope chain's attributes, from the default scope inward and never the Resource,
+   * beneath the call's own attributes, the call's winning on a shared key.
+   */
   attributes: Attributes;
   fingerprint?: string[];
   trace?: { traceId: string; spanId: string; flags: number };
