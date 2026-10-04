@@ -4,6 +4,7 @@ export default defineConfig({
   entry: [
     "src/index.ts",
     "src/types/numeric/index.ts",
+    "src/types/date-time/index.ts",
     "src/context/index.ts",
     "src/attributes/index.ts",
     "src/serialization/index.ts",
