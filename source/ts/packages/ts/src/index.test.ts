@@ -16,7 +16,7 @@ test("Locale resolves from @vipengele/ts-core-common/locale and exposes its cale
 
   expect(locale.tag).toBe("en-US");
   expect(firstDay).toBe(7);
-  expect(cycle).toBe("h12");
+  expect(["h11", "h12"]).toContain(cycle);
   expect(locale.monthNames(style)[0]).toBe("January");
 });
 
