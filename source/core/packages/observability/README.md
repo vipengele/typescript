@@ -98,8 +98,9 @@ policy is applied to `attributes` and to every link of the error chain, when the
 and before any sink sees it: to the `data` of an `Error`, and to the fields of a structured thrown
 value that is not an `Error` (a plain object, an array, a parsed API error body), whether it was
 thrown itself or reached through a `cause` or an `errors` entry. Such a value's JSON text is replaced
-whole by `"[REDACTED: unparseable structured value]"` when it was cut at the serialization length
-bound and no longer parses. `builder.redaction(policy)` replaces it and `builder.redaction(null)`
+whole by `"[REDACTED: unparseable structured value]"` when it no longer parses, as when it was cut at
+the serialization length bound; a thrown string that opens with `{` or `[` and does not parse is
+replaced the same way. `builder.redaction(policy)` replaces it and `builder.redaction(null)`
 disables it. A record's `message`, and the `message` and `stack` of an `Error`, are not scanned: a
 secret interpolated into a message is the caller's to keep out.
 
