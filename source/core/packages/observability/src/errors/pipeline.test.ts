@@ -57,6 +57,31 @@ describe("scope attributes in an event", () => {
     expect(Object.keys(attributes).length).toBeGreaterThan(100);
   });
 
+  it("keeps the scope's truncation marker under a free key when the call's attributes are truncated too", () => {
+    const { transport, reporter } = aReporter();
+    const many = (prefix: string) => Object.fromEntries(Array.from({ length: 150 }, (_, index) => [`${prefix}${index}`, index]));
+
+    Scope.isolated("request", many("scope"), () => {
+      reporter.captureException(new Error("hello"), { attributes: { "…#1": "taken", ...many("call") } });
+    });
+
+    const attributes = onlyEvent(transport.events).attributes;
+    expect(attributes["…"]).toMatch(/^\[Truncated: \d+ more\]$/);
+    expect(attributes["…#1"]).toBe("taken");
+    expect(attributes["…#2"]).toBe("[Truncated: 50 more]");
+  });
+
+  it("leaves the scope's truncation marker under its own key when the call's attributes are not truncated", () => {
+    const { transport, reporter } = aReporter();
+    const many = Object.fromEntries(Array.from({ length: 150 }, (_, index) => [`scope${index}`, index]));
+
+    Scope.isolated("request", many, () => {
+      reporter.captureException(new Error("hello"), { attributes: { callOnly: 1 } });
+    });
+
+    expect(onlyEvent(transport.events).attributes["…"]).toBe("[Truncated: 50 more]");
+  });
+
   it("separates the attributes of two isolated scopes entered one after the other", () => {
     const { transport, reporter } = aReporter();
 

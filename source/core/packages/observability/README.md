@@ -192,7 +192,8 @@ Scope.isolated("http-request", { requestId: "abc" }, () => {
 
 The reporter does not redact: Scope attributes reach the Transport as set, exactly as the call's own
 attributes do, so a secret placed on a Scope is sent. Keep secrets out of `Scope.current().set`,
-`Scope.inherit` and `Scope.isolated` attributes, or redact them in an event processor.
+`Scope.inherit` and `Scope.isolated` attributes, or redact the event inside a custom `Transport`'s
+`send` before it leaves the process. A `ReporterBuilder` registers no event processors.
 
 If reading the Scope throws, the event is delivered without its Scope attributes. A Scope's tag is a
 Breadcrumb, and the Breadcrumb trail is not part of an Error Event. In the browser the synchronous-stack

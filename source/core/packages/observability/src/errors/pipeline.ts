@@ -80,14 +80,33 @@ function scopeAttributes(): Attributes {
   }
 }
 
+const TRUNCATION_MARKER = /^\[Truncated: \d+ more\]$/;
+
+/** The first `<key>#<n>` that neither side already holds. */
+function freeKey(key: string, scope: Attributes, call: Attributes): string {
+  for (let suffix = 1; ; suffix++) {
+    const candidate = `${key}#${suffix}`;
+    if (!Object.hasOwn(scope, candidate) && !Object.hasOwn(call, candidate)) {
+      return candidate;
+    }
+  }
+}
+
 /**
  * The scope's attributes beneath the call's own, the call's winning on a shared key. Each side is
  * normalized on its own, so the breadth bound applies per side and a large scope chain cannot push
- * a call attribute into the truncation marker. `Object.fromEntries` defines every key as an own
- * data property, so a `__proto__` key stays a key instead of replacing the result's prototype.
+ * a call attribute into the truncation marker. Both sides name their marker by the same key, so a
+ * scope-side marker that collides with a call key moves to a free `<key>#<n>` rather than being
+ * overwritten, and the event still shows that the scope chain was cut. `Object.fromEntries` defines
+ * every key as an own data property, so a `__proto__` key stays a key instead of replacing the
+ * result's prototype.
  */
 function mergeAttributes(scope: Attributes, call: Attributes): Attributes {
-  return Object.fromEntries([...Object.entries(scope), ...Object.entries(call)]);
+  const scopeEntries = Object.entries(scope).map(([key, value]): [string, Attributes[string]] => [
+    typeof value === "string" && TRUNCATION_MARKER.test(value) && Object.hasOwn(call, key) ? freeKey(key, scope, call) : key,
+    value,
+  ]);
+  return Object.fromEntries([...scopeEntries, ...Object.entries(call)]);
 }
 
 /** Stage 2: stamps what the pipeline knows about the event rather than what the caller handed over. */
