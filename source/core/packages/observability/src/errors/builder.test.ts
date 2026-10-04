@@ -31,6 +31,19 @@ describe("ReporterBuilder", () => {
     expect(integrations[1]).toBe(other);
   });
 
+  it("has no project root until one is set", () => {
+    expect(new ReporterBuilder().build().projectRoot).toBeUndefined();
+  });
+
+  it("keeps the project root set last", () => {
+    const builder = new ReporterBuilder();
+
+    expect(builder.projectRoot("/first")).toBe(builder);
+    builder.projectRoot("/app");
+
+    expect(builder.build().projectRoot).toBe("/app");
+  });
+
   it("builds a snapshot a later add does not change", () => {
     const builder = new ReporterBuilder().add(anIntegration("first"));
     const settings = builder.build();

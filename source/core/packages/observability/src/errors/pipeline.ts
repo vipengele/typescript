@@ -9,6 +9,8 @@ import {
 } from "@vipengele/ts-core-common";
 import type { ErrorEvent, ExceptionRecord, Mechanism } from "./event";
 import { createEventId } from "./event-id";
+import { markInApp } from "./stack/in-app";
+import { parseStack } from "./stack/parse-stack";
 import type { Transport } from "./transport";
 
 /** What a caller hands the pipeline: a thrown value or a message, plus its own level and attributes. */
@@ -31,6 +33,8 @@ export interface Pipeline {
   readonly transport?: Transport | undefined;
   readonly processors: readonly Processor[];
   readonly filters: readonly Filter[];
+  /** What counts as in-app when frames are marked; every frame outside `node_modules` is in-app when absent. */
+  readonly projectRoot?: string | undefined;
 }
 
 /** An event after normalization, before enrichment: the payload a caller handed over, and nothing else. */
@@ -42,21 +46,23 @@ function toLevel(level: unknown): Level {
 }
 
 /** Lifts a serialized error to an {@link ExceptionRecord}, giving every link of its `cause`/`errors` chain its own `frames`. */
-function toExceptionRecord(serialized: SerializedError): ExceptionRecord {
+function toExceptionRecord(serialized: SerializedError, projectRoot: string | undefined): ExceptionRecord {
   const { cause, errors, ...rest } = serialized;
-  const record: ExceptionRecord = { ...rest, frames: [] };
+  const record: ExceptionRecord = { ...rest, frames: markInApp(parseStack(serialized.stack), projectRoot) };
   if (cause !== undefined) {
-    record.cause = toExceptionRecord(cause);
+    record.cause = toExceptionRecord(cause, projectRoot);
   }
   if (errors !== undefined) {
-    record.errors = errors.map(toExceptionRecord);
+    record.errors = errors.map((link) => toExceptionRecord(link, projectRoot));
   }
   return record;
 }
 
 /** Stage 1: the caller's thrown value or message, in the Error Event's shape. */
-function normalize(input: CaptureInput): NormalizedPayload {
-  return input.kind === "exception" ? { exception: toExceptionRecord(serializeError(input.error)) } : { message: input.message };
+function normalize(input: CaptureInput, pipeline: Pipeline): NormalizedPayload {
+  return input.kind === "exception"
+    ? { exception: toExceptionRecord(serializeError(input.error), pipeline.projectRoot) }
+    : { message: input.message };
 }
 
 /** Stage 2: stamps what the pipeline knows about the event rather than what the caller handed over. */
@@ -94,7 +100,7 @@ export function createCapture(pipeline: Pipeline): Capture {
   return (input, mechanism) => {
     const id = createEventId();
     try {
-      deliver(enrich(normalize(input), input, mechanism, id, pipeline), pipeline);
+      deliver(enrich(normalize(input, pipeline), input, mechanism, id, pipeline), pipeline);
     } catch {
       // The event is dropped; a capture never throws.
     }
