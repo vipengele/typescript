@@ -4,7 +4,17 @@ export { composePolicies } from "./compose-policies";
 export { redactUrl } from "./url";
 export { redactQueryString } from "./query-string";
 export { redactHeaders } from "./headers";
-export type { RedactionPolicy, KeyMatcher } from "./key-matcher";
+export {
+  valueDetectors,
+  jwt,
+  bearerToken,
+  creditCard,
+  email,
+  awsAccessKey,
+  githubToken,
+  stripeKey,
+} from "./value-detectors";
+export type { RedactionPolicy, KeyMatcher, Detector } from "./key-matcher";
 export type { RedactOptions } from "./redact";
 export type { Replacement } from "./replacement";
 export type { RedactStringOptions } from "./query-string";
