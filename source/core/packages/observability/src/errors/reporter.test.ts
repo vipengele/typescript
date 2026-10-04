@@ -1,6 +1,7 @@
 import type { Level } from "@vipengele/ts-core-common";
 import { describe, expect, it, vi } from "vitest";
-import type { ErrorEvent } from "./event";
+import type { ErrorEvent, Mechanism } from "./event";
+import type { Integration, IntegrationHost } from "./integration";
 import { createCapture, type Pipeline } from "./pipeline";
 import { createReporter } from "./reporter";
 import type { Transport } from "./transport";
@@ -243,6 +244,111 @@ describe("createReporter", () => {
 
       expect(flush).toHaveBeenCalledWith(250);
       expect(close).toHaveBeenCalledWith(500);
+    });
+  });
+
+  describe("integrations", () => {
+    function anIntegration(name: string, setup: Integration["setup"]): Integration {
+      return { name, setup };
+    }
+
+    it("sets each integration up at creation, and its host's capture sends an event under the mechanism and level it gives", () => {
+      const transport = createTestTransport();
+      let host: IntegrationHost | undefined;
+      createReporter((b) =>
+        b.transport(transport).add(
+          anIntegration("fake", (given) => {
+            host = given;
+          }),
+        ),
+      );
+      const mechanism: Mechanism = { handled: false, source: "global.error" };
+
+      const id = host?.capture(new Error("unhandled"), { mechanism, level: "fatal", attributes: { origin: "test" } });
+
+      const event = onlyEvent(transport.events);
+      expect(id).toBe(event.id);
+      expect(event.level).toBe("fatal");
+      expect(event.mechanism).toEqual(mechanism);
+      expect(event.mechanism).not.toBe(mechanism);
+      expect(event.attributes).toEqual({ origin: "test" });
+      expect(event.exception).toMatchObject({ type: "Error", message: "unhandled" });
+    });
+
+    it("gives the host a flush that delegates to the transport", async () => {
+      const transport = createTestTransport();
+      const flush = vi.spyOn(transport, "flush").mockResolvedValue(false);
+      let host: IntegrationHost | undefined;
+      createReporter((b) =>
+        b.transport(transport).add(
+          anIntegration("fake", (given) => {
+            host = given;
+          }),
+        ),
+      );
+
+      await expect(host?.flush(100)).resolves.toBe(false);
+      expect(flush).toHaveBeenCalledWith(100);
+    });
+
+    it("runs each teardown once, before the transport closes, however often close is called", async () => {
+      const order: string[] = [];
+      const transport = createTestTransport();
+      vi.spyOn(transport, "close").mockImplementation(async () => {
+        order.push("transport");
+        return true;
+      });
+      const reporter = createReporter((b) => b.transport(transport).add(anIntegration("fake", () => () => order.push("teardown"))));
+
+      await reporter.close();
+      await reporter.close();
+
+      expect(order).toEqual(["teardown", "transport", "transport"]);
+    });
+
+    it("skips an integration whose setup throws, and still sets up the others", async () => {
+      const teardown = vi.fn();
+      const reporter = createReporter((b) =>
+        b
+          .add(
+            anIntegration("broken", () => {
+              throw new Error("setup failed");
+            }),
+          )
+          .add(anIntegration("working", () => teardown)),
+      );
+
+      await expect(reporter.close()).resolves.toBe(true);
+      expect(teardown).toHaveBeenCalledOnce();
+    });
+
+    it("installs only the integration added last under one name", () => {
+      const replaced = vi.fn();
+      const current = vi.fn();
+
+      createReporter((b) => b.add(anIntegration("handlers", replaced)).add(anIntegration("handlers", current)));
+
+      expect(replaced).not.toHaveBeenCalled();
+      expect(current).toHaveBeenCalledOnce();
+    });
+
+    it("sets up one integration object once for each reporter it is added to, each against its own host", async () => {
+      const hosts: IntegrationHost[] = [];
+      const teardown = vi.fn();
+      const shared = anIntegration("shared", (host) => {
+        hosts.push(host);
+        return teardown;
+      });
+      const first = createReporter((b) => b.add(shared));
+      const second = createReporter((b) => b.add(shared));
+
+      await first.close();
+
+      expect(hosts).toHaveLength(2);
+      expect(hosts[0]).not.toBe(hosts[1]);
+      expect(teardown).toHaveBeenCalledOnce();
+      await second.close();
+      expect(teardown).toHaveBeenCalledTimes(2);
     });
   });
 });
