@@ -17,12 +17,62 @@ export interface DatePattern {
   readonly literals: readonly string[];
 }
 
-/** A locale's pattern and the expression that reads a string written in it. */
+/** A field a {@link DigitsToken} reads: one of a date's fields, the hour or the minute. */
+export type DigitField = DateField | "hour" | "minute";
+
+/** Exactly `text`; with `foldCase`, in any letter case, `text` then being lower-case. */
+export interface TextToken {
+  readonly kind: "text";
+  readonly text: string;
+  readonly foldCase: boolean;
+}
+
+/** A run of `min` or more whitespace characters of any kind. */
+export interface SpaceToken {
+  readonly kind: "space";
+  readonly min: number;
+}
+
+/** A run of `min` to `max` ASCII digits, the value of `field`. */
+export interface DigitsToken {
+  readonly kind: "digits";
+  readonly field: DigitField;
+  readonly min: number;
+  readonly max: number;
+}
+
+/** One of two day-period markers, each spelled as a sequence of text and space tokens. */
+export interface DayPeriodToken {
+  readonly kind: "dayPeriod";
+  readonly am: readonly Token[];
+  readonly pm: readonly Token[];
+}
+
+/** No text at all: records the position it sits at, so a caller can cut the input there. */
+export interface MarkToken {
+  readonly kind: "mark";
+}
+
+/** One step of the sequence {@link matchTokens} reads a string with. */
+export type Token = TextToken | SpaceToken | DigitsToken | DayPeriodToken | MarkToken;
+
+/**
+ * Where a token matched: `start` and `end` are offsets into the string read. `pm` is `true` only
+ * for a {@link DayPeriodToken} that matched its `pm` marker.
+ */
+export interface TokenMatch {
+  readonly start: number;
+  readonly end: number;
+  readonly pm: boolean;
+}
+
+/** A locale's pattern and the tokens that read a string written in it. */
 interface ResolvedDatePattern {
   readonly pattern: DatePattern;
-  /** The unanchored expression for one date, which a date-time expression embeds. */
-  readonly source: string;
-  readonly matcher: RegExp;
+  /** The tokens for one date, which a date-time's tokens embed. */
+  readonly tokens: readonly Token[];
+  /** {@link tokens} with whitespace allowed around them. */
+  readonly matcher: readonly Token[];
 }
 
 /**
@@ -33,8 +83,14 @@ interface ResolvedDatePattern {
  */
 const BIDI_MARKS = /[‎‏؜]/g;
 
-/** Characters with a meaning of their own inside a regular expression. */
-const REGEXP_SYNTAX = /[\\^$.*+?()[\]{}|/-]/g;
+/** One whitespace character of any kind: a space, U+00A0, U+202F or another space separator. */
+const WHITESPACE_CHARACTER = /\s/;
+
+/** One ASCII digit. */
+const DIGIT = /\d/;
+
+/** Any whitespace, or none: what is allowed around a whole date, time or date-time. */
+const OPTIONAL_SPACE: SpaceToken = { kind: "space", min: 0 };
 
 /**
  * 2026-02-03: month and day differ and are each below 10, so their positions are told apart and
@@ -58,10 +114,10 @@ const DATE_OPTIONS: Intl.DateTimeFormatOptions = {
  * Month and day take one or two digits, so a date typed without padding (`2/3/2026`) reads the
  * same as the padded form `format` writes.
  */
-const FIELD_SOURCE: Readonly<Record<DateField, string>> = {
-  year: "(\\d{4})",
-  month: "(\\d{1,2})",
-  day: "(\\d{1,2})",
+const FIELD_TOKEN: Readonly<Record<DateField, DigitsToken>> = {
+  year: { kind: "digits", field: "year", min: 4, max: 4 },
+  month: { kind: "digits", field: "month", min: 1, max: 2 },
+  day: { kind: "digits", field: "day", min: 1, max: 2 },
 };
 
 /**
@@ -76,8 +132,125 @@ export function stripBidiMarks(str: string): string {
   return str.replace(BIDI_MARKS, "");
 }
 
-function escapeRegExp(str: string): string {
-  return str.replace(REGEXP_SYNTAX, "\\$&");
+/**
+ * The minimum length the tokens after `index` require of the run `tokens[index]` starts: the
+ * `min` of each following token of the same kind, up to the first token of another kind. A mark
+ * matches no text, so it neither counts nor ends the run.
+ */
+function reserved(tokens: readonly Token[], index: number): number {
+  const { kind } = tokens[index] as SpaceToken | DigitsToken;
+  let total = 0;
+  for (const token of tokens.slice(index + 1)) {
+    if (token.kind === "mark") {
+      continue;
+    }
+    if (token.kind !== kind) {
+      break;
+    }
+    total += (token as SpaceToken | DigitsToken).min;
+  }
+  return total;
+}
+
+/**
+ * The run `tokens[index]` matches at `start`: as many characters `member` accepts as are there, up
+ * to `max`, less what the same-kind tokens straight after it require ({@link reserved}), and
+ * nothing when that leaves fewer than `min`.
+ */
+function matchRun(
+  tokens: readonly Token[],
+  index: number,
+  str: string,
+  start: number,
+  member: RegExp,
+  min: number,
+  max: number,
+): TokenMatch | undefined {
+  let available = 0;
+  while (member.test(str.charAt(start + available))) {
+    available++;
+  }
+  const length = Math.min(max, available - reserved(tokens, index));
+  return length < min ? undefined : { start, end: start + length, pm: false };
+}
+
+function matchToken(tokens: readonly Token[], index: number, str: string, start: number): TokenMatch | undefined {
+  const token = tokens[index] as Token;
+  switch (token.kind) {
+    case "text": {
+      const end = start + token.text.length;
+      const text = str.slice(start, end);
+      return (token.foldCase ? text.toLowerCase() : text) === token.text ? { start, end, pm: false } : undefined;
+    }
+    case "space":
+      return matchRun(tokens, index, str, start, WHITESPACE_CHARACTER, token.min, Number.POSITIVE_INFINITY);
+    case "digits":
+      return matchRun(tokens, index, str, start, DIGIT, token.min, token.max);
+    case "dayPeriod": {
+      const am = matchFrom(token.am, str, start);
+      const pm = matchFrom(token.pm, str, start);
+      if (pm !== undefined && (am === undefined || pm.end > am.end)) {
+        return { start, end: pm.end, pm: true };
+      }
+      return am === undefined ? undefined : { start, end: am.end, pm: false };
+    }
+    case "mark":
+      return { start, end: start, pm: false };
+  }
+}
+
+/** Each token's match, in turn from `from`, and where the last one ends; `undefined` when one fails. */
+function matchFrom(tokens: readonly Token[], str: string, from: number): { matches: TokenMatch[]; end: number } | undefined {
+  const matches: TokenMatch[] = [];
+  let end = from;
+  for (const index of tokens.keys()) {
+    const match = matchToken(tokens, index, str, end);
+    if (match === undefined) {
+      return undefined;
+    }
+    matches.push(match);
+    end = match.end;
+  }
+  return { matches, end };
+}
+
+/**
+ * Where each of `tokens` matches when together they read the whole of `str`, or `undefined` when
+ * they do not.
+ *
+ * Tokens are read left to right and none is ever revisited, so reading takes time linear in the
+ * string's length. A run token (space or digits) takes as long a run as is there, up to its
+ * `max`, but leaves the `min` of every same-kind token straight after it: `\d{1,2}` before
+ * `\d{4}` reads `12026` as `1` and `2026`. It never leaves characters for a token of another kind,
+ * so a space token followed by a text token starting with whitespace never matches. A day period
+ * takes whichever of its markers matches the longer text, `am` when both match the same length.
+ */
+export function matchTokens(tokens: readonly Token[], str: string): TokenMatch[] | undefined {
+  const matched = matchFrom(tokens, str, 0);
+  return matched === undefined || matched.end !== str.length ? undefined : matched.matches;
+}
+
+/** `tokens` with any whitespace, or none, allowed before and after them. */
+function anchored(tokens: readonly Token[]): Token[] {
+  return [OPTIONAL_SPACE, ...tokens, OPTIONAL_SPACE];
+}
+
+/** `literal` matched exactly, bidi marks dropped; nothing for a literal that is only bidi marks. */
+function exactTokens(literal: string): Token[] {
+  const text = stripBidiMarks(literal);
+  return text === "" ? [] : [{ kind: "text", text, foldCase: false }];
+}
+
+/** The number each digits token read, by the field it reads. */
+function readDigits(tokens: readonly Token[], matches: readonly TokenMatch[], str: string): Partial<Record<DigitField, number>> {
+  const values: Partial<Record<DigitField, number>> = {};
+  tokens.forEach((token, index) => {
+    if (token.kind === "digits") {
+      const { start, end } = matches[index] as TokenMatch;
+      values[token.field] = Number(str.slice(start, end));
+    }
+  });
+  return values;
 }
 
 function resolve(locale: Locale): ResolvedDatePattern {
@@ -99,15 +272,13 @@ function resolve(locale: Locale): ResolvedDatePattern {
     }
   }
 
-  const source = literals
-    .map((literal, index) => {
-      const field = fields[index];
-      const text = escapeRegExp(stripBidiMarks(literal));
-      return field === undefined ? text : text + FIELD_SOURCE[field];
-    })
-    .join("");
+  const tokens = literals.flatMap((literal, index): Token[] => {
+    const field = fields[index];
+    const text = exactTokens(literal);
+    return field === undefined ? text : [...text, FIELD_TOKEN[field]];
+  });
 
-  const resolved = { pattern: { fields, literals }, source, matcher: new RegExp(`^\\s*${source}\\s*$`) };
+  const resolved = { pattern: { fields, literals }, tokens, matcher: anchored(tokens) };
   CACHE.set(locale.tag, resolved);
   return resolved;
 }
@@ -174,17 +345,15 @@ export function formatDate(date: CivilDate, locale: Locale): string {
  * otherwise be the locale's own.
  */
 export function parseDate(str: string, locale: Locale): CivilDate | undefined {
-  const { pattern, matcher } = resolve(locale);
-  const match = matcher.exec(stripBidiMarks(str));
-  if (match === null) {
+  const { matcher } = resolve(locale);
+  const input = stripBidiMarks(str);
+  const matches = matchTokens(matcher, input);
+  if (matches === undefined) {
     return undefined;
   }
 
-  const values: Record<DateField, number> = { year: 0, month: 0, day: 0 };
-  pattern.fields.forEach((field, index) => {
-    values[field] = Number(match[index + 1]);
-  });
-  return values;
+  const { year, month, day } = readDigits(matcher, matches, input) as Record<DateField, number>;
+  return { year, month, day };
 }
 
 /** A field a locale's time pattern places: the hour, the minute, or the day period (AM or PM). */
@@ -213,12 +382,13 @@ export interface TimePattern {
   readonly pm: string;
 }
 
-/** A locale's time pattern and the expression that reads a string written in it. */
+/** A locale's time pattern and the tokens that read a string written in it. */
 interface ResolvedTimePattern {
   readonly pattern: TimePattern;
-  /** The unanchored expression for one time, which a date-time expression embeds. */
-  readonly source: string;
-  readonly matcher: RegExp;
+  /** The tokens for one time, which a date-time's tokens embed. */
+  readonly tokens: readonly Token[];
+  /** {@link tokens} with whitespace allowed around them. */
+  readonly matcher: readonly Token[];
 }
 
 /**
@@ -232,10 +402,15 @@ export interface DateTimeLayout {
   readonly literals: readonly [string, string, string];
 }
 
-/** A locale's date-time layout and the expression that reads a string written in it. */
+/**
+ * A locale's date-time layout and the tokens that read a string written in it. `date` and `time`
+ * are the indexes of the marks before and after each half within `matcher`.
+ */
 interface ResolvedDateTimeLayout {
   readonly layout: DateTimeLayout;
-  readonly matcher: RegExp;
+  readonly matcher: readonly Token[];
+  readonly date: readonly [number, number];
+  readonly time: readonly [number, number];
 }
 
 /** The two halves of a string written in a locale's date-time layout. */
@@ -265,12 +440,17 @@ const TIME_CACHE = new Map<string, ResolvedTimePattern>();
 const DATE_TIME_CACHE = new Map<string, ResolvedDateTimeLayout>();
 
 /**
- * `literal` as an expression in which bidi marks are dropped and each run of whitespace matches
- * any run of whitespace: ICU versions disagree on whether a time's separators are regular spaces,
- * U+00A0 or U+202F, and a person typing one writes a regular space.
+ * `literal` as tokens in which bidi marks are dropped, letter case is ignored and each run of
+ * whitespace matches any run of whitespace: ICU versions disagree on whether a time's separators
+ * are regular spaces, U+00A0 or U+202F, and a person typing one writes a regular space.
  */
-function spacedSource(literal: string): string {
-  return stripBidiMarks(literal).split(WHITESPACE).map(escapeRegExp).join("\\s+");
+function spacedTokens(literal: string): Token[] {
+  return stripBidiMarks(literal)
+    .split(WHITESPACE)
+    .flatMap((text, index): Token[] => [
+      ...(index === 0 ? [] : [{ kind: "space", min: 1 } as const]),
+      ...(text === "" ? [] : [{ kind: "text", text: text.toLowerCase(), foldCase: true } as const]),
+    ]);
 }
 
 /**
@@ -296,11 +476,6 @@ function timeFormatOptions(locale: Locale): Intl.DateTimeFormatOptions {
     minute: "2-digit",
     hourCycle: clockCycle(locale),
   };
-}
-
-/** `source` captured under `name`, read back from the match's `groups`. */
-function group(name: string, source: string): string {
-  return `(?<${name}>${source})`;
 }
 
 function dayPeriod(parts: readonly Intl.DateTimeFormatPart[]): string {
@@ -334,24 +509,18 @@ function resolveTime(locale: Locale): ResolvedTimePattern {
     }
   }
 
-  const fieldSource: Readonly<Record<TimeField, string>> = {
-    hour: group("hour", "\\d{1,2}"),
-    minute: group("minute", "\\d{2}"),
-    dayPeriod: `(?:${group("am", spacedSource(am))}|${group("pm", spacedSource(pm))})`,
+  const fieldToken: Readonly<Record<TimeField, Token>> = {
+    hour: { kind: "digits", field: "hour", min: 1, max: 2 },
+    minute: { kind: "digits", field: "minute", min: 2, max: 2 },
+    dayPeriod: { kind: "dayPeriod", am: spacedTokens(am), pm: spacedTokens(pm) },
   };
-  const source = literals
-    .map((literal, index) => {
-      const field = fields[index];
-      const text = spacedSource(literal);
-      return field === undefined ? text : text + fieldSource[field];
-    })
-    .join("");
+  const tokens = literals.flatMap((literal, index): Token[] => {
+    const field = fields[index];
+    const text = spacedTokens(literal);
+    return field === undefined ? text : [...text, fieldToken[field]];
+  });
 
-  const resolved = {
-    pattern: { twelveHour, fields, literals, am, pm },
-    source,
-    matcher: new RegExp(`^\\s*${source}\\s*$`, "i"),
-  };
+  const resolved = { pattern: { twelveHour, fields, literals, am, pm }, tokens, matcher: anchored(tokens) };
   TIME_CACHE.set(key, resolved);
   return resolved;
 }
@@ -399,20 +568,20 @@ export function formatTime(time: ClockTime, locale: Locale): string {
  */
 export function parseTime(str: string, locale: Locale): ClockTime | undefined {
   const { pattern, matcher } = resolveTime(locale);
-  const groups = matcher.exec(stripBidiMarks(str))?.groups;
-  if (groups === undefined) {
+  const input = stripBidiMarks(str);
+  const matches = matchTokens(matcher, input);
+  if (matches === undefined) {
     return undefined;
   }
 
-  const hour = Number(groups.hour);
-  const minute = Number(groups.minute);
+  const { hour, minute } = readDigits(matcher, matches, input) as Record<"hour" | "minute", number>;
   if (!pattern.twelveHour) {
     return { hour, minute };
   }
   if (hour < 1 || hour > 12) {
     return undefined;
   }
-  return { hour: (hour % 12) + (groups.pm === undefined ? 0 : 12), minute };
+  return { hour: (hour % 12) + (matches.some((match) => match.pm) ? 12 : 0), minute };
 }
 
 /**
@@ -465,11 +634,21 @@ function resolveDateTime(locale: Locale): ResolvedDateTimeLayout {
     formatAfternoon(locale, timeOptions),
   );
 
-  const dateSource = group("date", resolve(locale).source);
-  const timeSource = group("time", resolveTime(locale).source);
-  const [before, between, after] = layout.literals.map(spacedSource);
-  const body = layout.timeFirst ? timeSource + between + dateSource : dateSource + between + timeSource;
-  const resolved = { layout, matcher: new RegExp(`^\\s*${before}${body}${after}\\s*$`, "i") };
+  const dateStart: MarkToken = { kind: "mark" };
+  const dateEnd: MarkToken = { kind: "mark" };
+  const timeStart: MarkToken = { kind: "mark" };
+  const timeEnd: MarkToken = { kind: "mark" };
+  const date = [dateStart, ...resolve(locale).tokens, dateEnd];
+  const time = [timeStart, ...resolveTime(locale).tokens, timeEnd];
+  const [before, between, after] = layout.literals;
+  const [first, second] = layout.timeFirst ? [time, date] : [date, time];
+  const matcher = anchored([...spacedTokens(before), ...first, ...spacedTokens(between), ...second, ...spacedTokens(after)]);
+  const resolved: ResolvedDateTimeLayout = {
+    layout,
+    matcher,
+    date: [matcher.indexOf(dateStart), matcher.indexOf(dateEnd)],
+    time: [matcher.indexOf(timeStart), matcher.indexOf(timeEnd)],
+  };
   DATE_TIME_CACHE.set(key, resolved);
   return resolved;
 }
@@ -504,6 +683,14 @@ export function formatDateTime(date: CivilDate, time: ClockTime, locale: Locale)
  * for its half. The text around the halves is matched as {@link parseTime} matches literals.
  */
 export function parseDateTime(str: string, locale: Locale): DateTimeText | undefined {
-  const groups = resolveDateTime(locale).matcher.exec(stripBidiMarks(str))?.groups;
-  return groups === undefined ? undefined : { date: groups.date as string, time: groups.time as string };
+  const { matcher, date, time } = resolveDateTime(locale);
+  const input = stripBidiMarks(str);
+  const matches = matchTokens(matcher, input);
+  if (matches === undefined) {
+    return undefined;
+  }
+
+  const between = ([from, to]: readonly [number, number]): string =>
+    input.slice((matches[from] as TokenMatch).end, (matches[to] as TokenMatch).start);
+  return { date: between(date), time: between(time) };
 }

@@ -23,10 +23,12 @@ saw:
   U+202F before `PM` into a regular space and `formatToParts` keeps it. Pattern whitespace matches `\s+` (any whitespace), so a
   person typing a regular space still parses. When the combined output cannot be split into the date run and the time run, the
   layout falls back to date, one space, time.
-- The date-time matcher is compiled with the `i` flag (for day-period markers), so letters in a date literal (`bg-BG` `г.`) match
-  case-insensitively inside a date-time while date-only parsing stays case-sensitive.
+- Parsing never builds a `RegExp` from locale data: a semgrep ReDoS rule fails CI on any `new RegExp(x)` whose `x` derives from a
+  parameter, and lydite forbids suppressing it. `matchTokens` (`locale-format.ts`) reads a token list (`text`, `space`, `digits`,
+  `dayPeriod`, `mark`) left to right without backtracking. A run token takes as much as is there up to its `max` but leaves the
+  `min` of the same-kind tokens after it, so `\d{1,2}` before `\d{4}` reads `12026` as `1` and `2026`. Time literals and
+  day-period markers fold case; date literals are exact.
 - Tests that pin locale behaviour avoid `eu`: its time pattern differs between Node and Chromium (`vi`, time first, is the
   engine-stable one). A 12-hour or 24-hour pattern is forced on any locale with a `-u-hc-` tag extension, which `Locale#hourCycle`
   follows.
-- Biome's `noSecrets` flags named-group regex fragments such as `"(?<hour>\\d{1,2})"`; `group(name, source)` in
-  `locale-format.ts` builds them instead of a suppression comment.
+- Biome's `noSecrets` flags bidi-heavy string literals in tests; build them with `join` rather than adding a suppression.

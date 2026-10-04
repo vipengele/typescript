@@ -6,6 +6,7 @@ import {
   formatDateTime,
   formatTime,
   layoutDateTime,
+  matchTokens,
   parseDate,
   parseDateTime,
   parseTime,
@@ -13,6 +14,7 @@ import {
   resolveDateTimeLayout,
   resolveTimePattern,
   stripBidiMarks,
+  type Token,
 } from "./locale-format";
 
 const enUS = new Locale("en-US");
@@ -68,6 +70,150 @@ describe("resolveDatePattern", () => {
 
   test("two Locale instances for the same canonical tag share one cached pattern", () => {
     expect(resolveDatePattern(new Locale("en-us"))).toBe(resolveDatePattern(enUS));
+  });
+});
+
+describe("matchTokens", () => {
+  const text = (value: string, foldCase = false): Token => ({ kind: "text", text: value, foldCase });
+  const space = (min: number): Token => ({ kind: "space", min });
+  const digits = (min: number, max: number): Token => ({ kind: "digits", field: "day", min, max });
+  const mark: Token = { kind: "mark" };
+  const dayPeriod = (am: string, pm: string): Token => ({ kind: "dayPeriod", am: [text(am, true)], pm: [text(pm, true)] });
+
+  /** Each token's `[start, end]`, or `undefined` when the tokens do not read the whole string. */
+  const spans = (tokens: Token[], str: string) => matchTokens(tokens, str)?.map((match) => [match.start, match.end]);
+
+  test("reads an empty string with no tokens and nothing else", () => {
+    expect(matchTokens([], "")).toEqual([]);
+    expect(matchTokens([], "x")).toBeUndefined();
+  });
+
+  test("rejects text left over after the last token", () => {
+    expect(spans([text("ab")], "abc")).toBeUndefined();
+    expect(spans([digits(1, 2)], "12x")).toBeUndefined();
+  });
+
+  test("reads a text token exactly, letter case included", () => {
+    expect(spans([text("ab")], "ab")).toEqual([[0, 2]]);
+    expect(spans([text("ab")], "aB")).toBeUndefined();
+    expect(spans([text("ab")], "a")).toBeUndefined();
+    expect(spans([text("ab")], "")).toBeUndefined();
+  });
+
+  test("reads a case-folding text token in any letter case", () => {
+    expect(spans([text("pm", true)], "PM")).toEqual([[0, 2]]);
+    expect(spans([text("pm", true)], "pM")).toEqual([[0, 2]]);
+    expect(spans([text("pm", true)], "am")).toBeUndefined();
+  });
+
+  test.for([
+    ["", undefined],
+    ["1", [[0, 1]]],
+    ["12", [[0, 2]]],
+    ["123", undefined],
+  ] as const)("reads %o with a 1-to-2-digit token as %o", ([str, expected]) => {
+    expect(spans([digits(1, 2)], str)).toEqual(expected);
+  });
+
+  test.for([
+    ["", undefined],
+    ["2", undefined],
+    ["202", undefined],
+    ["2026", [[0, 4]]],
+    ["20265", undefined],
+  ] as const)("reads %o with a 4-digit token as %o", ([str, expected]) => {
+    expect(spans([digits(4, 4)], str)).toEqual(expected);
+  });
+
+  test("reads only ASCII digits", () => {
+    expect(spans([digits(1, 2)], "٢")).toBeUndefined();
+    expect(spans([digits(1, 2)], "a")).toBeUndefined();
+  });
+
+  test("leaves the digits the next digits token requires", () => {
+    expect(spans([digits(1, 2), digits(4, 4)], "12026")).toEqual([
+      [0, 1],
+      [1, 5],
+    ]);
+    expect(spans([digits(1, 2), digits(4, 4)], "102026")).toEqual([
+      [0, 2],
+      [2, 6],
+    ]);
+    expect(spans([digits(1, 2), digits(4, 4)], "1202")).toBeUndefined();
+    expect(spans([digits(1, 2), digits(4, 4)], "1202612")).toBeUndefined();
+  });
+
+  test("leaves digits for a digits token past a mark", () => {
+    expect(spans([digits(1, 2), mark, digits(4, 4)], "12026")).toEqual([
+      [0, 1],
+      [1, 1],
+      [1, 5],
+    ]);
+  });
+
+  test("leaves nothing for a digits token past a token of another kind", () => {
+    expect(spans([digits(1, 2), text("/"), digits(4, 4)], "12/2026")).toEqual([
+      [0, 2],
+      [2, 3],
+      [3, 7],
+    ]);
+  });
+
+  test("reads any run of whitespace with a space token", () => {
+    expect(spans([text("a"), space(1), text("b")], "a   \tb")).toEqual([
+      [0, 1],
+      [1, 5],
+      [5, 6],
+    ]);
+    expect(spans([text("a"), space(1), text("b")], "ab")).toBeUndefined();
+    expect(spans([text("a"), space(0), text("b")], "ab")).toEqual([
+      [0, 1],
+      [1, 1],
+      [1, 2],
+    ]);
+  });
+
+  test("leaves the whitespace the next space token requires", () => {
+    expect(spans([space(0), space(1)], "  ")).toEqual([
+      [0, 1],
+      [1, 2],
+    ]);
+    expect(spans([space(0), mark, space(1)], " ")).toEqual([
+      [0, 0],
+      [0, 0],
+      [0, 1],
+    ]);
+    expect(spans([space(0), space(1)], "")).toBeUndefined();
+  });
+
+  test("leaves no whitespace for a text token that starts with it", () => {
+    expect(spans([space(1), text(" x")], "  x")).toBeUndefined();
+  });
+
+  test("reads a mark as an empty match where it sits", () => {
+    expect(spans([text("a"), mark, text("b")], "ab")).toEqual([
+      [0, 1],
+      [1, 1],
+      [1, 2],
+    ]);
+  });
+
+  test("reads either day-period marker and reports which", () => {
+    const tokens = [dayPeriod("am", "pm")];
+
+    expect(matchTokens(tokens, "AM")).toEqual([{ start: 0, end: 2, pm: false }]);
+    expect(matchTokens(tokens, "pm")).toEqual([{ start: 0, end: 2, pm: true }]);
+    expect(matchTokens(tokens, "xm")).toBeUndefined();
+  });
+
+  test("reads the day-period marker that matches the longer text", () => {
+    expect(matchTokens([dayPeriod("a", "ap")], "ap")).toEqual([{ start: 0, end: 2, pm: true }]);
+    expect(matchTokens([dayPeriod("ap", "a")], "ap")).toEqual([{ start: 0, end: 2, pm: false }]);
+    expect(matchTokens([dayPeriod("a", "a")], "a")).toEqual([{ start: 0, end: 1, pm: false }]);
+  });
+
+  test("reports pm only for a day-period token", () => {
+    expect(matchTokens([digits(1, 2), space(0), text("x")], "1x")?.map((match) => match.pm)).toEqual([false, false, false]);
   });
 });
 
@@ -209,6 +355,22 @@ describe("parseDate", () => {
 
   test("treats the locale's separator as itself, not as a pattern", () => {
     expect(parseDate("03x02x2026", deDE)).toBeUndefined();
+  });
+
+  test("matches whitespace inside a literal exactly", () => {
+    const { literals } = resolveDatePattern(huHU);
+
+    expect(parseDate(`2026${literals[1]}2${literals[2]}3.`, huHU)).toEqual({ year: 2026, month: 2, day: 3 });
+    expect(parseDate("2026.  02.  03.", huHU)).toBeUndefined();
+    expect(parseDate("2026.02.03.", huHU)).toBeUndefined();
+  });
+
+  test("rejects a trailing literal followed by more text", () => {
+    expect(parseDate("2026. 02. 03..", huHU)).toBeUndefined();
+  });
+
+  test("removes bidi marks between the digits of a field", () => {
+    expect(parseDate("0‏2/0‎3/20؜26", enUS)).toEqual({ year: 2026, month: 2, day: 3 });
   });
 });
 
@@ -375,6 +537,27 @@ describe("parseTime", () => {
   test("rejects a day period on a 24-hour clock", () => {
     expect(parseTime("01:05 PM", deDE)).toBeUndefined();
   });
+
+  test("reads a tab or a mix of whitespace where the pattern has whitespace", () => {
+    expect(parseTime("01:05\tPM", enUS)).toEqual({ hour: 13, minute: 5 });
+    expect(parseTime("01:05 \u202f\u00a0aM", enUS)).toEqual({ hour: 1, minute: 5 });
+  });
+
+  test("removes bidi marks wherever they sit", () => {
+    const marked = ["0", "1", ":", "05 P", "M", ""].join("‏");
+
+    expect(parseTime(marked, enUS)).toEqual({ hour: 13, minute: 5 });
+    expect(parseTime(`؜${marked.replace(":", "‎:")}`, enUS)).toEqual({ hour: 13, minute: 5 });
+  });
+
+  test.for([
+    ["01:05 PM x", "text after the day period"],
+    ["01:05 P M", "whitespace inside the day period"],
+    ["01:005 PM", "a three-digit minute"],
+    ["01: 05 PM", "whitespace inside the time"],
+  ])("rejects %o, %s, in en-US", ([str]) => {
+    expect(parseTime(str as string, enUS)).toBeUndefined();
+  });
 });
 
 describe("layoutDateTime", () => {
@@ -465,6 +648,25 @@ describe("parseDateTime", () => {
 
   test("reads any whitespace where the locale's text between has whitespace", () => {
     expect(parseDateTime("02/03/2026,\u202f01:05\u00a0PM", enUS)).toEqual({ date: "02/03/2026", time: "01:05\u00a0PM" });
+  });
+
+  test("reads the day period in any letter case and keeps it as written", () => {
+    expect(parseDateTime("02/03/2026, 01:05 pm", enUS)).toEqual({ date: "02/03/2026", time: "01:05 pm" });
+  });
+
+  test("ignores whitespace around the date-time and keeps none in either half", () => {
+    expect(parseDateTime("\t02/03/2026, 01:05 PM  ", enUS)).toEqual({ date: "02/03/2026", time: "01:05 PM" });
+    expect(parseDateTime(" 13:05 3/2/2026 ", vi)).toEqual({ date: "3/2/2026", time: "13:05" });
+  });
+
+  test.for([
+    ["02/03/2026,01:05 PM", "no whitespace after the comma"],
+    ["02/03/2026, 01:05 PM x", "text after the date-time"],
+    ["x02/03/2026, 01:05 PM", "text before the date-time"],
+    ["02-03-2026, 01:05 PM", "a date separator that is not the locale's"],
+    ["02/03/2026, 01:05", "a missing day period"],
+  ])("rejects %o, %s, in en-US", ([str]) => {
+    expect(parseDateTime(str as string, enUS)).toBeUndefined();
   });
 
   test.for([
