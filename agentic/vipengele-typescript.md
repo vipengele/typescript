@@ -29,7 +29,8 @@ Error Event, Scope, Breadcrumb, Transport) before naming things.
     (`current`/`propagate`/`inherit`/`isolated`/`useCarrier`), the ambient context tree the logger
     and the error reporter both read attributes from, built on `./context`'s store; its root holds
     the four reserved `Resource` keys (`service.name`, `service.version`,
-    `deployment.environment.name`, `process.runtime.name`), and `@isolatedScope`/`@scoped` wrap a
+    `deployment.environment.name`, `process.runtime.name`) and which `Scope.resource()` reads back as a
+    `Resource`, the value handed to every Sink; `@isolatedScope`/`@scoped` wrap a
     method body in `Scope.isolated`/`Scope.inherit` under either decorator dialect
     (`agentic/rules/method-decorator-supports-both-dialects.md`, ADR-0006). `./serialization`'s
     `serializeError` is the one place a thrown value's whole `cause`/`errors` chain is walked into
@@ -46,7 +47,11 @@ Error Event, Scope, Breadcrumb, Transport) before naming things.
     throws `LoggingConfigError`); the level table and the default provider live in two
     `globalThis` slots (`vipengele.logger.levels`, `vipengele.logger.provider.v1`) so every
     resolved copy of the package agrees (ADR-0005), and a category with nothing configured
-    resolves to `warn`. `./errors`'s `createReporter`
+    resolves to `warn`. A `Logger`'s `trace`..`fatal` calls that pass the level check build a
+    `LogRecord` (attributes normalized, errors through `serializeError`, both redacted with
+    `secretKeys` unless the builder's `redaction` says otherwise) and write it with the Resource to
+    every `Sink` the builder's `addSink` added, `clock` supplying `time`; a throwing sink goes to
+    the provider's `onSinkError` and never reaches the caller (ADR-0007, ADR-0011). `./errors`'s `createReporter`
     builds a `Reporter` from a `ReporterBuilder`; `captureException`/`captureMessage` run every
     event through a five-stage pipeline (normalize, enrich, processors, filter, transport) and hand
     the survivor to a `Transport`, the fire-and-forget delivery contract (ADR-0010;
