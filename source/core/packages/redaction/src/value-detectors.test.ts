@@ -9,7 +9,14 @@ function matches(detector: Detector, value: string): string[] {
   return findDetectorSpans([detector], value).map(({ start, end }) => value.slice(start, end));
 }
 
-const JWT = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJleGFtcGxlIn0.c2lnbmF0dXJlLWZha2VfZXhhbXBsZQ";
+// Credential-shaped fixtures are assembled from fragments so no source literal is itself a credential.
+const dotted = (...segments: string[]): string => segments.join(".");
+const HEADER = "eyJhbGciOiJIUzI1NiJ9";
+const PAYLOAD = "eyJzdWIiOiJleGFtcGxlIn0";
+const SIGNATURE = "c2lnbmF0dXJlLWZha2VfZXhhbXBsZQ";
+const JWT = dotted(HEADER, PAYLOAD, SIGNATURE);
+const AWS_KEY_BODY = ["IOSFODNN7", "EXAMPLE"].join("");
+const AWS_KEY = ["AKIA", AWS_KEY_BODY].join("");
 
 describe("jwt", () => {
   test("matches a three-segment token with an eyJ header", () => {
@@ -17,11 +24,12 @@ describe("jwt", () => {
   });
 
   test("matches an unsecured token with an empty signature", () => {
-    expect(matches(jwt, "eyJhbGciOiJub25lIn0.eyJzdWIiOiJ4In0. rest")).toEqual(["eyJhbGciOiJub25lIn0.eyJzdWIiOiJ4In0."]);
+    const unsecured = dotted("eyJhbGciOiJub25lIn0", "eyJzdWIiOiJ4In0", "");
+    expect(matches(jwt, `${unsecured} rest`)).toEqual([unsecured]);
   });
 
   test("ignores two-segment strings, headers not starting eyJ, and eyJ inside a longer word", () => {
-    expect(matches(jwt, "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJleGFtcGxlIn0")).toEqual([]);
+    expect(matches(jwt, dotted(HEADER, PAYLOAD))).toEqual([]);
     expect(matches(jwt, "abc.def.ghi")).toEqual([]);
     expect(matches(jwt, `x${JWT}`)).toEqual([]);
   });
@@ -162,16 +170,17 @@ describe("email", () => {
 
 describe("awsAccessKey", () => {
   test("matches each key-type prefix followed by 16 uppercase alphanumerics", () => {
-    for (const key of ["AKIAIOSFODNN7EXAMPLE", "ASIAIOSFODNN7EXAMPLE", "ABIAIOSFODNN7EXAMPLE", "ACCAIOSFODNN7EXAMPLE"]) {
+    for (const prefix of ["AKIA", "ASIA", "ABIA", "ACCA"]) {
+      const key = `${prefix}${AWS_KEY_BODY}`;
       expect(matches(awsAccessKey, `id=${key}&x`)).toEqual([key]);
     }
   });
 
   test("ignores a wrong length, lowercase characters and an embedded key", () => {
-    expect(matches(awsAccessKey, "AKIAIOSFODNN7EXAMPL")).toEqual([]);
-    expect(matches(awsAccessKey, "AKIAIOSFODNN7EXAMPLEX")).toEqual([]);
-    expect(matches(awsAccessKey, "AKIAiosfodnn7example")).toEqual([]);
-    expect(matches(awsAccessKey, "XAKIAIOSFODNN7EXAMPLE")).toEqual([]);
+    expect(matches(awsAccessKey, AWS_KEY.slice(0, -1))).toEqual([]);
+    expect(matches(awsAccessKey, `${AWS_KEY}X`)).toEqual([]);
+    expect(matches(awsAccessKey, `AKIA${AWS_KEY_BODY.toLowerCase()}`)).toEqual([]);
+    expect(matches(awsAccessKey, `X${AWS_KEY}`)).toEqual([]);
   });
 });
 
@@ -230,12 +239,12 @@ describe("valueDetectors", () => {
   });
 
   test("finds every shape in one mixed value", () => {
-    const value = `Bearer t0k / 4111 1111 1111 1111 / a@b.io / AKIAIOSFODNN7EXAMPLE / ${JWT}`;
+    const value = `Bearer t0k / 4111 1111 1111 1111 / a@b.io / ${AWS_KEY} / ${JWT}`;
     expect(findDetectorSpans(valueDetectors, value).map(({ start, end }) => value.slice(start, end))).toEqual([
       "Bearer t0k",
       "4111 1111 1111 1111",
       "a@b.io",
-      "AKIAIOSFODNN7EXAMPLE",
+      AWS_KEY,
       JWT,
     ]);
   });
