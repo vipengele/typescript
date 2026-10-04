@@ -1,3 +1,4 @@
+import { serializeError } from "@vipengele/ts-core-common";
 import { describe, expect, it } from "vitest";
 import { parseStack } from "./parse-stack";
 
@@ -184,6 +185,25 @@ describe("parseStack", () => {
 
     it("drops a truncated location-only frame", () => {
       expect(parseStack(`    at f (/a.js:1:2)\n    at /app/b.js:1${CUT}`)).toEqual([{ function: "f", file: "/a.js", line: 1, column: 2 }]);
+    });
+
+    it("drops the tail serializeError cuts from a stack over its string limit", () => {
+      const frame = "    at /app/a.js:1:2";
+      const cutAfter = "    at /app/a.js:1".length;
+      const serializedLimit = 8192;
+      let padding = 0;
+      while ((serializedLimit - cutAfter - ("Error: ".length + padding) - 1) % (frame.length + 1) !== 0) {
+        padding++;
+      }
+      const error = new Error("x");
+      const lines = [`Error: ${"m".repeat(padding)}`, ...Array.from({ length: serializedLimit / frame.length }, () => frame)];
+      error.stack = lines.join("\n");
+
+      const { stack } = serializeError(error);
+
+      expect(stack?.endsWith(`${frame.slice(0, cutAfter)}${CUT}`)).toBe(true);
+      const completeLines = (stack as string).split("\n").length - 2;
+      expect(parseStack(stack)).toHaveLength(completeLines);
     });
   });
 
