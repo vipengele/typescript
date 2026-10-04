@@ -189,6 +189,10 @@ Scope.isolated("http-request", { requestId: "abc" }, () => {
 });
 ```
 
+The reporter does not redact: Scope attributes reach the Transport as set, exactly as the call's own
+attributes do, so a secret placed on a Scope is sent. Keep secrets out of `Scope.current().set`,
+`Scope.inherit` and `Scope.isolated` attributes, or redact them in an event processor.
+
 If reading the Scope throws, the event is delivered without its Scope attributes. A Scope's tag is a
 Breadcrumb, and the Breadcrumb trail is not part of an Error Event. In the browser the synchronous-stack
 carrier loses the Scope after an `await` (ADR-0006).

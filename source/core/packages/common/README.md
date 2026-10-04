@@ -88,8 +88,9 @@ Scope.isolated("http-request", { requestId: "abc" }, () => {
   Resource.
 - `Scope.useCarrier(carrier)` — replaces the carrier the current scope rides on, seen by every copy
   of the package in the realm from then on.
-- `snapshot(scope)` — the non-root ancestors' attributes of `scope` flattened into one null-prototype
-  record, innermost winning and never the Resource keys. Framework-internal, not for application use.
+- `snapshot(scope)` — the attributes `scope` and its non-root ancestors hold, flattened into one
+  null-prototype record, innermost winning and never the Resource keys. Framework-internal, not for
+  application use.
 
 `isolatedScope(tag)` and `scoped(tag, attributes)` are method decorators wrapping a method's whole
 call in `Scope.isolated`/`Scope.inherit` respectively, usable under either the standard decorator
