@@ -36,6 +36,10 @@
       "types": "./dist/types/numeric/index.d.ts",
       "default": "./dist/types/numeric/index.js"
     },
+    "./types/date-time": {
+      "types": "./dist/types/date-time/index.d.ts",
+      "default": "./dist/types/date-time/index.js"
+    },
     "./context": {
       "types": "./dist/context/index.d.ts",
       "default": "./dist/context/index.js"
