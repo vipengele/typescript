@@ -210,10 +210,12 @@ that rejects a start position inside the run at once, and every other quantifier
 `creditCard` leaves a CVV or an expiry date written after the number (`4111 1111 1111 1111 123`)
 out of the candidate, so the card number is still checked and redacted on its own. A longer grouped
 number is read by its leading groups instead: when its first 13 to 19 digits happen to pass the
-Luhn check, that prefix is redacted and the rest kept. A 19-digit number is matched when written
-contiguously; written in 4-4-4-4-3 groups it is read by its leading 16 digits and is redacted only
-when those pass Luhn, since trying that grouping first would leak a card number written next to its
-CVV.
+Luhn check, that prefix is redacted and the rest kept; when they fail it, the number is retried
+from each later group, so a card number written after a reference or another number is still
+found. A 19-digit number is matched whole when written
+contiguously; written in 4-4-4-4-3 groups it is redacted only when its leading 16 digits pass Luhn
+or its trailing 15 do, since trying that grouping first would leave a card number written next to
+its CVV unredacted.
 
 ### What is scanned
 
@@ -225,6 +227,9 @@ the key rule and not scanned.
 - **Only the matched span is replaced.** The text around it is kept. Overlapping or touching spans,
   from one detector or several, merge into one replacement. `validate` runs on each detector's raw
   match before merging.
+- **A rejected match is rescanned from its next character.** An accepted match resumes the scan at
+  its end; a match `validate` rejects resumes it one character (one code point under `u` or `v`)
+  past its start, so a secret starting inside the rejected text is still found.
 - **A function `Replacement` receives the span as `value`** and the nearest enclosing string key as
   `key`: `""` for a root string and for items under no string key. A non-string return is
   converted with `String()`.
@@ -504,7 +509,9 @@ stack depth grows with the input's depth.
   validated for catastrophic backtracking or cost, and detectors scan a string in full before it is
   cut. Build a policy from patterns and functions you wrote or reviewed, the same way you would
   trust any other code compiled into your program; do not construct one from a pattern string an
-  untrusted caller supplied. The built-in detectors cost time linear in the string's length.
+  untrusted caller supplied. A match `validate` rejects is rescanned from its next character, so a
+  detector's pattern and `validate` run once per start position inside a rejected match, and bounding
+  that cost is the caller's too. The built-in detectors cost time linear in the string's length.
 - **`Map` key-matching only applies to string keys.** A `Map` entry whose key is not a string is
   never tested against the policy, and the key itself is carried into the output by reference,
   unredacted — its value is still walked and redacted recursively, but sensitive data held on an

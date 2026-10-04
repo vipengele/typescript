@@ -43,10 +43,15 @@ function normalizedDetectors(detectors: readonly Detector[]): readonly Normalize
 }
 
 /**
- * Pushes every accepted, non-empty match of one detector in `value`. A zero-length match has
- * nothing to replace and leaves `lastIndex` where it is, so the scan steps past it by hand — one
- * code point under `u`/`v`, where stopping inside a surrogate pair would split it, one code unit
- * otherwise.
+ * Pushes every accepted, non-empty match of one detector in `value`. An accepted match resumes the
+ * scan at its end. A match `validate` rejects resumes it one step past its start instead, so a
+ * secret starting inside the rejected text is still found: resuming at the rejected match's end
+ * would skip every later start position it covers. A zero-length match has nothing to replace and
+ * leaves `lastIndex` where it is, so the scan steps past it the same way. A step is one code point
+ * under `u`/`v`, where stopping inside a surrogate pair would split it, one code unit otherwise.
+ *
+ * Each rejection costs another match attempt per start position inside the rejected match, so a
+ * detector's own pattern and `validate` run once per start position, not once per match.
  */
 function scan({ regex, validate, unicode }: NormalizedDetector, value: string, spans: Span[]): void {
   regex.lastIndex = 0;
@@ -54,10 +59,10 @@ function scan({ regex, validate, unicode }: NormalizedDetector, value: string, s
   while (match !== null) {
     const start = match.index;
     const end = start + match[0].length;
-    if (end === start) {
-      regex.lastIndex = end + (unicode && (value.codePointAt(end) ?? 0) > 0xffff ? 2 : 1);
-    } else if (validate === undefined || validate(match[0])) {
+    if (end !== start && (validate === undefined || validate(match[0]))) {
       spans.push({ start, end });
+    } else {
+      regex.lastIndex = start + (unicode && (value.codePointAt(start) ?? 0) > 0xffff ? 2 : 1);
     }
     match = regex.exec(value);
   }
@@ -67,7 +72,9 @@ function scan({ regex, validate, unicode }: NormalizedDetector, value: string, s
  * The ranges of `value` any detector matches, merged across detectors into maximal spans sorted by
  * start: overlapping or touching matches (one ending where the next starts) become one span. Each
  * detector's `validate` sees its own raw match before merging, and a rejected match contributes
- * nothing.
+ * nothing itself: the detector is retried from the rejected match's next character, so a match
+ * starting inside it is still found, and `validate` and the pattern's cost are paid per start
+ * position — the caller's to bound for a detector it supplies.
  */
 export function findDetectorSpans(detectors: readonly Detector[] | undefined, value: string): readonly Span[] {
   if (detectors === undefined || detectors.length === 0 || value === "") return [];

@@ -40,8 +40,8 @@ describe("findDetectorSpans", () => {
   });
 
   test("a match validate rejects yields no span", () => {
-    const detectors: Detector[] = [{ pattern: /\d+/, validate: (match) => match !== "12" }];
-    expect(findDetectorSpans(detectors, "12 34")).toEqual([{ start: 3, end: 5 }]);
+    const detectors: Detector[] = [{ pattern: /\d+/, validate: (match) => match.length > 2 }];
+    expect(findDetectorSpans(detectors, "12 345")).toEqual([{ start: 3, end: 6 }]);
   });
 
   test("validate sees each detector's raw match, before merging", () => {
@@ -49,6 +49,25 @@ describe("findDetectorSpans", () => {
     const detectors: Detector[] = [{ pattern: /abc/, validate }, { pattern: /cde/ }];
     expect(findDetectorSpans(detectors, "abcde")).toEqual([{ start: 0, end: 5 }]);
     expect(validate.mock.calls).toEqual([["abc"]]);
+  });
+
+  test("a match starting inside a rejected match is found", () => {
+    const detectors: Detector[] = [{ pattern: /\d{2,4}/, validate: (match) => match.startsWith("9") }];
+    expect(findDetectorSpans(detectors, "x1934x")).toEqual([{ start: 2, end: 5 }]);
+  });
+
+  test("a rejected match is retried one character past its start, not from its end", () => {
+    const validate = vi.fn((match: string) => match === "cd");
+    const detectors: Detector[] = [{ pattern: /[a-d]{2}/, validate }];
+    expect(findDetectorSpans(detectors, "abcd")).toEqual([{ start: 2, end: 4 }]);
+    expect(validate.mock.calls).toEqual([["ab"], ["bc"], ["cd"]]);
+  });
+
+  test("an accepted match resumes the scan at its end, so nothing inside it is reported again", () => {
+    const validate = vi.fn((_match: string) => true);
+    const detectors: Detector[] = [{ pattern: /[a-d]{2}/, validate }];
+    expect(findDetectorSpans(detectors, "abcd")).toEqual([{ start: 0, end: 4 }]);
+    expect(validate.mock.calls).toEqual([["ab"], ["cd"]]);
   });
 
   test("a rejected match does not bridge two accepted ones", () => {
@@ -129,6 +148,25 @@ describe("zero-length matches", () => {
     const pattern = new RegExp(SURROGATE_PROBE, flag);
     expect(findDetectorSpans([{ pattern }], EMOJI)).toEqual([]);
     expect(findDetectorSpans([{ pattern }], `a${EMOJI}${LONE_LOW}`)).toEqual([{ start: 3, end: 4 }]);
+  });
+});
+
+describe("rejected matches starting at a surrogate pair", () => {
+  // The emoji then x, a low surrogate then x, or x alone; validate rejects a match starting with a
+  // high surrogate, so the first match, the emoji and x, is always rejected and retried.
+  // biome-ignore lint/security/noSecrets: a regex source of escape sequences, flagged only for its entropy
+  const PAIR_PROBE = "\\uD83D\\uDE00x|\\uDE00x|x";
+  const EMOJI = "\u{1F600}";
+  const validate = (match: string): boolean => !match.startsWith("\uD83D");
+
+  test("without u, the retry steps one code unit and can start inside a surrogate pair", () => {
+    const pattern = new RegExp(PAIR_PROBE, "");
+    expect(findDetectorSpans([{ pattern, validate }], `${EMOJI}x`)).toEqual([{ start: 1, end: 3 }]);
+  });
+
+  test.each(["u", "v"])("under %s, the retry steps over the whole surrogate pair", (flag) => {
+    const pattern = new RegExp(PAIR_PROBE, flag);
+    expect(findDetectorSpans([{ pattern, validate }], `${EMOJI}x`)).toEqual([{ start: 2, end: 3 }]);
   });
 });
 

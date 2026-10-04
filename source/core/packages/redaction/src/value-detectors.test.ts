@@ -92,7 +92,10 @@ describe("creditCard", () => {
 
   test("a longer grouped number is read by its leading groups", () => {
     expect(matches(creditCard, "id 4111 1111 1111 1111 1111 1111")).toEqual(["4111 1111 1111 1111"]);
-    expect(matches(creditCard, "id 0000 4111 1111 1111 1111")).toEqual([]);
+  });
+
+  test("when the leading groups fail Luhn, a card number starting at a later group is matched", () => {
+    expect(matches(creditCard, "id 0000 4111 1111 1111 1111")).toEqual(["4111 1111 1111 1111"]);
   });
 
   test("a 19-digit number is matched contiguously but read by its leading 16 digits when grouped 4-4-4-4-3", () => {
@@ -113,6 +116,14 @@ describe("creditCard", () => {
     expect(matches(creditCard, "id 00004111111111111111")).toEqual([]);
     expect(matches(creditCard, "id 41111111111111111111111111")).toEqual([]);
     expect(matches(creditCard, `id ${"0".repeat(40)}`)).toEqual([]);
+  });
+
+  test("a card number starting inside a Luhn-failing candidate is still matched", () => {
+    const value = "ref 2024 100001 4111 1111 1111 1111";
+    expect(findDetectorSpans([creditCard], value)).toEqual([{ start: 16, end: 35 }]);
+    expect(matches(creditCard, "ref 2024 100001 4111-1111-1111-1111")).toEqual(["4111-1111-1111-1111"]);
+    expect(matches(creditCard, "ref 2024-100001-4111-1111-1111-1111")).toEqual(["4111-1111-1111-1111"]);
+    expect(matches(creditCard, "ref 2024 100001 4111111111111111")).toEqual(["4111111111111111"]);
   });
 
   test("a double separator ends a grouping", () => {
@@ -255,6 +266,8 @@ describe("pathological inputs complete with the expected spans", () => {
     ["alternating digits and spaces", "4 ".repeat(size), 0],
     ["alternating digits and hyphens", "4-".repeat(size), 0],
     ["repeated Luhn-failing four-digit groups", "4111 ".repeat(size / 5), 0],
+    ["repeated Luhn-failing Diners-shaped references", "2024 100001 ".repeat(5000), 0],
+    ["repeated Luhn-failing Diners-shaped references, then a card", `${"2024 100001 ".repeat(5000)}4111 1111 1111 1111`, 1],
     ["Bearer followed by spaces", `Bearer${" ".repeat(size)}`, 0],
     ["a long b64token run", `Bearer ${"a".repeat(size)}`, 1],
     ["a short token then alternating characters and spaces", `Bearer ${"a ".repeat(size / 2)}`, 1],
