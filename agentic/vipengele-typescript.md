@@ -21,7 +21,8 @@ Error Event, Scope, Breadcrumb, Transport) before naming things.
     propagation, error normalization, runtime detection, locales) the other packages agree on. A
     sub-path like `./types/numeric` (`Numeric.parse`/`tryParse`/`format`, which take a `./locale`
     `Locale` — a validated BCP 47 tag with month and weekday names, hour cycle and first day of the
-    week — ADR-0013) or
+    week — ADR-0013), `./types/date-time` (`LocalDate`, `LocalTime`, `LocalDateTime`: validated,
+    immutable, zoneless civil values with ISO 8601 parse/format, arithmetic and `now()`) or
     `./context` (`createAsyncContextStore`, a value carried across an async call chain behind a
     fixed carrier fallback — `AsyncLocalStorage`, then `AsyncContext.Variable`, then a synchronous
     stack, ADR-0004; state shared across dual-resolved copies of the package lives behind a
