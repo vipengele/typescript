@@ -108,3 +108,71 @@ resolve `true` in that case, since there is nothing to wait on.
 
 **An unknown level** — a `CaptureContext.level` or `captureMessage` level that is not one of the six
 `Level` values (or is absent) becomes `"error"`.
+
+### Global handlers
+
+`builder.add(integration)` installs an `Integration` when the reporter is created and removes it
+again on `close()` (ADR-0012):
+
+```ts
+interface Integration {
+  readonly name: string;
+  setup(host: IntegrationHost): (() => void) | void;
+}
+
+interface IntegrationHost {
+  capture(error: unknown, context: { mechanism: Mechanism; level?: Level; attributes?: AttributesInput }): string;
+  flush(timeoutMs?: number): Promise<boolean>;
+}
+```
+
+`setup` returns the function that undoes it, if there is anything to undo. Integrations are set up in
+the order added and torn down newest first. A `setup` or a teardown that throws is contained: that
+integration is skipped, and every other one still installs or tears down. Adding a second
+integration with the same `name` replaces the first, in its place, so one builder installs each
+integration once.
+
+`globalHandlers` captures what nothing else caught, as `handled: false` events with the
+`global.error` and `global.rejection` mechanisms:
+
+```ts
+import { createConsoleTransport, createReporter, globalHandlers } from "@vipengele/ts-core-observability/errors";
+
+const reporter = createReporter((builder) =>
+  builder
+    .transport(createConsoleTransport())
+    .add(globalHandlers({ onUncaught: "exit", onUnhandledRejection: "exit", flushTimeoutMs: 2000 })),
+);
+```
+
+- **`onUncaught` and `onUnhandledRejection`** — each `"exit"` or `"continue"`, and both required.
+  There is no default: whether a process survives an unhandled error is a decision about the
+  application, and a default would make it silently on the caller's behalf.
+- **`flushTimeoutMs`** — how long an `"exit"` waits for the transport to flush. Defaults to `2000`.
+- **`eventTarget` and `process`** — inject a fake in a test. An injected `eventTarget` wins, then an
+  injected `process`, then `globalThis` where it has an `addEventListener`, then `globalThis.process`;
+  a runtime with none of them installs nothing.
+
+**In the browser** it listens for `error` and `unhandledrejection` on `globalThis` and captures both
+at level `error`. It never exits, ignores the exit options and `flushTimeoutMs`, and never calls
+`preventDefault`, so the browser still reports each error to its own console. A cross-origin
+`"Script error."` arrives without its `error`; it is captured as an exception built from the event's
+`message`.
+
+**In Node** it listens for `uncaughtException` (captured at level `fatal`) and `unhandledRejection`
+(level `error`), always both. A listener switches off Node's own crash report and exit, so the exit
+policy decides what follows:
+
+- **`"exit"`** writes the error to `console.error` first, so a transport that does not write to the
+  console still leaves a trace of the crash, then awaits `flush(flushTimeoutMs)` and calls
+  `process.exit(1)` whether or not the flush finished. A second error with an `"exit"` policy while
+  that flush is pending exits at once, and the first event may be lost.
+- **`"continue"`** captures the event and leaves the process running.
+
+> **Warning: `"continue"` keeps a process Node considers corrupt.** After an uncaught exception
+> Node treats the process state as undefined: open handles, half-finished writes and invariants the
+> code relied on may be broken. `"continue"` for `onUncaught` is a deliberate choice to keep running
+> anyway; `"exit"` is the safe one.
+
+A reporter with integrations owns the global state they install until `close()`. Two reporters that
+both add `globalHandlers` each install their own listeners, and each captures every error.

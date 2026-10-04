@@ -124,3 +124,16 @@ breadcrumb for something is creating a scope for it.
 What delivers Error Events (and exported Log Records) out of the process: console, HTTP JSON, OTLP.
 Owns batching, retry, `flush()` and `close()`.
 _Avoid_: exporter (OTel's word; use it only for OTLP specifically)
+
+**Integration**:
+A piece a Reporter installs when it is created and removes when it is closed, such as a listener on
+global state. Added to the builder by `name`; adding the same name again replaces the earlier one.
+
+**Global Handler**:
+The Integration that captures the errors nothing else caught: the uncaught exceptions and unhandled
+rejections of a Node process, the `error` and `unhandledrejection` events of a browser page.
+Its events are always unhandled.
+
+**Exit Policy**:
+What a Node process does after a Global Handler captures an error: `"exit"` or `"continue"`. The
+caller chooses each one; there is no default.
