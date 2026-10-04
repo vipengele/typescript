@@ -171,8 +171,8 @@ An Error Event's `attributes` carry the ambient `Scope` chain beneath the call's
 attributes of every Scope between the current one and the root, the innermost winning, then the
 `attributes` passed to the capture call, which win on a shared key. Each side is normalized
 separately and bounded to 100 entries. The Resource (`service.name`, `service.version`,
-`deployment.environment.name`, `process.runtime.name`) is not copied into events, and a `Transport`
-does not receive it.
+`deployment.environment.name`, `process.runtime.name`) is not copied into events; a `Transport`
+that needs it reads `Scope.resource()`.
 
 The reporter only reads the Scope. Per-request isolation, tags and `withScope`-style behaviour come
 from `Scope` in `@vipengele/ts-core-common/scope`:
