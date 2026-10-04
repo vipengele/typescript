@@ -7,6 +7,8 @@ export interface ReporterSettings {
   /** Absent when none was set; every event is then dropped after the pipeline runs. */
   readonly transport?: Transport;
   readonly clock: Clock;
+  /** Absent when none was set; every frame outside `node_modules` is then in-app. */
+  readonly projectRoot?: string;
   /** Installed in this order when the Reporter is created, and removed when it is closed. */
   readonly integrations: readonly Integration[];
 }
@@ -18,6 +20,7 @@ export interface ReporterSettings {
 export class ReporterBuilder {
   #transport: Transport | undefined;
   #clock: Clock = systemClock;
+  #projectRoot: string | undefined;
   readonly #integrations = new Map<string, Integration>();
 
   /** Where captured events go. A later call replaces the transport an earlier one set. */
@@ -33,6 +36,16 @@ export class ReporterBuilder {
   }
 
   /**
+   * Where the application's own code lives, as a filesystem path or a URL prefix such as
+   * `https://app.example.com/`. Only frames whose file sits under it are in-app. An empty or
+   * whitespace-only path counts as unset. A later call replaces the path an earlier one set.
+   */
+  projectRoot(path: string): this {
+    this.#projectRoot = path;
+    return this;
+  }
+
+  /**
    * An integration the Reporter installs when it is created. A later call with an integration of
    * the same `name` replaces the earlier one, in the earlier one's place.
    */
@@ -43,6 +56,11 @@ export class ReporterBuilder {
 
   /** The settings composed so far, as a snapshot a later call on this builder does not change. */
   build(): ReporterSettings {
-    return { transport: this.#transport, clock: this.#clock, integrations: [...this.#integrations.values()] };
+    return {
+      transport: this.#transport,
+      clock: this.#clock,
+      projectRoot: this.#projectRoot,
+      integrations: [...this.#integrations.values()],
+    };
   }
 }

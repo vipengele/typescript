@@ -80,6 +80,18 @@ frames, its mechanism (handled or unhandled, and what caught it), its scope's co
 breadcrumbs.
 _Avoid_: exception (that is one link of the chain), issue (a grouping on the backend)
 
+**Frame**:
+One parsed entry of an Error Event's exception stack: a function, a file, a line and a column, each
+present only when the engine reported it. Frames are ordered as the engine prints them, so the
+first is the throw site.
+_Avoid_: stack line (a frame is parsed, not text), call site
+
+**In-app**:
+Describes a Frame that is the application's own code, as opposed to a dependency, a runtime builtin
+or a file the engine did not name. Which code counts as the application's is configured per Reporter
+by its project root; with none set, every Frame that is not a dependency or a builtin is in-app.
+_Avoid_: first-party, user code
+
 **Runtime identity**:
 The family `detectRuntime` from `@vipengele/ts-core-common/runtime` reports code is executing in:
 `browser`, `worker`, `node`, `deno`, `bun`, `edge` or `unknown`. Wider than the two tested

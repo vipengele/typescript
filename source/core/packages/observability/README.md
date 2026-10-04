@@ -109,6 +109,57 @@ resolve `true` in that case, since there is nothing to wait on.
 **An unknown level** — a `CaptureContext.level` or `captureMessage` level that is not one of the six
 `Level` values (or is absent) becomes `"error"`.
 
+### Stack frames
+
+Every `ExceptionRecord` — the event's `exception` and each `cause` and `errors` link under it —
+carries `frames: StackFrame[]`, parsed from its `stack`:
+
+```ts
+interface StackFrame {
+  function?: string;
+  file?: string;
+  line?: number;
+  column?: number;
+  inApp?: boolean;
+}
+```
+
+V8, SpiderMonkey and JavaScriptCore stacks all parse, and a line that is not a frame (the
+`Error: message` header, `[native code]`, a truncation marker) is dropped. The raw `stack` stays a
+string on the record and is the lossless record; `frames` is a convenience over it. Parsing never
+throws, and a missing or unreadable stack gives `[]`. `frames` is set in the normalize stage, so
+processors see it.
+
+**Frame order** is the engine's: `frames[0]` is the throw site. A transport that targets a
+bottom-first format reverses the array at its own edge.
+
+**In-app** — `inApp: true` marks the application's own code. A frame is not in-app when:
+
+- it has no `file`;
+- its `file` has a `node_modules` path segment, whether it is a filesystem path or an `http(s)://`
+  URL;
+- its `file` uses the `node:` scheme.
+
+Every other frame is in-app when no project root is set. With a root, a frame is in-app only when
+its `file` is under the root on a path boundary: `/app` covers `/app/x.js` but not
+`/application/x.js`. `file://` URLs and backslashes are normalised before comparing, so
+`C:\app\x.js` and `file:///C:/app/x.js` match the same root. An empty or whitespace-only root
+counts as unset.
+
+`builder.projectRoot()` sets the root. It takes a filesystem path or a URL prefix, since a browser's
+frames are URLs:
+
+```ts
+const nodeReporter = createReporter((builder) => builder.projectRoot("/srv/checkout"));
+const browserReporter = createReporter((builder) => builder.projectRoot("https://app.example.com/"));
+```
+
+**No self-detection** — the reporter does not mark its own frames not-in-app. Deriving its location
+from `import.meta.url` is wrong under bundling: it resolves to the application's bundle, so every
+application frame would be marked not-in-app. Unbundled, the reporter's frames sit under
+`node_modules` and are already not in-app. Bundled into an application, its own frames are in-app;
+that is accepted.
+
 ### Global handlers
 
 `builder.add(integration)` installs an `Integration` when the reporter is created and removes it
