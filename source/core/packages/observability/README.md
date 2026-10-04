@@ -102,8 +102,10 @@ array, a parsed API error body), whether it was thrown itself or reached through
 mark are skipped is parsed and redacted the same way. Such a value's JSON text is replaced whole by
 `"[REDACTED: unparseable structured value]"` when it does not parse, as when it was cut at the
 serialization length bound. `builder.redaction(policy)` replaces it and `builder.redaction(null)`
-disables it. A record's `message`, and the `message` and `stack` of an `Error`, are not scanned: a
-secret interpolated into a message is the caller's to keep out.
+disables it. A policy that carries `detectors` (for example `valueDetectors`) also replaces matched
+spans in the string values of `attributes` and of an error's `data` and structured fields. A
+record's `message`, the `message` and `stack` of a real `Error`, and a thrown string that is not
+JSON are not scanned: a secret interpolated into one of those is the caller's to keep out.
 
 **What the logger does not have:** formatters, and configuration sources (`VPG_LOG`, browser
 sources, files). A sink formats a record itself, and levels are set in code, with `configure`,

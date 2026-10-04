@@ -22,6 +22,8 @@ pnpm format:check
   `redactHeaders`, which redact strings and header lists textually. `redactParams`,
   `resolveStringOptions` and `ResolvedStringOptions` are internal to them and not exported from
   the root.
+- `src/detector.ts` — the detector engine: normalization, span finding, merging and replacement.
+- `src/value-detectors.ts` — the built-in detectors and the `valueDetectors` preset.
 - `src/limits.ts` — the bounds on a walk and the markers a breach leaves behind.
 - `README.md` — public docs, including the Limits and Cost model sections; keep them in step
   with `limits.ts` defaults.
@@ -49,3 +51,6 @@ pnpm format:check
   values is bounded to `maxBreadth` elements as well. `maxStringLength` cuts the whole redacted URL or query string, or
   each header value; redaction runs before truncation.
 - Lengths are UTF-16 code units; the truncation suffix is not counted.
+- Detectors scan the original string and `maxStringLength` truncates the result, so a secret
+  straddling the cutoff leaks no prefix. With detectors on, every visited string is scanned in
+  full, so work is not bounded by the characters kept.
