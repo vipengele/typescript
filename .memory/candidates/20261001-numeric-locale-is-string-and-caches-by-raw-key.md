@@ -1,29 +1,22 @@
 ---
-about: Numeric takes `locale?: string` only, derives separators and caches from Intl by the raw locale string; tryParse returns {success,value?}; invalid tag throws RangeError unwrapped
+about: Numeric takes an optional Locale only (omitted means Locale.default()), derives separators from Intl by Locale#tag, and caches by the canonical tag; an invalid tag throws RangeError from the Locale constructor, not from Numeric
 saw:
   - source/core/packages/common/src/types/numeric/index.ts
   - source/core/packages/common/src/types/numeric/parse.ts
   - source/core/packages/common/src/types/numeric/format.ts
   - source/core/packages/common/src/types/numeric/locale-parts.ts
-  - source/core/packages/common/src/types/numeric/numeric-parse-error.ts
+  - source/core/packages/common/src/locale/locale.ts
+  - docs/adr/0012-locale-replaces-the-string-locale.md
 ---
 
-Read in full for the LocalDate/Locale planning (issue #87).
-
-- Static-only class `Numeric` (`index.ts:9-24`): `format(value: number, locale?: string, options?: FormatOptions): string`,
-  `parse(str: string, locale?: string): number`, `tryParse(str: string, locale?: string): TryParseResult`.
-  Locale is a plain optional `string` (not string[], not Intl.Locale); omitted means runtime default locale.
-- `TryParseResult = { readonly success: boolean; readonly value?: number }` (`parse.ts:4-9`); failure is
-  `{ success: false }`, never undefined. `FormatOptions` has only `maximumFractionDigits` (default 20, `format.ts:13`).
-- Error: `NumericParseError extends VipengeleError`, code `"common.numeric.parse"`, guard `isNumericParseError`
-  is `instanceof Error && code ===` (`numeric-parse-error.ts:4-22`).
-- An invalid BCP 47 tag throws `RangeError` out of parse AND tryParse unwrapped (programmer error, `parse.ts` docs);
-  format also throws RangeError on NaN/Infinity.
-- Intl: separators come from `new Intl.NumberFormat(locale,{numberingSystem:"latn",maximumFractionDigits:1}).formatToParts(-12345678.9)`
-  (`locale-parts.ts:32-60`), never tabulated. Two Map caches (`locale-parts.ts` CACHE, `format.ts` FORMATTER_CACHE)
-  keyed by the raw locale string with `undefined` a distinct key from `""` (otherwise "" would skip its RangeError).
-  A Locale value type that normalizes keys must preserve this: a cache hit must not swallow an invalid-tag RangeError.
-- Gotchas: forced `numberingSystem:"latn"` (ASCII digits only; Arabic-Indic digits do not parse); U+200E/U+200F etc.
-  stripped before parsing (ar-EG/fa-IR prefix negatives with U+200E); lookalike-codepoint ASCII_EQUIVALENTS map
-  (see note ascii-equivalents-keys-are-lookalike-codepoints); group separators removed without position validation (en-IN).
-- Passing a `Locale` to Numeric.tryParse/format means changing all three string-typed signatures and both cache key types.
+- `Numeric.format(value, locale?: Locale, options?)`, `parse(str, locale?: Locale)`, `tryParse(str, locale?: Locale)`;
+  the inner functions default the argument with `Locale.default()`, read on every call. A string is not accepted
+  (ADR-0012). `tryParse` returns `{ success: false }` or `{ success: true, value }`.
+- Separators come from `new Intl.NumberFormat(locale.tag, { numberingSystem: "latn", maximumFractionDigits: 1 })
+  .formatToParts(-12345678.9)` (`locale-parts.ts`), never tabulated. `CACHE` (`locale-parts.ts`) and `FORMATTER_CACHE`
+  (`format.ts`) are `Map<string, …>` keyed by `locale.tag`, so `new Locale("sv-se")` and `new Locale("sv-SE")` share an
+  entry. No key is `undefined`: the invalid-tag `RangeError` is raised by `new Locale(tag)`, so a cache hit can never
+  swallow it.
+- Gotchas that remain: forced `numberingSystem: "latn"` (ASCII digits only; Arabic-Indic digits do not parse);
+  U+200E/U+200F stripped before parsing (ar-EG/fa-IR prefix negatives with U+200E); group separators removed without
+  position validation (en-IN); `format` throws `RangeError` on NaN and Infinity.

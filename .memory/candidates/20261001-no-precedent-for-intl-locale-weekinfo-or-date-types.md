@@ -1,19 +1,20 @@
 ---
-about: No ADR, rule, note or glossary entry covers date/time types, Locale, Intl.Locale or getWeekInfo; the only time code is Clock, and missing-feature tests use injected sources
+about: Locale reads week info through an injected WeekInfoSource (getWeekInfo() or the weekInfo property, Monday fallback), the same injected-source seam detectCapability uses; engines differ on which shape they expose
 saw:
-  - CONTEXT.md
-  - docs/adr/0004-one-build-per-package-runtime-code-chosen-by-lazy-feature-detection.md
-  - source/core/packages/common/src/time/clock.ts
+  - source/core/packages/common/src/locale/locale.ts
+  - source/core/packages/common/src/locale/locale.test.ts
   - source/core/packages/common/src/runtime/capabilities.ts
-  - source/core/vitest.shared.ts
+  - docs/adr/0004-one-build-per-package-runtime-code-chosen-by-lazy-feature-detection.md
 ---
 
-- grep for getWeekInfo|weekInfo|Intl.Locale across the repo: 0 hits outside nothing relevant. CONTEXT.md has no Locale/date terms.
-- `Clock = () => number`, `systemClock = performance.timeOrigin + performance.now()` (`time/clock.ts`), exported from the
-  package root, documented in common README "Clock"; deliberately not `Date.now()` (wall clock is adjustable).
-- Convention for exercising an absent feature: functions take an injected source (`detectCapability(cap, source?)`,
-  `capabilities.ts:~95`; ADR-0004 last paragraph of first section) so a test forces branches the real runtime can't reach;
-  node/chromium real branches are covered by the normal runs. Runtime-only suites are `*.node.test.ts`/`*.browser.test.ts`
-  (`vitest.shared.ts` nodeOnly/browserOnly). No existing test stubs a `globalThis.Intl` member; a getWeekInfo fallback would
-  need either an injected seam or a vi.stubGlobal, and 100% branch coverage applies to the union of both runs.
-- ADR-0004 mandates feature detection, never load-time `typeof window`-style checks.
+- `readFirstDayOfWeek(tag, source = intlWeekInfoSource)` (`locale/locale.ts`) builds `new source(tag)` and prefers
+  `getWeekInfo()` when it is a function, else the `weekInfo` property, else returns Monday (1). `firstDay` is already
+  ISO-numbered (1 Monday..7 Sunday), so it is passed through unchanged. `Locale#firstDayOfWeek` caches the result per
+  instance.
+- The week-info source is injected so the missing-feature branch and both shapes are covered in the shared suite in both
+  runtimes, with no `*.node.test.ts` split. This follows the injected-source convention of `detectCapability(cap, source?)`
+  (`runtime/capabilities.ts`, ADR-0004).
+- Engines differ: Node 22 exposes only the `weekInfo` property, with no `getWeekInfo()`; Chromium and Node 24 expose
+  `getWeekInfo()`. Real-locale expectations (en-US 7, de-DE 1, ar-EG 6) hold under both shapes.
+- `Intl.Locale` is typed without week info in the ES2022 lib, so the default source is retyped with a cast
+  (`intlWeekInfoSource`), not matched structurally.
