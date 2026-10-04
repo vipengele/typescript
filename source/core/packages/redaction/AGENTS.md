@@ -16,7 +16,12 @@ pnpm format:check
 
 ## Layout
 
-- `src/redact.ts` — the `redact` walk, the only entry point.
+- `src/index.ts` — the package root, the only entry point; it re-exports from the modules below.
+- `src/redact.ts` — the `redact` walk.
+- `src/url.ts`, `src/query-string.ts`, `src/headers.ts` — `redactUrl`, `redactQueryString` and
+  `redactHeaders`, which redact strings and header lists textually. `redactParams`,
+  `resolveStringOptions` and `ResolvedStringOptions` are internal to them and not exported from
+  the root.
 - `src/limits.ts` — the bounds on a walk and the markers a breach leaves behind.
 - `README.md` — public docs, including the Limits and Cost model sections; keep them in step
   with `limits.ts` defaults.
@@ -35,4 +40,12 @@ pnpm format:check
 - The breadth marker key (`…`) is made unique against kept keys (`breadthMarkerKey`), and a `Set`
   marker against its kept members (`uniqueBreadthMarker`), so the marker never overwrites or
   merges into a real entry.
+- `redactUrl`, `redactQueryString` and `redactHeaders` take `maxBreadth` and `maxStringLength`
+  (no `maxDepth`; strings have none) and get their defaults from `limits.ts` alone, through
+  `resolveLimits` and `truncateString`, so they share the `toJsonSafe` defaults. They define none of
+  their own.
+- `maxBreadth` counts parameters in `redactQueryString`, query and fragment parameters separately
+  in `redactUrl`, and headers in `redactHeaders` (`Headers` entries, record names, pairs); a record's list of
+  values is bounded to `maxBreadth` elements as well. `maxStringLength` cuts the whole redacted URL or query string, or
+  each header value; redaction runs before truncation.
 - Lengths are UTF-16 code units; the truncation suffix is not counted.
