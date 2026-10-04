@@ -1,8 +1,10 @@
 import type { Threshold } from "@vipengele/ts-core-common";
+import type { Resource } from "@vipengele/ts-core-common/scope";
 import { createLoggingBuilder, type LoggingBuilder } from "./builder";
 import { validateCategoryKey } from "./categories";
 import { entryFor, type LevelEntry, resolveEntry, validateThreshold } from "./levels";
 import { createLogger, type Logger } from "./logger";
+import type { EmitSettings } from "./record";
 import { DEFAULT_LEVELS, EMPTY_LAYER, createSettings, type LoggingSettings } from "./settings";
 
 /**
@@ -36,19 +38,32 @@ export interface LoggerProviderOptions {
    * and no root falling back to `warn`.
    */
   resolve?(category: string): LevelEntry;
+
+  /**
+   * The Resource handed to every sink, asked once per record. When omitted, every record carries
+   * a frozen Resource whose four keys are `undefined`.
+   */
+  resource?(): Resource;
+
+  /**
+   * Called with the thrown value of each `Sink.write` that fails. When omitted, a sink failure is
+   * dropped.
+   */
+  onSinkError?(error: unknown): void;
 }
 
 /**
- * Owns one configuration — the defaults, builder and overrides layers of a `LoggingSettings` —
- * and hands out Loggers that read it on every call.
+ * Owns one configuration — the defaults, builder and overrides layers of a `LoggingSettings`, and
+ * the sinks, clock and redaction of its build — and hands out Loggers that read it on every call.
  */
 export interface LoggerProvider {
   /**
    * Rebuilds the builder layer from the defaults: `configure` runs on a fresh builder, whose
-   * `build()` validates everything before the result replaces the defaults and builder layers in
-   * one step. Live overrides are kept; only `reset` drops them. Throws a `LoggingConfigError` on an
-   * invalid level or category, leaving the configuration in force untouched. Returns a snapshot of
-   * the new configuration.
+   * `build()` validates everything before the result replaces the defaults and builder layers, the
+   * sinks, the clock and the redaction in one step. Sinks are replaced, never appended to those of
+   * an earlier `configure`. Live overrides are kept; only `reset` drops them. Throws a
+   * `LoggingConfigError` on an invalid level, category or sink, leaving the configuration in force
+   * untouched. Returns a snapshot of the new configuration.
    */
   configure(configure: ConfigureCallback): LoggingSettings;
 
@@ -61,8 +76,9 @@ export interface LoggerProvider {
   override(category: string, level: Threshold | null): LoggingSettings;
 
   /**
-   * Drops every override and the builder layer and restores the defaults (`{ "*": "warn" }`).
-   * Returns a snapshot of the new configuration.
+   * Drops every override and the builder layer and restores the defaults (`{ "*": "warn" }`), and
+   * with them the output of a build that sets none: no sinks, `systemClock` and the `secretKeys`
+   * redaction. Returns a snapshot of the new configuration.
    */
   reset(): LoggingSettings;
 
@@ -72,10 +88,21 @@ export interface LoggerProvider {
 
 const FALLBACK_LEVEL = "warn";
 
+/** The Resource of a provider given no `resource`: every key reserved, none set. */
+function emptyResource(): Resource {
+  return Object.freeze({
+    "service.name": undefined,
+    "service.version": undefined,
+    "deployment.environment.name": undefined,
+    "process.runtime.name": undefined,
+  });
+}
+
 /**
  * A new {@link LoggerProvider} starting from the defaults, then from `configure` when one is
- * given; an invalid starting configuration throws a `LoggingConfigError`. Its state is its own:
- * nothing outside it is read or written except through `options`.
+ * given; an invalid starting configuration throws a `LoggingConfigError`. Its state is its own —
+ * its sink list included, which no other provider shares: nothing outside it is read or written
+ * except through `options`.
  */
 export function createLoggerProvider(configure?: ConfigureCallback, options: LoggerProviderOptions = {}): LoggerProvider {
   let settings = createSettings({ defaults: DEFAULT_LEVELS, builder: EMPTY_LAYER, overrides: EMPTY_LAYER });
@@ -85,8 +112,34 @@ export function createLoggerProvider(configure?: ConfigureCallback, options: Log
       ? (category: string): LevelEntry => resolveEntry(settings.levels, category) ?? entryFor(FALLBACK_LEVEL)
       : options.resolve.bind(options);
 
-  function commit(next: LoggingSettings): LoggingSettings {
+  let resource: () => Resource;
+  if (options.resource === undefined) {
+    const fixed = emptyResource();
+    resource = () => fixed;
+  } else {
+    resource = options.resource.bind(options);
+  }
+
+  const onSinkError = options.onSinkError === undefined ? () => {} : options.onSinkError.bind(options);
+
+  let emitSettings = emitSettingsOf(settings);
+
+  /** What the provider's Loggers emit through under `current`; it cannot throw, so it never splits a commit. */
+  function emitSettingsOf(current: LoggingSettings): EmitSettings {
+    return Object.freeze({ sinks: current.sinks, clock: current.clock, redaction: current.redaction, resource, onSinkError });
+  }
+
+  function emit(): EmitSettings {
+    return emitSettings;
+  }
+
+  function apply(next: LoggingSettings): void {
     settings = next;
+    emitSettings = emitSettingsOf(next);
+  }
+
+  function commit(next: LoggingSettings): LoggingSettings {
+    apply(next);
     options.publish?.(next);
     return next;
   }
@@ -96,7 +149,7 @@ export function createLoggerProvider(configure?: ConfigureCallback, options: Log
     const builder = createLoggingBuilder();
     callback(builder);
     const build = builder.build();
-    const next = createSettings({ defaults: build.defaults, builder: build.builder, overrides: settings.layers.overrides });
+    const next = createSettings({ defaults: build.defaults, builder: build.builder, overrides: settings.layers.overrides }, build);
     return { next, issues: build.issues };
   }
 
@@ -108,7 +161,7 @@ export function createLoggerProvider(configure?: ConfigureCallback, options: Log
 
   if (configure !== undefined) {
     const { next, issues } = rebuild(configure);
-    settings = next;
+    apply(next);
     reportIssues(issues);
   }
 
@@ -128,13 +181,13 @@ export function createLoggerProvider(configure?: ConfigureCallback, options: Log
       } else {
         overrides[key] = validateThreshold(level);
       }
-      return commit(createSettings({ ...settings.layers, overrides }));
+      return commit(createSettings({ ...settings.layers, overrides }, settings));
     },
     reset(): LoggingSettings {
       return commit(createSettings({ defaults: DEFAULT_LEVELS, builder: EMPTY_LAYER, overrides: EMPTY_LAYER }));
     },
     logger(category: string): Logger {
-      return createLogger(category, resolve);
+      return createLogger(category, resolve, emit);
     },
   });
 }

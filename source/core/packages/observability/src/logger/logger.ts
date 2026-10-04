@@ -1,6 +1,7 @@
 import type { Level } from "@vipengele/ts-core-common";
 import { validateCategory } from "./categories";
 import { enabled, type LevelEntry } from "./levels";
+import type { EmitSettings } from "./record";
 
 /** The entry that governs a category, read from wherever a Logger's configuration lives. */
 export type LevelResolver = (category: string) => LevelEntry;
@@ -24,7 +25,7 @@ export interface Logger {
  * `LoggingConfigError` when `category` is not a Category; the root `*` is a level-table key, not a
  * Logger's category.
  */
-export function createLogger(category: string, resolve: LevelResolver): Logger {
+export function createLogger(category: string, resolve: LevelResolver, _emit: () => EmitSettings): Logger {
   const validated = validateCategory(category);
   return Object.freeze({
     category: validated,

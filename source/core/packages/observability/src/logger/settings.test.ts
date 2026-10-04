@@ -1,8 +1,20 @@
-import type { Threshold } from "@vipengele/ts-core-common";
+import { systemClock, type Threshold } from "@vipengele/ts-core-common";
+import { secretKeys } from "@vipengele/ts-core-redaction";
 import { describe, expect, test } from "vitest";
 import { isLoggingConfigError } from "./config-error";
 import { entryFor, resolveEntry } from "./levels";
-import { createSettings, DEFAULT_LEVELS, EMPTY_LAYER, flattenLayers, freezeLayer, LAYER_ORDER, type LevelLayer } from "./settings";
+import type { Sink } from "./record";
+import {
+  createSettings,
+  DEFAULT_LEVELS,
+  defaultOutput,
+  defaultRedaction,
+  EMPTY_LAYER,
+  flattenLayers,
+  freezeLayer,
+  LAYER_ORDER,
+  type LevelLayer,
+} from "./settings";
 
 const proto = "__proto__";
 
@@ -145,5 +157,54 @@ describe("createSettings", () => {
     expect(() => createSettings({ defaults: DEFAULT_LEVELS, builder: {}, overrides: { a: "loud" } })).toThrow(
       expect.toSatisfy(isLoggingConfigError),
     );
+  });
+});
+
+describe("createSettings output", () => {
+  test("defaults to no sinks, the system clock and the secretKeys redaction", () => {
+    const settings = createSettings({ defaults: DEFAULT_LEVELS, builder: {}, overrides: {} });
+
+    expect(settings.sinks).toEqual([]);
+    expect(Object.isFrozen(settings.sinks)).toBe(true);
+    expect(settings.clock).toBe(systemClock);
+    expect(settings.redaction).toBe(secretKeys);
+  });
+
+  test("copies the sink list into a frozen array and holds the clock and policy by reference", () => {
+    const sink: Sink = { write: () => {} };
+    const sinks = [sink];
+    const clock = () => 1;
+    const policy = { keys: ["ssn"] };
+
+    const settings = createSettings({ defaults: DEFAULT_LEVELS, builder: {}, overrides: {} }, { sinks, clock, redaction: policy });
+    sinks.push({ write: () => {} });
+
+    expect(settings.sinks).toEqual([sink]);
+    expect(settings.sinks).not.toBe(sinks);
+    expect(Object.isFrozen(settings.sinks)).toBe(true);
+    expect(settings.clock).toBe(clock);
+    expect(settings.redaction).toBe(policy);
+  });
+
+  test("carries a null redaction through", () => {
+    const settings = createSettings({ defaults: DEFAULT_LEVELS, builder: {}, overrides: {} }, { ...defaultOutput(), redaction: null });
+
+    expect(settings.redaction).toBeNull();
+  });
+});
+
+describe("defaultOutput", () => {
+  test("is frozen, with a frozen empty sink list", () => {
+    const output = defaultOutput();
+
+    expect(Object.isFrozen(output)).toBe(true);
+    expect(Object.isFrozen(output.sinks)).toBe(true);
+    expect(output.sinks).toEqual([]);
+  });
+});
+
+describe("defaultRedaction", () => {
+  test("is the secretKeys preset", () => {
+    expect(defaultRedaction()).toBe(secretKeys);
   });
 });

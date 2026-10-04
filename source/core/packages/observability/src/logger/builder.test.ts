@@ -1,10 +1,16 @@
-import type { Threshold } from "@vipengele/ts-core-common";
+import { systemClock, type Threshold } from "@vipengele/ts-core-common";
+import { composePolicies, secretKeys } from "@vipengele/ts-core-redaction";
 import { describe, expect, test } from "vitest";
 import { createLoggingBuilder } from "./builder";
 import { isLoggingConfigError } from "./config-error";
+import type { Sink } from "./record";
 import { createSettings } from "./settings";
 
 const proto = "__proto__";
+
+function sink(): Sink {
+  return { write: () => {} };
+}
 
 describe("createLoggingBuilder", () => {
   test("builds the defaults alone when nothing is added", () => {
@@ -12,6 +18,9 @@ describe("createLoggingBuilder", () => {
 
     expect({ ...build.defaults }).toEqual({ "*": "warn" });
     expect(Object.keys(build.builder)).toEqual([]);
+    expect(build.sinks).toEqual([]);
+    expect(build.clock).toBe(systemClock);
+    expect(build.redaction).toBe(secretKeys);
     expect(build.issues).toEqual([]);
   });
 
@@ -21,6 +30,9 @@ describe("createLoggingBuilder", () => {
     expect(builder.clearDefaults()).toBe(builder);
     expect(builder.addLevels({ a: "info" })).toBe(builder);
     expect(builder.addSpec("b:debug")).toBe(builder);
+    expect(builder.addSink(sink())).toBe(builder);
+    expect(builder.clock(() => 0)).toBe(builder);
+    expect(builder.redaction(null)).toBe(builder);
     expect({ ...builder.build().builder }).toEqual({ a: "info", b: "debug" });
   });
 
@@ -31,6 +43,7 @@ describe("createLoggingBuilder", () => {
     expect(Object.isFrozen(build.builder)).toBe(true);
     expect(Object.getPrototypeOf(build.builder)).toBeNull();
     expect(Object.isFrozen(build.issues)).toBe(true);
+    expect(Object.isFrozen(build.sinks)).toBe(true);
   });
 });
 
@@ -142,6 +155,95 @@ describe("addLevels", () => {
   });
 });
 
+describe("addSink", () => {
+  test("keeps every sink in the order it was added, the same sink twice included", () => {
+    const first = sink();
+    const second = sink();
+
+    const build = createLoggingBuilder().addSink(first).addSink(second).addSink(first).build();
+
+    expect(build.sinks).toHaveLength(3);
+    expect(build.sinks[0]).toBe(first);
+    expect(build.sinks[1]).toBe(second);
+    expect(build.sinks[2]).toBe(first);
+  });
+
+  test("a build's sink list is unaffected by a later addSink", () => {
+    const builder = createLoggingBuilder().addSink(sink());
+    const first = builder.build();
+
+    builder.addSink(sink());
+
+    expect(first.sinks).toHaveLength(1);
+    expect(builder.build().sinks).toHaveLength(2);
+  });
+
+  test("defers validation to build", () => {
+    const builder = createLoggingBuilder();
+
+    expect(() => builder.addSink(null as unknown as Sink)).not.toThrow();
+    expect(() => builder.build()).toThrow(expect.toSatisfy(isLoggingConfigError));
+  });
+
+  test.for([null, undefined, "console", 5, () => {}])("build throws a LoggingConfigError for the non-object %o", (value) => {
+    const builder = createLoggingBuilder()
+      .addSink(sink())
+      .addSink(value as unknown as Sink);
+
+    expect(() => builder.build()).toThrow(expect.toSatisfy(isLoggingConfigError));
+  });
+
+  test("names the type of a non-object in the message", () => {
+    expect(() =>
+      createLoggingBuilder()
+        .addSink(null as unknown as Sink)
+        .build(),
+    ).toThrow("Invalid logger sink of type null");
+    expect(() =>
+      createLoggingBuilder()
+        .addSink("x" as unknown as Sink)
+        .build(),
+    ).toThrow("Invalid logger sink of type string");
+  });
+
+  test("an invalid level is reported before an invalid sink, whatever the order they were added in", () => {
+    const builder = createLoggingBuilder()
+      .addSink(null as unknown as Sink)
+      .addLevels({ a: "loud" as Threshold });
+
+    expect(() => builder.build()).toThrow('Invalid logger level "loud"');
+  });
+});
+
+describe("clock", () => {
+  test("a later call replaces the clock an earlier one set", () => {
+    const first = () => 1;
+    const second = () => 2;
+
+    expect(createLoggingBuilder().clock(first).build().clock).toBe(first);
+    expect(createLoggingBuilder().clock(first).clock(second).build().clock).toBe(second);
+  });
+});
+
+describe("redaction", () => {
+  test("replaces the default policy", () => {
+    const policy = composePolicies(secretKeys, { keys: ["ssn"] });
+
+    expect(createLoggingBuilder().redaction(policy).build().redaction).toBe(policy);
+  });
+
+  test("null disables redaction", () => {
+    expect(createLoggingBuilder().redaction(null).build().redaction).toBeNull();
+  });
+
+  test("a later call replaces the setting an earlier one made", () => {
+    const policy = { keys: ["ssn"] };
+
+    expect(createLoggingBuilder().redaction(null).redaction(policy).build().redaction).toBe(policy);
+    expect(createLoggingBuilder().redaction(policy).redaction(null).build().redaction).toBeNull();
+  });
+});
+
 describe("addSpec", () => {
   test("adds the spec's entries as a source", () => {
     const build = createLoggingBuilder().addSpec("*:info, react:debug").build();
@@ -197,5 +299,16 @@ describe("build", () => {
 
     expect(settings.levels["*"]?.level).toBe("error");
     expect(settings.levels.a?.level).toBe("debug");
+  });
+
+  test("feeds a settings snapshot its sinks, clock and redaction", () => {
+    const only = sink();
+    const clock = () => 7;
+    const build = createLoggingBuilder().addSink(only).clock(clock).redaction(null).build();
+    const settings = createSettings({ defaults: build.defaults, builder: build.builder, overrides: {} }, build);
+
+    expect(settings.sinks).toEqual([only]);
+    expect(settings.clock).toBe(clock);
+    expect(settings.redaction).toBeNull();
   });
 });

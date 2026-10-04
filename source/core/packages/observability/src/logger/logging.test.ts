@@ -1,18 +1,41 @@
+import { type Resource, Scope } from "@vipengele/ts-core-common/scope";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { isLoggingConfigError } from "./config-error";
+import { createLogger, type Logger } from "./logger";
 import { Logging, setWarnTarget } from "./logging";
 import { createLoggerProvider, type LoggerProvider } from "./provider";
+import type { EmitSettings, Sink } from "./record";
 import { publishLevelTable, resolveSharedEntry } from "./slots";
+
+vi.mock("./logger", { spy: true });
 
 const LEVELS_SLOT = Symbol.for("vipengele.logger.levels");
 const PROVIDER_SLOT = Symbol.for("vipengele.logger.provider.v1");
 const registry = globalThis as unknown as Record<symbol, unknown>;
 
 afterEach(() => {
+  vi.restoreAllMocks();
   setWarnTarget(undefined);
   delete registry[LEVELS_SLOT];
   delete registry[PROVIDER_SLOT];
 });
+
+function sink(): Sink {
+  return { write: () => {} };
+}
+
+/** The emit settings getter the provider handed to `createLogger` when it made `logger`. */
+function emitOf(logger: Logger): () => EmitSettings {
+  const index = vi.mocked(createLogger).mock.results.findIndex((result) => result.value === logger);
+  return vi.mocked(createLogger).mock.calls[index]?.[2] as () => EmitSettings;
+}
+
+const RESOURCE: Resource = {
+  "service.name": "checkout",
+  "service.version": "1.2.3",
+  "deployment.environment.name": "production",
+  "process.runtime.name": "node",
+};
 
 describe("module load", () => {
   test("importing the module touches neither slot", async () => {
@@ -201,5 +224,118 @@ describe("spec issues", () => {
     } finally {
       warn.mockRestore();
     }
+  });
+});
+
+describe("sinks", () => {
+  test("only the level table reaches the levels slot when a configure sets sinks", () => {
+    Logging.configure((b) => b.addLevels({ app: "debug" }).addSink(sink()));
+
+    const published = registry[LEVELS_SLOT] as Record<string, unknown>;
+    expect(Object.keys(published).sort()).toEqual(["*", "app"]);
+    expect(published.app).toEqual({ level: "debug", severity: expect.any(Number) });
+  });
+
+  test("a configure on the default provider replaces its sinks", () => {
+    const [first, second] = [sink(), sink()];
+    const emit = emitOf(Logging.logger("app"));
+
+    Logging.configure((b) => b.addSink(first));
+    expect(emit().sinks).toEqual([first]);
+
+    const settings = Logging.configure((b) => b.addSink(second));
+    expect(settings.sinks).toEqual([second]);
+    expect(emit().sinks).toEqual([second]);
+  });
+
+  test("a created provider's sinks are shared with neither the default provider nor another created provider", () => {
+    const [mine, theirs, defaults] = [sink(), sink(), sink()];
+    Logging.configure((b) => b.addSink(defaults));
+    const one = Logging.createProvider((b) => b.addSink(mine));
+    const other = Logging.createProvider();
+
+    other.configure((b) => b.addSink(theirs));
+
+    expect(emitOf(Logging.logger("app"))().sinks).toEqual([defaults]);
+    expect(emitOf(one.logger("app"))().sinks).toEqual([mine]);
+    expect(emitOf(other.logger("app"))().sinks).toEqual([theirs]);
+  });
+});
+
+describe("resource", () => {
+  test("the default provider's records carry Scope.resource(), asked on every call", () => {
+    const resource = vi.spyOn(Scope, "resource").mockReturnValue(RESOURCE);
+    const emit = emitOf(Logging.logger("app"));
+
+    expect(emit().resource()).toBe(RESOURCE);
+    emit().resource();
+    expect(resource).toHaveBeenCalledTimes(2);
+  });
+
+  test("a created provider's records carry Scope.resource()", () => {
+    vi.spyOn(Scope, "resource").mockReturnValue(RESOURCE);
+
+    expect(emitOf(Logging.createProvider().logger("app"))().resource()).toBe(RESOURCE);
+  });
+});
+
+describe("sink errors", () => {
+  test.for([
+    ["an Error", new TypeError("sink down"), "TypeError: sink down"],
+    ["a string", "offline", "offline"],
+    ["a number", 503, "503"],
+    ["a symbol", Symbol("gone"), "Symbol(gone)"],
+    ["a prototype-less object", Object.create(null), "a value of type object"],
+  ])("reach the warn target as one sentence for %s", ([, thrown, detail]) => {
+    const target = vi.fn();
+    setWarnTarget(target);
+
+    emitOf(Logging.logger("app"))().onSinkError(thrown);
+
+    expect(target).toHaveBeenCalledTimes(1);
+    expect(target).toHaveBeenCalledWith(`A log sink threw while writing a record: ${detail}`);
+  });
+
+  test("are reported every time, not once", () => {
+    const target = vi.fn();
+    setWarnTarget(target);
+    const emit = emitOf(Logging.logger("app"));
+
+    emit().onSinkError(new Error("again"));
+    emit().onSinkError(new Error("again"));
+
+    expect(target).toHaveBeenCalledTimes(2);
+  });
+
+  test("an Error whose message cannot be read is described by its type", () => {
+    const target = vi.fn();
+    setWarnTarget(target);
+    const thrown = new Error("hidden");
+    Object.defineProperty(thrown, "message", {
+      get() {
+        throw new Error("no message");
+      },
+    });
+
+    emitOf(Logging.logger("app"))().onSinkError(thrown);
+
+    expect(target).toHaveBeenCalledWith("A log sink threw while writing a record: a value of type object");
+  });
+
+  test("a created provider's sink errors reach the warn target", () => {
+    const target = vi.fn();
+    setWarnTarget(target);
+
+    emitOf(Logging.createProvider().logger("app"))().onSinkError(new Error("down"));
+
+    expect(target).toHaveBeenCalledWith("A log sink threw while writing a record: Error: down");
+  });
+
+  test("console.warn receives them when no target is injected", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    emitOf(Logging.logger("app"))().onSinkError(new Error("down"));
+
+    expect(warn).toHaveBeenCalledWith("A log sink threw while writing a record: Error: down");
   });
 });
