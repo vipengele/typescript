@@ -6,8 +6,10 @@ description: "The runtime sub-path of ts-core-common is where runtime and capabi
 
 `@vipengele/ts-core-common` ships its surface as tree-shakeable sub-paths: `./types/numeric`,
 `./types/date-time` (`LocalDate`, `LocalTime`, `LocalDateTime`: validated, immutable, zoneless civil
-values with ISO 8601 parse and format, arithmetic and `now()`), `./locale`, `./context`, `./attributes`, `./serialization`, `./scope` and `./runtime`. `./runtime` holds
+values with ISO 8601 parse and format, arithmetic, `now()`, locale-aware `format`/`parseLocalized`/
+`tryParseLocalized`, and `LocalDate#segments`), `./locale`, `./context`, `./attributes`, `./serialization`, `./scope` and `./runtime`. `./runtime` holds
 `detectRuntime` (`browser`, `worker`, `node`, `deno`, `bun`, `edge` or `unknown`) and
 `detectCapability` (`consoleStyling`, `ansiColour`, `asyncContext`, `sendBeacon`,
 `processExitHooks`). Ask it before reaching for `window`, `process` or another global directly. The
-umbrella `@vipengele/ts` does not re-export it.
+umbrella `@vipengele/ts` re-exports the numeric, locale, date-time, scope, attributes and redaction
+surface, but not `./runtime`.

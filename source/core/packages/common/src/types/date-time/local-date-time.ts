@@ -1,8 +1,10 @@
+import { Locale } from "../../locale";
 import type { Clock } from "../../time/clock";
 import type { IsoDayOfWeek } from "./civil";
 import { DateTimeParseError, type DateTimeTryParseResult } from "./errors";
 import { LocalDate } from "./local-date";
 import { LocalTime } from "./local-time";
+import { formatDateTime, parseDateTime } from "./locale-format";
 import { civilNow } from "./now";
 
 /** The date-time `str` spells in ISO 8601 `<date>T<time>` form, or `undefined` when it spells none. */
@@ -13,6 +15,23 @@ function parseValue(str: string): LocalDateTime | undefined {
   }
   const date = LocalDate.tryParse(str.slice(0, separator));
   const time = LocalTime.tryParse(str.slice(separator + 1));
+  if (date.value === undefined || time.value === undefined) {
+    return undefined;
+  }
+  return LocalDateTime.of(date.value, time.value);
+}
+
+/**
+ * The date-time `str` writes in `locale`'s date-time layout, or `undefined` when it writes none.
+ * Each half is read by its own type's localized reader.
+ */
+function parseLocalizedValue(str: string, locale: Locale): LocalDateTime | undefined {
+  const text = parseDateTime(str, locale);
+  if (text === undefined) {
+    return undefined;
+  }
+  const date = LocalDate.tryParseLocalized(text.date, locale);
+  const time = LocalTime.tryParseLocalized(text.time, locale);
   if (date.value === undefined || time.value === undefined) {
     return undefined;
   }
@@ -91,6 +110,37 @@ export class LocalDateTime {
     return value === undefined ? { success: false } : { success: true, value };
   }
 
+  /**
+   * Reads the date-time `str` writes in `locale`'s layout, or in `Locale.default()` when `locale`
+   * is omitted: `02/03/2026, 01:30 PM` in `en-US`, `03.02.2026, 13:30` in `de-DE`. The date
+   * follows {@link LocalDate.parseLocalized}'s rules and the time
+   * {@link LocalTime.parseLocalized}'s, so the result's second and millisecond are zero. Whether
+   * the date or the time comes first, and the text around them, are read from `Intl`, matching
+   * {@link LocalDateTime#format}; whitespace in that text matches any whitespace.
+   *
+   * {@link LocalDateTime.parse} stays the ISO 8601 reader: a locale-aware reader under the same
+   * name would make `parse(str)` read the runtime's locale rather than ISO.
+   *
+   * @throws {DateTimeParseError} when `str` does not follow the layout, or its fields do not name
+   *   a date and a time (`02/30/2026, 10:00 AM` or `02/03/2026, 13:00 PM` in `en-US`).
+   */
+  static parseLocalized(str: string, locale: Locale = Locale.default()): LocalDateTime {
+    const value = parseLocalizedValue(str, locale);
+    if (value === undefined) {
+      throw new DateTimeParseError(`Cannot parse ${JSON.stringify(str)} as a date-time in ${locale.tag}.`);
+    }
+    return value;
+  }
+
+  /**
+   * The non-throwing counterpart of {@link LocalDateTime.parseLocalized}: a string that does not
+   * write a date-time yields `{ success: false }` rather than a {@link DateTimeParseError}.
+   */
+  static tryParseLocalized(str: string, locale: Locale = Locale.default()): DateTimeTryParseResult<LocalDateTime> {
+    const value = parseLocalizedValue(str, locale);
+    return value === undefined ? { success: false } : { success: true, value };
+  }
+
   /** A negative number when `a` is before `b`, a positive one when after, and `0` when they are equal. Dates order first, then times. */
   static compare(a: LocalDateTime, b: LocalDateTime): number {
     return LocalDate.compare(a.date, b.date) || LocalTime.compare(a.time, b.time);
@@ -129,6 +179,22 @@ export class LocalDateTime {
   /** The date-time `months` months earlier at the same time of day, clamping the day as {@link LocalDate.minusMonths} does, with its errors. */
   minusMonths(months: number): LocalDateTime {
     return new LocalDateTime(this.date.minusMonths(months), this.time);
+  }
+
+  /**
+   * The date-time in `locale`'s layout, or in `Locale.default()` when `locale` is omitted: the
+   * date as {@link LocalDate#format} writes it and the time as {@link LocalTime#format} writes it,
+   * in the order and with the text around them that `Intl` uses when it writes both together.
+   * `02/03/2026, 01:30 PM` in `en-US`, `03.02.2026, 13:30` in `de-DE`, `13:30 03/02/2026` in `vi`.
+   * When `Intl`'s combined output does not hold the two as separate runs, the date comes first
+   * and a single space separates them.
+   *
+   * Like {@link LocalTime#format}, the second and the millisecond are not written, so
+   * {@link LocalDateTime.parseLocalized} under the same locale reads back this date-time with
+   * both set to zero.
+   */
+  format(locale: Locale = Locale.default()): string {
+    return formatDateTime(this.date, this.time, locale);
   }
 
   /** The ISO 8601 date-time, the date and the time joined by `T`: `2026-10-01T14:30`, `2026-10-01T14:30:05.250`. */

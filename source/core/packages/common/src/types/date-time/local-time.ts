@@ -1,5 +1,7 @@
+import { Locale } from "../../locale";
 import type { Clock } from "../../time/clock";
 import { DateTimeParseError, type DateTimeTryParseResult, InvalidDateTimeError } from "./errors";
+import { formatTime, parseTime } from "./locale-format";
 import { civilNow } from "./now";
 
 /** `HH:mm`, `HH:mm:ss` or `HH:mm:ss.S` to `HH:mm:ss.SSS`, exactly: no zone designator, no surrounding space. */
@@ -34,6 +36,19 @@ function parseValue(str: string): LocalTime | undefined {
   // The fraction is a decimal: ".5" is 500 ms and ".05" is 50 ms.
   const millisecond = match[4] === undefined ? 0 : Number(match[4].padEnd(3, "0"));
   return invalidReason(hour, minute, second, millisecond) === undefined ? LocalTime.of(hour, minute, second, millisecond) : undefined;
+}
+
+/**
+ * The time `str` writes in `locale`'s time pattern, at second 0 and millisecond 0, or `undefined`
+ * when it writes none.
+ */
+function parseLocalizedValue(str: string, locale: Locale): LocalTime | undefined {
+  const fields = parseTime(str, locale);
+  if (fields === undefined) {
+    return undefined;
+  }
+  const { hour, minute } = fields;
+  return invalidReason(hour, minute, 0, 0) === undefined ? LocalTime.of(hour, minute) : undefined;
 }
 
 /**
@@ -109,6 +124,42 @@ export class LocalTime {
     return value === undefined ? { success: false } : { success: true, value };
   }
 
+  /**
+   * Reads the hour and minute `str` writes in `locale`'s time pattern, or in `Locale.default()`
+   * when `locale` is omitted: `01:30 PM` in `en-US`, `13:30` in `de-DE`, `午後01:30` in `ja-JP` on
+   * a 12-hour clock. The result's second and millisecond are zero. The locale's separators,
+   * day-period markers and hour cycle are read from `Intl`, matching {@link LocalTime#format}.
+   *
+   * On a 12-hour clock the hour is 1-12 and the day-period marker must be one of the locale's own,
+   * in any letter case: `12:00 AM` is midnight and `12:00 PM` noon. On a 24-hour clock the hour is
+   * 0-23; `24:00` is rejected. The hour takes one or two digits, the minute two. Bidi marks
+   * (U+200E, U+200F, U+061C) are ignored wherever they sit, whitespace around the time is ignored,
+   * and any whitespace character stands for any other where the pattern has whitespace, so
+   * `01:30 PM` typed with a regular space reads the same as `Intl`'s U+202F.
+   *
+   * {@link LocalTime.parse} stays the ISO 8601 reader: a locale-aware reader under the same name
+   * would make `parse(str)` read the runtime's locale rather than ISO.
+   *
+   * @throws {DateTimeParseError} when `str` does not follow the pattern, or its fields do not name
+   *   a time (`13:00 PM`, `00:30 AM`, `25:00`, `12:60`).
+   */
+  static parseLocalized(str: string, locale: Locale = Locale.default()): LocalTime {
+    const value = parseLocalizedValue(str, locale);
+    if (value === undefined) {
+      throw new DateTimeParseError(`Cannot parse ${JSON.stringify(str)} as a time in ${locale.tag}.`);
+    }
+    return value;
+  }
+
+  /**
+   * The non-throwing counterpart of {@link LocalTime.parseLocalized}: a string that does not
+   * write a time yields `{ success: false }` rather than a {@link DateTimeParseError}.
+   */
+  static tryParseLocalized(str: string, locale: Locale = Locale.default()): DateTimeTryParseResult<LocalTime> {
+    const value = parseLocalizedValue(str, locale);
+    return value === undefined ? { success: false } : { success: true, value };
+  }
+
   /** A negative number when `a` is earlier in the day than `b`, a positive one when later, and `0` when they are equal. */
   static compare(a: LocalTime, b: LocalTime): number {
     return a.hour - b.hour || a.minute - b.minute || a.second - b.second || a.millisecond - b.millisecond;
@@ -117,6 +168,23 @@ export class LocalTime {
   /** Whether `other` names the same time of day. */
   equals(other: LocalTime): boolean {
     return LocalTime.compare(this, other) === 0;
+  }
+
+  /**
+   * The hour and minute in `locale`'s time pattern, or in `Locale.default()` when `locale` is
+   * omitted: `01:30 PM` in `en-US`, `13:30` in `de-DE`. Both are padded to two digits, in ASCII
+   * digits whatever the locale's own defaults, on the locale's hour cycle: a 12-hour clock writes
+   * 01-12 with the locale's day-period marker where the locale places it (`12:00 AM` is midnight),
+   * a 24-hour clock writes 00-23 (midnight is `00:00`, never `24:00`). Separators, including the
+   * U+202F some ICU versions put before `AM`, and bidi marks are kept as `Intl` emits them.
+   *
+   * The second and the millisecond are not written: a time input edits the hour, the minute and
+   * the day period, and the locale's short time pattern writes no more. So
+   * {@link LocalTime.parseLocalized} under the same locale reads back this time with its second
+   * and millisecond set to zero.
+   */
+  format(locale: Locale = Locale.default()): string {
+    return formatTime(this, locale);
   }
 
   /**

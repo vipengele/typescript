@@ -22,7 +22,8 @@ Error Event, Scope, Breadcrumb, Transport) before naming things.
     sub-path like `./types/numeric` (`Numeric.parse`/`tryParse`/`format`, which take a `./locale`
     `Locale` — a validated BCP 47 tag with month and weekday names, hour cycle and first day of the
     week — ADR-0013), `./types/date-time` (`LocalDate`, `LocalTime`, `LocalDateTime`: validated,
-    immutable, zoneless civil values with ISO 8601 parse/format, arithmetic and `now()`) or
+    immutable, zoneless civil values with ISO 8601 parse/format, arithmetic, `now()`, locale-aware
+    `format`/`parseLocalized`/`tryParseLocalized` and `LocalDate#segments`) or
     `./context` (`createAsyncContextStore`, a value carried across an async call chain behind a
     fixed carrier fallback — `AsyncLocalStorage`, then `AsyncContext.Variable`, then a synchronous
     stack, ADR-0004; state shared across dual-resolved copies of the package lives behind a
@@ -69,7 +70,9 @@ Error Event, Scope, Breadcrumb, Transport) before naming things.
   depends on `@vipengele/ts-core-common` and `@vipengele/ts-core-redaction` — a pin plus a
   `link:` override in its `pnpm-workspace.yaml` for each (ADR-0009) — and re-exports `Numeric`
   from `@vipengele/ts-core-common`'s `./types/numeric` sub-path, `Locale` (with `HourCycle`,
-  `IsoWeekday`, `NameStyle`) from its `./locale` sub-path, and `redact`, `secretKeys`,
+  `IsoWeekday`, `NameStyle`) from its `./locale` sub-path, `LocalDate`, `LocalTime` and
+  `LocalDateTime` (with their errors, guards and `DateSegment`, `DateSegmentType`,
+  `DateTimeTryParseResult`, `IsoDayOfWeek`) from its `./types/date-time` sub-path, and `redact`, `secretKeys`,
   `composePolicies`, `redactUrl`, `redactQueryString` and `redactHeaders` (with `RedactionPolicy`,
   `KeyMatcher`, `RedactOptions`, `RedactStringOptions`, `Replacement`) from
   `@vipengele/ts-core-redaction`.

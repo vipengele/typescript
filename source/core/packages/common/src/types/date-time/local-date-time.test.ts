@@ -1,5 +1,6 @@
-import { expect, test } from "vitest";
-import { isDateTimeParseError, isInvalidDateTimeError } from "./errors";
+import { describe, expect, test, vi } from "vitest";
+import { Locale } from "../../locale";
+import { DateTimeParseError, isDateTimeParseError, isInvalidDateTimeError } from "./errors";
 import { LocalDate } from "./local-date";
 import { LocalDateTime } from "./local-date-time";
 import { LocalTime } from "./local-time";
@@ -142,4 +143,160 @@ test("date arithmetic rejects an amount that is not a safe integer", () => {
   const value = LocalDateTime.parse("2026-10-01T14:30");
   expect(() => value.plusDays(1.5)).toThrow(RangeError);
   expect(() => value.minusMonths(Number.NaN)).toThrow(RangeError);
+});
+
+/** `str` with every whitespace character as a regular space, so ICU's U+202F compares equal to it. */
+const spaced = (str: string): string => str.replace(/\s/g, " ");
+
+describe("LocalDateTime#format", () => {
+  const value = LocalDateTime.ofFields(2026, 2, 3, 13, 30);
+
+  test.for([
+    ["en-US", "02/03/2026, 01:30 PM"],
+    ["en-GB", "03/02/2026, 13:30"],
+    ["de-DE", "03.02.2026, 13:30"],
+    ["fr-FR", "03/02/2026 13:30"],
+    ["ja-JP", "2026/02/03 13:30"],
+    ["en-GB-u-hc-h12", "03/02/2026, 01:30 pm"],
+    ["en-US-u-hc-h23", "02/03/2026, 13:30"],
+  ] as const)("writes 2026-02-03T13:30 in %s as %s", ([tag, expected]) => {
+    expect(spaced(value.format(new Locale(tag)))).toBe(expected);
+  });
+
+  test("writes the date and the time as their own format does, in the locale's layout", () => {
+    for (const tag of ["en-US", "ar-EG", "he-IL", "ko-KR", "vi"]) {
+      const locale = new Locale(tag);
+      const formatted = value.format(locale);
+
+      expect(formatted).toContain(value.date.format(locale));
+      expect(formatted).toContain(value.time.format(locale));
+    }
+  });
+
+  test("writes the time first where the locale does", () => {
+    const locale = new Locale("vi");
+    const formatted = value.format(locale);
+
+    expect(formatted.indexOf(value.time.format(locale))).toBeLessThan(formatted.indexOf(value.date.format(locale)));
+  });
+
+  test("writes midnight as 00:00 on a 24-hour clock, even where the locale's cycle is h24", () => {
+    expect(LocalDateTime.ofFields(2026, 2, 3, 0, 0).format(new Locale("en-US-u-hc-h24"))).toBe("02/03/2026, 00:00");
+  });
+
+  test("writes the second and the millisecond nowhere", () => {
+    expect(LocalDateTime.ofFields(2026, 2, 3, 13, 30, 45, 999).format(new Locale("de-DE"))).toBe("03.02.2026, 13:30");
+  });
+
+  test("an omitted locale writes in Locale.default()", () => {
+    const spy = vi.spyOn(Locale, "default").mockReturnValue(new Locale("de-DE"));
+
+    try {
+      expect(value.format()).toBe("03.02.2026, 13:30");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test("leaves toString as the ISO 8601 form", () => {
+    expect(value.toString()).toBe("2026-02-03T13:30");
+  });
+});
+
+describe("LocalDateTime.parseLocalized and tryParseLocalized", () => {
+  const LOCALES = [
+    "en-US",
+    "en-GB",
+    "de-DE",
+    "ja-JP",
+    "ar-EG",
+    "he-IL",
+    "fr-FR",
+    "ko-KR",
+    "vi",
+    "en-GB-u-hc-h12",
+    "en-US-u-hc-h23",
+    "en-US-u-hc-h24",
+  ];
+  const VALUES = ["0001-01-01T00:00", "2024-02-29T00:30", "2026-02-03T12:00", "2026-10-01T12:30", "2026-10-01T13:05", "9999-12-31T23:59"];
+
+  test.for(LOCALES.flatMap((tag) => VALUES.map((iso) => [tag, iso] as const)))("round-trips %s through format in %s", ([tag, iso]) => {
+    const locale = new Locale(tag);
+    const formatted = LocalDateTime.parse(iso).format(locale);
+
+    expect(LocalDateTime.parseLocalized(formatted, locale).toString()).toBe(iso);
+    expect(LocalDateTime.tryParseLocalized(formatted, locale).value?.toString()).toBe(iso);
+  });
+
+  test("reads back a date-time with seconds at second 0 and millisecond 0", () => {
+    const locale = new Locale("en-US");
+    const value = LocalDateTime.parseLocalized(LocalDateTime.ofFields(2026, 2, 3, 13, 30, 45, 999).format(locale), locale);
+
+    expect(value.equals(LocalDateTime.ofFields(2026, 2, 3, 13, 30))).toBe(true);
+  });
+
+  test("reads the date and the time each in the locale's own pattern", () => {
+    const value = LocalDateTime.parseLocalized("2/3/2026, 1:05 pm", new Locale("en-US"));
+
+    expect(value.equals(LocalDateTime.ofFields(2026, 2, 3, 13, 5))).toBe(true);
+  });
+
+  test("returns the value on success", () => {
+    const result = LocalDateTime.tryParseLocalized("03.02.2026, 09:05", new Locale("de-DE"));
+
+    expect(result.success).toBe(true);
+    expect(result.value?.equals(LocalDateTime.ofFields(2026, 2, 3, 9, 5))).toBe(true);
+  });
+
+  test.for([
+    "02/30/2026, 10:00 AM",
+    "02/03/2026, 13:00 PM",
+    "02/03/2026, 00:00 AM",
+    "02/03/2026, 12:60 PM",
+    "02/03/2026 10:00 AM",
+    "10:00 AM, 02/03/2026",
+    "02/03/2026, 10:00",
+    "02/03/2026",
+    "2026-02-03T10:00",
+    "",
+  ])("rejects %o in en-US", (str) => {
+    const locale = new Locale("en-US");
+
+    expect(LocalDateTime.tryParseLocalized(str, locale)).toEqual({ success: false });
+    expect(() => LocalDateTime.parseLocalized(str, locale)).toThrow(DateTimeParseError);
+  });
+
+  test("rejects an hour past 23 on a 24-hour clock", () => {
+    expect(LocalDateTime.tryParseLocalized("03.02.2026, 24:00", new Locale("de-DE"))).toEqual({ success: false });
+  });
+
+  test("throws an error the guard recognises, not InvalidDateTimeError", () => {
+    try {
+      LocalDateTime.parseLocalized("02/30/2026, 10:00 AM", new Locale("en-US"));
+      expect.unreachable("LocalDateTime.parseLocalized accepted February 30");
+    } catch (error) {
+      expect(isDateTimeParseError(error)).toBe(true);
+      expect(isInvalidDateTimeError(error)).toBe(false);
+    }
+  });
+
+  test("quotes the input and names the locale in the message", () => {
+    expect(() => LocalDateTime.parseLocalized("nope", new Locale("de-DE"))).toThrow('Cannot parse "nope" as a date-time in de-DE.');
+  });
+
+  test("an omitted locale reads in Locale.default()", () => {
+    const spy = vi.spyOn(Locale, "default").mockReturnValue(new Locale("de-DE"));
+
+    try {
+      expect(LocalDateTime.parseLocalized("03.02.2026, 13:30").equals(LocalDateTime.ofFields(2026, 2, 3, 13, 30))).toBe(true);
+      expect(LocalDateTime.tryParseLocalized("03.02.2026, 13:30").value?.equals(LocalDateTime.ofFields(2026, 2, 3, 13, 30))).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test("leaves parse and tryParse reading ISO 8601 only", () => {
+    expect(LocalDateTime.tryParse("02/03/2026, 01:30 PM")).toEqual({ success: false });
+    expect(LocalDateTime.parse("2026-02-03T13:30").equals(LocalDateTime.ofFields(2026, 2, 3, 13, 30))).toBe(true);
+  });
 });

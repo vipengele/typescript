@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import { Locale } from "../../locale";
 import {
   DateTimeParseError,
   InvalidDateTimeError,
@@ -243,6 +244,147 @@ describe("dayOfWeek agrees with known dates", () => {
     for (let offset = 0; offset < 400; offset++) {
       const date = start.plusDays(offset);
       expect(date.plusDays(7).dayOfWeek).toBe(date.dayOfWeek);
+    }
+  });
+});
+
+const LOCALES = [
+  "en-US",
+  "en-GB",
+  "de-DE",
+  "fr-FR",
+  "ja-JP",
+  "ko-KR",
+  "ar-EG",
+  "he-IL",
+  "hu-HU",
+  "th-TH",
+  "fa-IR",
+  "en-US-u-hc-h23",
+  "en-GB-u-hc-h12",
+].map((tag) => new Locale(tag));
+
+describe("localized format then parse round-trips", () => {
+  describe.each(LOCALES.map((locale) => [locale.tag, locale] as const))("%s", (_tag, locale) => {
+    test.each(DATES)("LocalDate %s", (text) => {
+      const date = LocalDate.parse(text);
+      const result = LocalDate.tryParseLocalized(date.format(locale), locale);
+      expect(result.success).toBe(true);
+      expect(result.value?.toString()).toBe(text);
+    });
+
+    test("LocalTime keeps hour and minute and zeroes the rest", () => {
+      for (const text of TIMES) {
+        const time = LocalTime.parse(text);
+        const result = LocalTime.tryParseLocalized(time.format(locale), locale);
+        expect(result.success).toBe(true);
+        expect(result.value?.equals(LocalTime.of(time.hour, time.minute))).toBe(true);
+      }
+    });
+
+    test("LocalDateTime keeps the date, hour and minute and zeroes the rest", () => {
+      for (const text of DATE_TIMES) {
+        const value = LocalDateTime.parse(text);
+        const result = LocalDateTime.tryParseLocalized(value.format(locale), locale);
+        expect(result.success).toBe(true);
+        const { date, time } = value;
+        expect(result.value?.equals(LocalDateTime.ofFields(date.year, date.month, date.day, time.hour, time.minute))).toBe(true);
+      }
+    });
+  });
+});
+
+describe("LocalDate segments", () => {
+  test("joined values equal the formatted date for every locale", () => {
+    for (const locale of LOCALES) {
+      for (const text of DATES) {
+        const date = LocalDate.parse(text);
+        expect(
+          date
+            .segments(locale)
+            .map((segment) => segment.value)
+            .join(""),
+        ).toBe(date.format(locale));
+      }
+    }
+  });
+
+  test("field order follows the locale", () => {
+    const date = LocalDate.of(2026, 10, 1);
+    const order = (tag: string) =>
+      date
+        .segments(new Locale(tag))
+        .map((segment) => segment.type)
+        .filter((type) => type !== "literal");
+    expect(order("en-US")).toEqual(["month", "day", "year"]);
+    expect(order("en-GB")).toEqual(["day", "month", "year"]);
+    expect(order("ja-JP")).toEqual(["year", "month", "day"]);
+  });
+});
+
+describe("well-shaped but impossible localized strings are rejected", () => {
+  const enUS = new Locale("en-US");
+  const enGB = new Locale("en-GB");
+  const deDE = new Locale("de-DE");
+
+  test.each([
+    ["02/30/2026", enUS],
+    ["30/02/2026", enGB],
+    ["31.04.2026", deDE],
+    ["29/02/2023", enGB],
+  ] as const)("LocalDate %s", (text, locale) => {
+    expect(LocalDate.tryParseLocalized(text, locale)).toEqual({ success: false });
+    throwsParse(() => LocalDate.parseLocalized(text, locale));
+  });
+
+  test.each([
+    ["13:00 PM", enUS],
+    ["00:30 AM", enUS],
+    ["24:00", enGB],
+    ["12:60", enGB],
+  ] as const)("LocalTime %s", (text, locale) => {
+    expect(LocalTime.tryParseLocalized(text, locale)).toEqual({ success: false });
+    throwsParse(() => LocalTime.parseLocalized(text, locale));
+  });
+
+  test("LocalDateTime with an impossible date", () => {
+    const text = LocalDateTime.ofFields(2026, 2, 28, 10, 0).format(enUS).replace("28", "30");
+    expect(text).toContain("30");
+    expect(LocalDateTime.tryParseLocalized(text, enUS)).toEqual({ success: false });
+    throwsParse(() => LocalDateTime.parseLocalized(text, enUS));
+  });
+
+  test("LocalDateTime with an impossible time", () => {
+    const text = LocalDateTime.ofFields(2026, 2, 28, 10, 0).format(enUS).replace("10", "13");
+    expect(text).toContain("13");
+    expect(LocalDateTime.tryParseLocalized(text, enUS)).toEqual({ success: false });
+    throwsParse(() => LocalDateTime.parseLocalized(text, enUS));
+  });
+});
+
+describe("12-hour and 24-hour clocks", () => {
+  const enUS = new Locale("en-US");
+
+  test("12-hour midnight and noon format with hour 12 and an AM or PM marker", () => {
+    expect(LocalTime.of(0, 0).format(enUS)).toMatch(/^0?12:00\s?AM$/);
+    expect(LocalTime.of(12, 0).format(enUS)).toMatch(/^0?12:00\s?PM$/);
+  });
+
+  test("12-hour midnight and noon parse back to hours 0 and 12", () => {
+    expect(LocalTime.parseLocalized(LocalTime.of(0, 0).format(enUS), enUS).hour).toBe(0);
+    expect(LocalTime.parseLocalized(LocalTime.of(12, 0).format(enUS), enUS).hour).toBe(12);
+  });
+
+  test.each(["en-GB", "en-US-u-hc-h23"])("%s never prints hour 24", (tag) => {
+    const locale = new Locale(tag);
+    expect(LocalTime.of(0, 0).format(locale)).toMatch(/^00:00/);
+    for (let hour = 0; hour < 24; hour++) {
+      for (let minute = 0; minute < 60; minute++) {
+        const time = LocalTime.of(hour, minute);
+        const text = time.format(locale);
+        expect(text.startsWith("24")).toBe(false);
+        expect(LocalTime.parseLocalized(text, locale).equals(time)).toBe(true);
+      }
     }
   });
 });

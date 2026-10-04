@@ -1,7 +1,11 @@
+import { Locale } from "../../locale";
 import type { Clock } from "../../time/clock";
 import { civilFromDays, daysFromCivil, dayOfWeekFromDays, type IsoDayOfWeek, lengthOfMonth } from "./civil";
 import { DateTimeParseError, type DateTimeTryParseResult, InvalidDateTimeError } from "./errors";
+import { type DateSegment, dateSegments, formatDate, parseDate } from "./locale-format";
 import { civilNow } from "./now";
+
+export type { DateSegment, DateSegmentType } from "./locale-format";
 
 /** The earliest year a {@link LocalDate} holds; year 0 and earlier have no four-digit ISO form. */
 const MIN_YEAR = 1;
@@ -36,6 +40,16 @@ function parseValue(str: string): LocalDate | undefined {
   const year = Number(match[1]);
   const month = Number(match[2]);
   const day = Number(match[3]);
+  return invalidReason(year, month, day) === undefined ? LocalDate.of(year, month, day) : undefined;
+}
+
+/** The date `str` writes in `locale`'s numeric pattern, or `undefined` when it writes none. */
+function parseLocalizedValue(str: string, locale: Locale): LocalDate | undefined {
+  const fields = parseDate(str, locale);
+  if (fields === undefined) {
+    return undefined;
+  }
+  const { year, month, day } = fields;
   return invalidReason(year, month, day) === undefined ? LocalDate.of(year, month, day) : undefined;
 }
 
@@ -118,6 +132,38 @@ export class LocalDate {
     return value === undefined ? { success: false } : { success: true, value };
   }
 
+  /**
+   * Reads the date `str` writes in `locale`'s numeric pattern, or in `Locale.default()` when
+   * `locale` is omitted: `02/03/2026` in `en-US`, `03.02.2026` in `de-DE`, `2026/02/03` in
+   * `ja-JP`. The locale's field order and separators are read from `Intl`, with the Gregorian
+   * calendar and ASCII digits forced, matching {@link LocalDate#format}.
+   *
+   * The year must be four digits; month and day take one or two. Bidi marks (U+200E, U+200F,
+   * U+061C) are ignored wherever they sit, and so is whitespace around the date.
+   *
+   * {@link LocalDate.parse} stays the ISO 8601 reader: a locale-aware reader under the same name
+   * would make `parse(str)` read the runtime's locale rather than ISO.
+   *
+   * @throws {DateTimeParseError} when `str` does not follow the pattern, or its fields do not name
+   *   a date (`02/30/2026` in `en-US`).
+   */
+  static parseLocalized(str: string, locale: Locale = Locale.default()): LocalDate {
+    const value = parseLocalizedValue(str, locale);
+    if (value === undefined) {
+      throw new DateTimeParseError(`Cannot parse ${JSON.stringify(str)} as a date in ${locale.tag}.`);
+    }
+    return value;
+  }
+
+  /**
+   * The non-throwing counterpart of {@link LocalDate.parseLocalized}: a string that does not
+   * write a date yields `{ success: false }` rather than a {@link DateTimeParseError}.
+   */
+  static tryParseLocalized(str: string, locale: Locale = Locale.default()): DateTimeTryParseResult<LocalDate> {
+    const value = parseLocalizedValue(str, locale);
+    return value === undefined ? { success: false } : { success: true, value };
+  }
+
   /** A negative number when `a` is before `b`, a positive one when after, and `0` when they are equal. */
   static compare(a: LocalDate, b: LocalDate): number {
     return a.year - b.year || a.month - b.month || a.day - b.day;
@@ -174,6 +220,29 @@ export class LocalDate {
   /** The date `months` months earlier, clamping the day as {@link LocalDate.plusMonths} does, with its errors. */
   minusMonths(months: number): LocalDate {
     return this.plusMonths(-months);
+  }
+
+  /**
+   * The date in `locale`'s numeric pattern, or in `Locale.default()` when `locale` is omitted:
+   * `02/03/2026` in `en-US`, `03.02.2026` in `de-DE`. The year is padded to four digits and month
+   * and day to two, in ASCII digits under the Gregorian calendar whatever the locale's own
+   * defaults; bidi marks the locale places around its separators are kept.
+   * {@link LocalDate.parseLocalized} reads the result back under the same locale.
+   */
+  format(locale: Locale = Locale.default()): string {
+    return formatDate(this, locale);
+  }
+
+  /**
+   * The parts of {@link LocalDate#format}'s output under `locale`, or `Locale.default()` when
+   * `locale` is omitted, in the order the locale writes them: each field (`year`, `month`, `day`)
+   * with its padded digits, and each `literal` between or around them. `2026-02-03` in `en-US` is
+   * month `02`, literal `/`, day `03`, literal `/`, year `2026`. A literal the locale leaves empty
+   * is omitted, and the values joined are exactly {@link LocalDate#format}'s output, bidi marks
+   * included.
+   */
+  segments(locale: Locale = Locale.default()): DateSegment[] {
+    return dateSegments(this, locale);
   }
 
   /** The ISO 8601 calendar date, `YYYY-MM-DD`: `2026-10-01`. */
