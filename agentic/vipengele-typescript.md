@@ -18,8 +18,10 @@ Error Event, Scope, Breadcrumb, Transport) before naming things.
   published range (ADR-0009).
 - `source/core/` — the framework's foundation:
   - `packages/common` — `@vipengele/ts-core-common`: shared types and primitives (context
-    propagation, error normalization, runtime detection) the other packages agree on. A
-    sub-path like `./types/numeric` (the locale-aware `Numeric.parse`/`tryParse`/`format`) or
+    propagation, error normalization, runtime detection, locales) the other packages agree on. A
+    sub-path like `./types/numeric` (`Numeric.parse`/`tryParse`/`format`, which take a `./locale`
+    `Locale` — a validated BCP 47 tag with month and weekday names, hour cycle and first day of the
+    week — ADR-0012) or
     `./context` (`createAsyncContextStore`, a value carried across an async call chain behind a
     fixed carrier fallback — `AsyncLocalStorage`, then `AsyncContext.Variable`, then a synchronous
     stack, ADR-0004; state shared across dual-resolved copies of the package lives behind a
