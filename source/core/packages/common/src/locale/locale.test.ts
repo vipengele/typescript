@@ -118,6 +118,74 @@ describe("weekdayNames", () => {
   });
 });
 
+describe("caching", () => {
+  test("the hour cycle builds one formatter however often it is read", () => {
+    const locale = new Locale("en-US");
+    const spy = vi.spyOn(Intl, "DateTimeFormat");
+
+    const first = locale.hourCycle;
+    expect(locale.hourCycle).toBe(first);
+    expect(locale.uses24Hour).toBe(false);
+
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  test("month names build one formatter per style", () => {
+    const locale = new Locale("en-US");
+    const spy = vi.spyOn(Intl, "DateTimeFormat");
+
+    locale.monthNames("long");
+    locale.monthNames("long");
+    expect(spy).toHaveBeenCalledTimes(1);
+
+    locale.monthNames("short");
+    expect(spy).toHaveBeenCalledTimes(2);
+  });
+
+  test("weekday names build one formatter per style", () => {
+    const locale = new Locale("en-US");
+    const spy = vi.spyOn(Intl, "DateTimeFormat");
+
+    locale.weekdayNames("long");
+    locale.weekdayNames("long");
+    expect(spy).toHaveBeenCalledTimes(1);
+
+    locale.weekdayNames("narrow");
+    expect(spy).toHaveBeenCalledTimes(2);
+  });
+
+  test("mutating a returned month array leaves the next call intact", () => {
+    const locale = new Locale("en-US");
+    const first = locale.monthNames("long");
+    first[0] = "mutated";
+    first.length = 0;
+
+    expect(locale.monthNames("long")[0]).toBe("January");
+    expect(locale.monthNames("long")).toHaveLength(12);
+    expect(locale.monthNames("long")).not.toBe(first);
+  });
+
+  test("mutating a returned weekday array leaves the next call intact", () => {
+    const locale = new Locale("en-US");
+    const first = locale.weekdayNames("long");
+    first[0] = "mutated";
+
+    expect(locale.weekdayNames("long")[0]).toBe("Monday");
+  });
+
+  test("the first day of the week is stable across reads", () => {
+    const locale = new Locale("en-US");
+
+    expect(locale.firstDayOfWeek).toBe(7);
+    expect(locale.firstDayOfWeek).toBe(7);
+  });
+
+  test("instances do not share cached values", () => {
+    expect(new Locale("en-US").monthNames("long")[1]).toBe("February");
+    expect(new Locale("fr-FR").monthNames("long")[1]).toBe("février");
+  });
+});
+
 describe("first day of the week", () => {
   test.each([
     ["en-US", 7],

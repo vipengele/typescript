@@ -50,6 +50,12 @@ export class Locale {
   /** The canonicalized BCP 47 tag. */
   readonly tag: string;
 
+  /** A locale never changes, so each derived value is computed on first read and kept. */
+  #hourCycle: HourCycle | undefined;
+  #firstDayOfWeek: IsoWeekday | undefined;
+  readonly #monthNames = new Map<NameStyle, string[]>();
+  readonly #weekdayNames = new Map<NameStyle, string[]>();
+
   /**
    * @throws {RangeError} when `tag` is not a well-formed BCP 47 language tag, including `""`.
    */
@@ -67,7 +73,8 @@ export class Locale {
    * undefined unless the tag spells it out, so the resolved formatter options are read instead.
    */
   get hourCycle(): HourCycle {
-    return new Intl.DateTimeFormat(this.tag, { hour: "numeric" }).resolvedOptions().hourCycle as HourCycle;
+    this.#hourCycle ??= new Intl.DateTimeFormat(this.tag, { hour: "numeric" }).resolvedOptions().hourCycle as HourCycle;
+    return this.#hourCycle;
   }
 
   /** Whether the locale's clock counts hours 0..23 (or 1..24) rather than in 12-hour halves. */
@@ -78,18 +85,29 @@ export class Locale {
 
   /** The locale's first day of the week, ISO-numbered (1 Monday..7 Sunday); Monday when the engine exposes no week info. */
   get firstDayOfWeek(): IsoWeekday {
-    return readFirstDayOfWeek(this.tag);
+    this.#firstDayOfWeek ??= readFirstDayOfWeek(this.tag);
+    return this.#firstDayOfWeek;
   }
 
-  /** The twelve month names, January first. */
+  /** The twelve month names, January first. A fresh array on every call. */
   monthNames(style: NameStyle): string[] {
-    const formatter = new Intl.DateTimeFormat(this.tag, { month: style, timeZone: "UTC" });
-    return Array.from({ length: 12 }, (_, month) => formatter.format(Date.UTC(2024, month, 1)));
+    let names = this.#monthNames.get(style);
+    if (names === undefined) {
+      const formatter = new Intl.DateTimeFormat(this.tag, { month: style, timeZone: "UTC" });
+      names = Array.from({ length: 12 }, (_, month) => formatter.format(Date.UTC(2024, month, 1)));
+      this.#monthNames.set(style, names);
+    }
+    return [...names];
   }
 
-  /** The seven weekday names, Monday first. */
+  /** The seven weekday names, Monday first. A fresh array on every call. */
   weekdayNames(style: NameStyle): string[] {
-    const formatter = new Intl.DateTimeFormat(this.tag, { weekday: style, timeZone: "UTC" });
-    return Array.from({ length: 7 }, (_, day) => formatter.format(MONDAY + day * DAY_MS));
+    let names = this.#weekdayNames.get(style);
+    if (names === undefined) {
+      const formatter = new Intl.DateTimeFormat(this.tag, { weekday: style, timeZone: "UTC" });
+      names = Array.from({ length: 7 }, (_, day) => formatter.format(MONDAY + day * DAY_MS));
+      this.#weekdayNames.set(style, names);
+    }
+    return [...names];
   }
 }
