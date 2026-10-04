@@ -119,17 +119,45 @@ export function resolveDatePattern(locale: Locale): DatePattern {
   return resolve(locale).pattern;
 }
 
+/** What a {@link DateSegment} holds: one of the date's fields, or the text between them. */
+export type DateSegmentType = DateField | "literal";
+
+/** One run of a formatted date: a field's padded digits, or a literal exactly as the locale writes it. */
+export interface DateSegment {
+  readonly type: DateSegmentType;
+  readonly value: string;
+}
+
+/**
+ * The date written in `locale`'s numeric pattern, split into its fields and the literals between
+ * them, in the order the locale writes them. The year is padded to four digits, month and day to
+ * two. A literal is kept exactly as `Intl` emits it, bidi marks included, and one the locale
+ * leaves empty is omitted, so no segment has an empty `value` and the values joined are
+ * {@link formatDate}'s output.
+ */
+export function dateSegments(date: CivilDate, locale: Locale): DateSegment[] {
+  const { fields, literals } = resolve(locale).pattern;
+  const segments: DateSegment[] = [];
+  literals.forEach((literal, index) => {
+    if (literal !== "") {
+      segments.push({ type: "literal", value: literal });
+    }
+    const field = fields[index];
+    if (field !== undefined) {
+      segments.push({ type: field, value: String(date[field]).padStart(field === "year" ? 4 : 2, "0") });
+    }
+  });
+  return segments;
+}
+
 /**
  * The date written in `locale`'s numeric pattern: the year padded to four digits, month and day
  * to two, between the locale's own separators.
  */
 export function formatDate(date: CivilDate, locale: Locale): string {
-  const { fields, literals } = resolve(locale).pattern;
-  let text = literals[0] as string;
-  fields.forEach((field, index) => {
-    text += String(date[field]).padStart(field === "year" ? 4 : 2, "0") + literals[index + 1];
-  });
-  return text;
+  return dateSegments(date, locale)
+    .map((segment) => segment.value)
+    .join("");
 }
 
 /**

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { Locale } from "../../locale";
-import { formatDate, parseDate, resolveDatePattern, stripBidiMarks } from "./locale-format";
+import { dateSegments, formatDate, parseDate, resolveDatePattern, stripBidiMarks } from "./locale-format";
 
 const enUS = new Locale("en-US");
 const deDE = new Locale("de-DE");
@@ -47,6 +47,59 @@ describe("stripBidiMarks", () => {
 
   test("leaves every other character in place", () => {
     expect(stripBidiMarks("2026. 02. 03​")).toBe("2026. 02. 03​");
+  });
+});
+
+describe("dateSegments", () => {
+  const date = { year: 2026, month: 2, day: 3 };
+
+  test("lays the fields out in the locale's order with the literals between them", () => {
+    expect(dateSegments(date, enUS)).toEqual([
+      { type: "month", value: "02" },
+      { type: "literal", value: "/" },
+      { type: "day", value: "03" },
+      { type: "literal", value: "/" },
+      { type: "year", value: "2026" },
+    ]);
+  });
+
+  test("pads the year to four digits and month and day to two", () => {
+    expect(dateSegments({ year: 5, month: 6, day: 7 }, jaJP)).toEqual([
+      { type: "year", value: "0005" },
+      { type: "literal", value: "/" },
+      { type: "month", value: "06" },
+      { type: "literal", value: "/" },
+      { type: "day", value: "07" },
+    ]);
+  });
+
+  test("omits an empty literal and keeps a non-empty one in the same pattern", () => {
+    const { literals } = resolveDatePattern(huHU);
+
+    expect(literals[0]).toBe("");
+    expect(dateSegments(date, huHU)).toEqual([
+      { type: "year", value: "2026" },
+      { type: "literal", value: literals[1] },
+      { type: "month", value: "02" },
+      { type: "literal", value: literals[2] },
+      { type: "day", value: "03" },
+      { type: "literal", value: "." },
+    ]);
+  });
+
+  test("keeps bidi marks in the literals", () => {
+    const { literals } = resolveDatePattern(arEG);
+    const segments = dateSegments(date, arEG).filter((segment) => segment.type === "literal");
+
+    expect(segments.map((segment) => segment.value)).toEqual(literals.filter((literal) => literal !== ""));
+  });
+
+  test("joins to formatDate's output", () => {
+    expect(
+      dateSegments(date, arEG)
+        .map((segment) => segment.value)
+        .join(""),
+    ).toBe(formatDate(date, arEG));
   });
 });
 

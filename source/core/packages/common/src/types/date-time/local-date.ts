@@ -2,8 +2,10 @@ import { Locale } from "../../locale";
 import type { Clock } from "../../time/clock";
 import { civilFromDays, daysFromCivil, dayOfWeekFromDays, type IsoDayOfWeek, lengthOfMonth } from "./civil";
 import { DateTimeParseError, type DateTimeTryParseResult, InvalidDateTimeError } from "./errors";
-import { formatDate, parseDate } from "./locale-format";
+import { type DateSegment, dateSegments, formatDate, parseDate } from "./locale-format";
 import { civilNow } from "./now";
+
+export type { DateSegment, DateSegmentType } from "./locale-format";
 
 /** The earliest year a {@link LocalDate} holds; year 0 and earlier have no four-digit ISO form. */
 const MIN_YEAR = 1;
@@ -229,6 +231,18 @@ export class LocalDate {
    */
   format(locale: Locale = Locale.default()): string {
     return formatDate(this, locale);
+  }
+
+  /**
+   * The parts of {@link LocalDate#format}'s output under `locale`, or `Locale.default()` when
+   * `locale` is omitted, in the order the locale writes them: each field (`year`, `month`, `day`)
+   * with its padded digits, and each `literal` between or around them. `2026-02-03` in `en-US` is
+   * month `02`, literal `/`, day `03`, literal `/`, year `2026`. A literal the locale leaves empty
+   * is omitted, and the values joined are exactly {@link LocalDate#format}'s output, bidi marks
+   * included.
+   */
+  segments(locale: Locale = Locale.default()): DateSegment[] {
+    return dateSegments(this, locale);
   }
 
   /** The ISO 8601 calendar date, `YYYY-MM-DD`: `2026-10-01`. */

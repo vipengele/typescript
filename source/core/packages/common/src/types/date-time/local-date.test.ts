@@ -298,6 +298,88 @@ describe("LocalDate#format", () => {
   });
 });
 
+describe("LocalDate#segments", () => {
+  const date = LocalDate.of(2026, 2, 3);
+
+  test("en-US writes month, day, year", () => {
+    expect(date.segments(new Locale("en-US"))).toEqual([
+      { type: "month", value: "02" },
+      { type: "literal", value: "/" },
+      { type: "day", value: "03" },
+      { type: "literal", value: "/" },
+      { type: "year", value: "2026" },
+    ]);
+  });
+
+  test("en-GB writes day, month, year", () => {
+    expect(date.segments(new Locale("en-GB"))).toEqual([
+      { type: "day", value: "03" },
+      { type: "literal", value: "/" },
+      { type: "month", value: "02" },
+      { type: "literal", value: "/" },
+      { type: "year", value: "2026" },
+    ]);
+  });
+
+  test("ja-JP writes year, month, day between literal separators", () => {
+    expect(date.segments(new Locale("ja-JP"))).toEqual([
+      { type: "year", value: "2026" },
+      { type: "literal", value: "/" },
+      { type: "month", value: "02" },
+      { type: "literal", value: "/" },
+      { type: "day", value: "03" },
+    ]);
+  });
+
+  test.for(["en-US", "en-GB", "de-DE", "ja-JP", "ar-EG", "he-IL", "hu-HU", "th-TH", "fa-IR"])(
+    "joins to format's output and Intl's own spelling in %s",
+    (tag) => {
+      const locale = new Locale(tag);
+      const intl = new Intl.DateTimeFormat(tag, {
+        calendar: "gregory",
+        numberingSystem: "latn",
+        timeZone: "UTC",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      }).format(Date.UTC(2026, 1, 3));
+      const joined = date
+        .segments(locale)
+        .map((segment) => segment.value)
+        .join("");
+
+      expect(joined).toBe(date.format(locale));
+      expect(joined).toBe(intl);
+    },
+  );
+
+  test.for(["en-US", "ja-JP", "ar-EG", "hu-HU"])("holds no empty segment in %s", (tag) => {
+    for (const segment of date.segments(new Locale(tag))) {
+      expect(segment.value).not.toBe("");
+    }
+  });
+
+  test("hu-HU ends with the literal after the day", () => {
+    expect(date.segments(new Locale("hu-HU")).at(-1)).toEqual({ type: "literal", value: "." });
+  });
+
+  test("an omitted locale lays out in Locale.default()", () => {
+    const spy = vi.spyOn(Locale, "default").mockReturnValue(new Locale("de-DE"));
+
+    try {
+      expect(date.segments()).toEqual([
+        { type: "day", value: "03" },
+        { type: "literal", value: "." },
+        { type: "month", value: "02" },
+        { type: "literal", value: "." },
+        { type: "year", value: "2026" },
+      ]);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
 describe("LocalDate.parseLocalized and tryParseLocalized", () => {
   const LOCALES = ["en-US", "en-GB", "de-DE", "ja-JP", "ar-EG", "he-IL", "hu-HU", "th-TH", "fa-IR"];
   const DATES = ["0001-01-01", "0987-06-05", "2024-02-29", "2026-02-03", "2026-10-01", "9999-12-31"];
