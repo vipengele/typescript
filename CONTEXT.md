@@ -137,3 +137,16 @@ It names a point on a calendar or a clock face, not an instant. The zone is cons
 read the current moment (`now()`), never to build, compare or format one. Owned by
 `@vipengele/ts-core-common`.
 _Avoid_: timestamp, instant (those name a point on the timeline), `Date` (carries an implicit zone)
+
+**Integration**:
+A piece a Reporter installs when it is created and removes when it is closed, such as a listener on
+global state. Added to the builder by `name`; adding the same name again replaces the earlier one.
+
+**Global Handler**:
+The Integration that captures the errors nothing else caught: the uncaught exceptions and unhandled
+rejections of a Node process, the `error` and `unhandledrejection` events of a browser page.
+Its events are always unhandled.
+
+**Exit Policy**:
+What a Node process does after a Global Handler captures an error: `"exit"` or `"continue"`. The
+caller chooses each one; there is no default.

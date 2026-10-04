@@ -6,12 +6,12 @@ saw:
   - source/core/packages/common/src/types/numeric/format.ts
   - source/core/packages/common/src/types/numeric/locale-parts.ts
   - source/core/packages/common/src/locale/locale.ts
-  - docs/adr/0012-locale-replaces-the-string-locale.md
+  - docs/adr/0013-locale-replaces-the-string-locale.md
 ---
 
 - `Numeric.format(value, locale?: Locale, options?)`, `parse(str, locale?: Locale)`, `tryParse(str, locale?: Locale)`;
   the inner functions default the argument with `Locale.default()`, read on every call. A string is not accepted
-  (ADR-0012). `tryParse` returns `{ success: false }` or `{ success: true, value }`.
+  (ADR-0013). `tryParse` returns `{ success: false }` or `{ success: true, value }`.
 - Separators come from `new Intl.NumberFormat(locale.tag, { numberingSystem: "latn", maximumFractionDigits: 1 })
   .formatToParts(-12345678.9)` (`locale-parts.ts`), never tabulated. `CACHE` (`locale-parts.ts`) and `FORMATTER_CACHE`
   (`format.ts`) are `Map<string, …>` keyed by `locale.tag`, so `new Locale("sv-se")` and `new Locale("sv-SE")` share an

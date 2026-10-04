@@ -21,7 +21,7 @@ Error Event, Scope, Breadcrumb, Transport) before naming things.
     propagation, error normalization, runtime detection, locales) the other packages agree on. A
     sub-path like `./types/numeric` (`Numeric.parse`/`tryParse`/`format`, which take a `./locale`
     `Locale` — a validated BCP 47 tag with month and weekday names, hour cycle and first day of the
-    week — ADR-0012) or
+    week — ADR-0013) or
     `./context` (`createAsyncContextStore`, a value carried across an async call chain behind a
     fixed carrier fallback — `AsyncLocalStorage`, then `AsyncContext.Variable`, then a synchronous
     stack, ADR-0004; state shared across dual-resolved copies of the package lives behind a
@@ -42,7 +42,13 @@ Error Event, Scope, Breadcrumb, Transport) before naming things.
     `{ segments }` (word-segment match), carves exceptions out with `except`, and composes through
     `composePolicies`; `secretKeys` is the frozen preset (ADR-0011).
   - `packages/observability` — `@vipengele/ts-core-observability`: the logger (`./logger`) and the
-    error reporter (`./errors`), two entry points of one package. `./errors`'s `createReporter`
+    error reporter (`./errors`), two entry points of one package. `./logger`'s `Logging` facade
+    configures the default `LoggerProvider` through a layered builder or a spec string
+    (`parseSpec`; a bad entry in a spec string is skipped with a warning, a bad level given in code
+    throws `LoggingConfigError`); the level table and the default provider live in two
+    `globalThis` slots (`vipengele.logger.levels`, `vipengele.logger.provider.v1`) so every
+    resolved copy of the package agrees (ADR-0005), and a category with nothing configured
+    resolves to `warn`. `./errors`'s `createReporter`
     builds a `Reporter` from a `ReporterBuilder`; `captureException`/`captureMessage` run every
     event through a five-stage pipeline (normalize, enrich, processors, filter, transport) and hand
     the survivor to a `Transport`, the fire-and-forget delivery contract (ADR-0010;
