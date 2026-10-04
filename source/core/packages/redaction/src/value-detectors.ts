@@ -51,7 +51,10 @@ function passesLuhn(candidate: string): boolean {
 /**
  * A payment card number, accepted only when it passes the Luhn checksum: 13 to 19 contiguous digits,
  * or a standard grouping with one separator, a space or a hyphen, used throughout — 4-4-4 then 1 to 7
- * digits, or Amex's 4-6-5. The candidate cannot touch another digit on either side, so a longer
+ * digits, or 4-6-4 (Diners Club) or 4-6-5 (Amex). A 19-digit number is matched when written
+ * contiguously; in 4-4-4-4-3 groups it is read by its leading 16 digits and redacted only when those
+ * pass Luhn, because a regex cannot retry a shorter candidate once `validate` rejects a longer one,
+ * and trying 4-4-4-4-3 first would leak a card number written next to its CVV. The candidate cannot touch another digit on either side, so a longer
  * contiguous run such as an order id is never redacted piecemeal, but a separator and digits may
  * follow it: a CVV or an expiry date written after the number (`4111 1111 1111 1111 123`,
  * `4111111111111111 12/25`) is left out of the candidate, which then passes Luhn on the card number
@@ -60,7 +63,7 @@ function passesLuhn(candidate: string): boolean {
  * other grouping, or with mixed separators, is not matched.
  */
 export const creditCard: Detector = Object.freeze({
-  pattern: /(?<!\d)(?:\d{13,19}|\d{4}([ -])\d{4}\1\d{4}\1\d{1,7}|\d{4}([ -])\d{6}\2\d{5})(?!\d)/,
+  pattern: /(?<!\d)(?:\d{13,19}|\d{4}([ -])\d{4}\1\d{4}\1\d{1,7}|\d{4}([ -])\d{6}\2\d{4,5})(?!\d)/,
   validate: passesLuhn,
 });
 

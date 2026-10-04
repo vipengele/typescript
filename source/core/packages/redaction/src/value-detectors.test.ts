@@ -69,6 +69,8 @@ describe("creditCard", () => {
     expect(matches(creditCard, "pay 0004-1111-1111-1111111 now")).toEqual(["0004-1111-1111-1111111"]);
     expect(matches(creditCard, "pay 3782 822463 10005 now")).toEqual(["3782 822463 10005"]);
     expect(matches(creditCard, "pay 3782-822463-10005 now")).toEqual(["3782-822463-10005"]);
+    expect(matches(creditCard, "pay 3056 930902 5904 now")).toEqual(["3056 930902 5904"]);
+    expect(matches(creditCard, "pay 3056-930902-5904 now")).toEqual(["3056-930902-5904"]);
   });
 
   test("a CVV or expiry date after the number is left out of the span", () => {
@@ -78,12 +80,14 @@ describe("creditCard", () => {
     expect(matches(creditCard, "4111111111111111 12/25")).toEqual(["4111111111111111"]);
     expect(matches(creditCard, "4111-1111-1111-1111-123")).toEqual(["4111-1111-1111-1111"]);
     expect(matches(creditCard, "3782 822463 10005 1234")).toEqual(["3782 822463 10005"]);
+    expect(matches(creditCard, "3056 930902 5904 123")).toEqual(["3056 930902 5904"]);
   });
 
   test("ignores other groupings and mixed separators", () => {
     expect(matches(creditCard, "4111 11111111 1111")).toEqual([]);
     expect(matches(creditCard, "4111-1111 1111-1111")).toEqual([]);
     expect(matches(creditCard, "3782 822463-10005")).toEqual([]);
+    expect(matches(creditCard, "3056 930902-5904")).toEqual([]);
   });
 
   test("a longer grouped number is read by its leading groups", () => {
@@ -91,11 +95,17 @@ describe("creditCard", () => {
     expect(matches(creditCard, "id 0000 4111 1111 1111 1111")).toEqual([]);
   });
 
+  test("a 19-digit number is matched contiguously but read by its leading 16 digits when grouped 4-4-4-4-3", () => {
+    expect(matches(creditCard, "card 4111111111111112126")).toEqual(["4111111111111112126"]);
+    expect(matches(creditCard, "card 4111 1111 1111 1112 126")).toEqual([]);
+  });
+
   test("leaves Luhn-failing digit runs untouched", () => {
     expect(matches(creditCard, "card 4111111111111112")).toEqual([]);
     expect(matches(creditCard, "order 1234567890123456")).toEqual([]);
     expect(matches(creditCard, "order 20240101000012345")).toEqual([]);
     expect(matches(creditCard, "card 4111 1111 1111 1112")).toEqual([]);
+    expect(matches(creditCard, "card 3056 930902 5905")).toEqual([]);
   });
 
   test("leaves digit runs shorter than 13 or longer than 19 untouched, even when Luhn-valid", () => {

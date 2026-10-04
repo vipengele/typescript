@@ -197,7 +197,7 @@ Each is exported from the package root.
 | -------------- | ------------------------------------------------------------------------------------------------------------------------------ |
 | `jwt`          | A JSON Web Token, to the end of its signature however long its segments are.                                                   |
 | `bearerToken`  | A `Bearer` token, to the end of the token however long; the span includes the `Bearer` scheme.                                 |
-| `creditCard`   | 13 to 19 contiguous digits, or 4-4-4-N or Amex 4-6-5 groups with one space or hyphen separator, validated with the Luhn check. |
+| `creditCard`   | 13 to 19 contiguous digits, or 4-4-4-N, Diners 4-6-4 or Amex 4-6-5 groups with one space or hyphen separator, validated with the Luhn check. |
 | `email`        | An email address.                                                                                                              |
 | `awsAccessKey` | An AWS access key ID.                                                                                                          |
 | `githubToken`  | A GitHub token.                                                                                                                |
@@ -210,7 +210,10 @@ that rejects a start position inside the run at once, and every other quantifier
 `creditCard` leaves a CVV or an expiry date written after the number (`4111 1111 1111 1111 123`)
 out of the candidate, so the card number is still checked and redacted on its own. A longer grouped
 number is read by its leading groups instead: when its first 13 to 19 digits happen to pass the
-Luhn check, that prefix is redacted and the rest kept.
+Luhn check, that prefix is redacted and the rest kept. A 19-digit number is matched when written
+contiguously; written in 4-4-4-4-3 groups it is read by its leading 16 digits and is redacted only
+when those pass Luhn, since trying that grouping first would leak a card number written next to its
+CVV.
 
 ### What is scanned
 
