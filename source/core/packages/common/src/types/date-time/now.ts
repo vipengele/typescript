@@ -19,6 +19,34 @@ const MAX_EPOCH_MILLISECONDS = 8.64e15;
 type NumericPart = "year" | "month" | "day" | "hour" | "minute" | "second";
 
 /**
+ * One formatter per time zone, built on first use. Locale and zone resolution are the expensive
+ * part of building an `Intl.DateTimeFormat`; the zone is read on every call, so a change of zone
+ * selects another entry rather than a stale formatter.
+ */
+const FORMATTER_CACHE = new Map<string, Intl.DateTimeFormat>();
+
+function resolveFormatter(timeZone: string): Intl.DateTimeFormat {
+  let formatter = FORMATTER_CACHE.get(timeZone);
+  if (formatter === undefined) {
+    formatter = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      calendar: "gregory",
+      numberingSystem: "latn",
+      era: "short",
+      year: "numeric",
+      month: "numeric",
+      day: "numeric",
+      hour: "numeric",
+      minute: "numeric",
+      second: "numeric",
+      hourCycle: "h23",
+    });
+    FORMATTER_CACHE.set(timeZone, formatter);
+  }
+  return formatter;
+}
+
+/**
  * The civil date and time of day `clock`'s current instant reads as in the runtime's time zone.
  *
  * The zone is read from `Intl.DateTimeFormat().resolvedOptions().timeZone` on every call, so a
@@ -38,20 +66,7 @@ export function civilNow(clock: Clock = systemClock): CivilDateTimeFields {
   if (!(Math.abs(epochMilliseconds) <= MAX_EPOCH_MILLISECONDS)) {
     throw new RangeError(`The clock must return epoch milliseconds within ±${MAX_EPOCH_MILLISECONDS}, got ${epochMilliseconds}.`);
   }
-  const timeZone = new Intl.DateTimeFormat().resolvedOptions().timeZone;
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    calendar: "gregory",
-    numberingSystem: "latn",
-    era: "short",
-    year: "numeric",
-    month: "numeric",
-    day: "numeric",
-    hour: "numeric",
-    minute: "numeric",
-    second: "numeric",
-    hourCycle: "h23",
-  }).formatToParts(epochMilliseconds);
+  const parts = resolveFormatter(new Intl.DateTimeFormat().resolvedOptions().timeZone).formatToParts(epochMilliseconds);
   const fields: Partial<Record<NumericPart, number>> = {};
   let beforeCommonEra = false;
   for (const part of parts) {
