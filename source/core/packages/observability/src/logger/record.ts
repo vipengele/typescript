@@ -40,10 +40,13 @@ export interface Sink {
  * for no redaction. The setting holds the policy only; the package never reads the preset itself
  * at module scope, so a consumer that disables redaction pays nothing for it (ADR-0011).
  *
- * A policy is applied to `attributes` and to the `data` of every link of the serialized error
- * chain (`error`, and each `cause` and `errors` entry beneath it), when the record is created and
- * before any sink sees it. Neither `message` nor `stack` is scanned: a secret interpolated into
- * a message is the caller's to keep out.
+ * A policy is applied to `attributes` and to every link of the serialized error chain (`error`,
+ * and each `cause` and `errors` entry beneath it), when the record is created and before any sink
+ * sees it: to the `data` of a link for an `Error`, and to the fields of a structured thrown value
+ * that is not an `Error`, carried as JSON text in its synthetic link's `message`. That text is
+ * replaced whole when it no longer parses, as when it was cut at the serialization length bound.
+ * The record's `message`, and the `message` and `stack` of an `Error`, are not scanned: a secret
+ * interpolated into a message is the caller's to keep out.
  */
 export type RedactionSetting = RedactionPolicy | null;
 
@@ -82,7 +85,7 @@ export interface EmitSettings {
   /** The source of {@link LogRecord.time}. */
   readonly clock: Clock;
 
-  /** Redaction applied to a record's attributes and error data; `null` disables it. */
+  /** Redaction applied to a record's attributes and error chain; `null` disables it. */
   readonly redaction: RedactionSetting;
 
   /**

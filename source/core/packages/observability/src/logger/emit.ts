@@ -30,9 +30,43 @@ function redactAttributes(attributes: Attributes, policy: RedactionPolicy): Attr
   return redact(attributes, policy, UNBOUNDED) as Attributes;
 }
 
-/** A copy of `error` whose `data`, and that of every `cause` and `errors` entry beneath it, is redacted. */
+/**
+ * Stands in for the `message` of a synthetic link that reads as structured text but does not
+ * parse — a JSON form `serializeError` cut at its string length bound, or a thrown string that
+ * merely starts like one. Its keys cannot be told from its values, so none of it is kept.
+ */
+const UNSCANNABLE = "[REDACTED: unparseable structured value]";
+
+/**
+ * The `message` of a synthetic link: the thrown value as it is when it was a string, its JSON
+ * text otherwise. Text that opens an object or an array is parsed, redacted and written back as
+ * JSON, or replaced whole by {@link UNSCANNABLE} when it does not parse; any other text — a
+ * thrown string, number, boolean or `null` — has no keys a policy could match and is kept.
+ */
+function redactSyntheticMessage(message: string, policy: RedactionPolicy): string {
+  if (!(message.startsWith("{") || message.startsWith("["))) {
+    return message;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(message);
+  } catch {
+    return UNSCANNABLE;
+  }
+  return JSON.stringify(redact(parsed, policy, UNBOUNDED));
+}
+
+/**
+ * A copy of `error` whose `data`, and that of every `cause` and `errors` entry beneath it, is
+ * redacted, as is the `message` of every synthetic link: a thrown value that is not an `Error`
+ * carries its fields in that message, not in `data`. The `message` and `stack` of a real error
+ * are kept as they are.
+ */
 function redactError(error: SerializedError, policy: RedactionPolicy): SerializedError {
   const redacted: SerializedError = { ...error };
+  if (error.synthetic === true) {
+    redacted.message = redactSyntheticMessage(error.message, policy);
+  }
   if (error.data !== undefined) {
     redacted.data = redactAttributes(error.data, policy);
   }
@@ -46,8 +80,24 @@ function redactError(error: SerializedError, policy: RedactionPolicy): Serialize
 }
 
 /**
- * The frozen record for one call. Freezing it lets every sink receive the same object without
- * one sink's writes changing what the next one sees.
+ * Freezes `value` and every object and array beneath it. A record holds only JSON-safe data that
+ * `normalizeAttributes`, `serializeError` and `redact` built for it, bounded and acyclic, so the
+ * walk ends and never reaches an object of the caller's.
+ */
+function freezeDeep<T>(value: T): T {
+  if (typeof value === "object" && value !== null) {
+    for (const entry of Object.values(value)) {
+      freezeDeep(entry);
+    }
+    Object.freeze(value);
+  }
+  return value;
+}
+
+/**
+ * The deeply frozen record for one call. Freezing the record, its attributes and every link of
+ * its error lets every sink receive the same object without one sink's writes, at any depth,
+ * changing what the next one sees.
  */
 function createRecord(
   settings: EmitSettings,
@@ -71,7 +121,7 @@ function createRecord(
   if (serialized !== undefined) {
     record.error = policy === null ? serialized : redactError(serialized, policy);
   }
-  return Object.freeze(record);
+  return freezeDeep(record);
 }
 
 /** Reports a failed `write`; a throw from the report itself is swallowed. */
