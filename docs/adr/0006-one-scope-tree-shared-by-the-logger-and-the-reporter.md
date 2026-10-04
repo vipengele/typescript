@@ -88,7 +88,9 @@ or relies on `logger.with()`, which is lexical and survives everything.
 
 A `Scope`'s public surface is only `tag`, `get` and `set` — never `parent`. Walking the tree to read
 a breadcrumb trail is the reporter's own internal concern, not something an application does, so
-nothing about ancestry is exposed outside the framework's own code.
+nothing about ancestry is exposed outside the framework's own code. The one exception is the
+framework-internal `snapshot(scope)`, which the reporter's enrich stage uses to flatten the
+ancestors' attributes into an Error Event; it is not for application use.
 
 ## Considered options
 
