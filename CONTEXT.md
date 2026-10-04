@@ -26,10 +26,11 @@ process. Owned by `@vipengele/ts-core-redaction`.
 _Avoid_: scrubbing, sanitizing (sanitizing also means escaping for output)
 
 **Redaction Policy**:
-What keys to redact and how: a set of Key Matchers, optionally a set of exceptions (Key Matchers
-whose keys are never redacted, even when a rule matches them), and the Replacement applied where a
-rule matches. Composable presets are `@vipengele/ts-core-redaction`'s own concern to add on top,
-not a separate glossary term: a preset is a Redaction Policy.
+What to redact and how: a set of Key Matchers, optionally a set of exceptions (Key Matchers whose
+keys are never redacted, even when a rule matches them), optionally a set of Detectors, and the
+Replacement applied where a rule or a Detector matches. Composable presets are
+`@vipengele/ts-core-redaction`'s own concern to add on top, not a separate glossary term: a preset
+is a Redaction Policy.
 
 **Key Matcher**:
 One rule a Redaction Policy tests an object key against: an exact string, a regular expression,
@@ -37,10 +38,17 @@ either compared case-insensitively, or a word-segment match that finds whole wor
 regardless of its casing or separators (`api key` matches `APIKey` and `x-api-key`, and `token`
 matches `csrfToken` but not `tokenizer`).
 
+**Detector**:
+One rule a Redaction Policy tests the text of a string value against, however the value is keyed: a
+pattern, optionally a check that confirms a candidate match. Only the span a Detector matches is
+replaced; the rest of the string is kept. Built-in Detectors cover secrets and personal data that
+have a recognizable shape, such as a JWT, a card number or an email address.
+_Avoid_: scanner, pattern (a Detector may confirm a match as well as find one)
+
 **Replacement**:
-What a matched Key Matcher's value becomes: `"[REDACTED]"` by default, or a caller-supplied
-function of the matched value and key, so partial masking and pseudonymization are additional
-Replacements, not a different mechanism.
+What a matched Key Matcher's value, or a Detector's matched span, becomes: `"[REDACTED]"` by
+default, or a caller-supplied function of the matched value and key, so partial masking and
+pseudonymization are additional Replacements, not a different mechanism.
 
 **JSON-safe**:
 Describes a value that survives `JSON.stringify` unchanged in meaning and is bounded in size: no
