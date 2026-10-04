@@ -1,5 +1,5 @@
 import type { ContextCarrier } from "../context";
-import { createChildScope, getScopeTree, type Scope as ScopeHandle, type ScopeAttributes } from "./root";
+import { createChildScope, getScopeTree, type Resource, type Scope as ScopeHandle, type ScopeAttributes } from "./root";
 import { getScopeStore } from "./store";
 
 /** A node of the scope tree: its `tag`, and `get`/`set` for the attributes it and its ancestors hold. */
@@ -49,6 +49,21 @@ function isolated<R>(tag: string, attributes: ScopeAttributes, fn: () => R): R {
 }
 
 /**
+ * The Resource the root scope holds, read from the realm's one root whatever scope is current. It
+ * is frozen: the logger hands one Resource to every sink for a record, so a sink writing to it
+ * would otherwise change what the sinks after it see.
+ */
+function resource(): Resource {
+  const { root } = getScopeTree();
+  return Object.freeze({
+    "service.name": root.get("service.name") as string | undefined,
+    "service.version": root.get("service.version") as string | undefined,
+    "deployment.environment.name": root.get("deployment.environment.name") as string | undefined,
+    "process.runtime.name": root.get("process.runtime.name") as string | undefined,
+  });
+}
+
+/**
  * Replaces the carrier the current scope rides on — a zone.js-backed carrier in an application that
  * already runs under zone.js, say. The replacement is seen immediately by every copy of the package
  * in the realm, and applies to every propagation made from then on.
@@ -67,5 +82,6 @@ export const Scope = {
   propagate,
   inherit,
   isolated,
+  resource,
   useCarrier,
 } as const;

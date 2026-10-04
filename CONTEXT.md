@@ -63,7 +63,7 @@ A dotted name (`services.editing`) identifying where a record comes from. Levels
 category prefix, and the longest matching prefix wins.
 
 **Log Record**:
-One structured log entry: timestamp, level, category, message, attributes and optionally an error.
+One structured log entry: time, level, category, message, attributes and optionally an error.
 _Avoid_: line, log line (a record is not text until a formatter makes it so)
 
 **Sink**:

@@ -1,19 +1,24 @@
-import type { Threshold } from "@vipengele/ts-core-common";
+import { type Clock, systemClock, type Threshold } from "@vipengele/ts-core-common";
 import { validateCategoryKey } from "./categories";
 import { LoggingConfigError } from "./config-error";
 import { validateThreshold } from "./levels";
-import { DEFAULT_LEVELS, EMPTY_LAYER, freezeLayer, type LevelLayer } from "./settings";
+import type { RedactionSetting, Sink } from "./record";
+import { DEFAULT_LEVELS, defaultRedaction, EMPTY_LAYER, freezeLayer, type LevelLayer } from "./settings";
 import { parseSpec } from "./spec";
 
 /**
  * What {@link LoggingBuilder.build} produces: the `defaults` and `builder` layers of a
- * `LoggingSettings`, and `issues`, one human-readable string per spec entry an `addSpec` call
- * skipped or overrode, in the order the specs were added. Issues never fail a build; reporting
- * them is the caller's job.
+ * `LoggingSettings`; `sinks`, `clock` and `redaction`, what its Loggers emit through; and
+ * `issues`, one human-readable string per spec entry an `addSpec` call skipped or overrode, in the
+ * order the specs were added. Issues never fail a build; reporting them is the caller's job.
  */
 export interface LoggingBuild {
   readonly defaults: LevelLayer;
   readonly builder: LevelLayer;
+  /** The sinks passed to `addSink`, in the order they were added; frozen. */
+  readonly sinks: readonly Sink[];
+  readonly clock: Clock;
+  readonly redaction: RedactionSetting;
   readonly issues: readonly string[];
 }
 
@@ -44,10 +49,30 @@ export interface LoggingBuilder {
   addSpec(spec: string): LoggingBuilder;
 
   /**
-   * Validates every source and returns the resulting layers. Throws a `LoggingConfigError` on the
-   * first invalid category key or threshold passed to `addLevels`, even one a later source
-   * replaces, or on an `addLevels` argument that is not an object. Reads the builder without
-   * changing it: calling it again gives an equal result.
+   * Appends `sink` to the sinks every record is written to, in the order they were added. It is
+   * recorded when this is called and validated by `build`, which throws a `LoggingConfigError` when
+   * it is not an object.
+   */
+  addSink(sink: Sink): LoggingBuilder;
+
+  /**
+   * The source of every record's `time`, in epoch ms; `systemClock` unless set. A later call
+   * replaces the clock an earlier one set.
+   */
+  clock(clock: Clock): LoggingBuilder;
+
+  /**
+   * The redaction applied to every record: a `RedactionPolicy`, or `null` to disable redaction. The
+   * `secretKeys` preset applies unless set. A later call replaces the setting an earlier one made.
+   */
+  redaction(policy: RedactionSetting): LoggingBuilder;
+
+  /**
+   * Validates every source and sink and returns the resulting build. Throws a `LoggingConfigError`
+   * on the first invalid category key or threshold passed to `addLevels`, even one a later source
+   * replaces, on an `addLevels` argument that is not an object, or, once every source is valid, on
+   * the first `addSink` argument that is not an object. Reads the builder without changing it:
+   * calling it again gives an equal result.
    */
   build(): LoggingBuild;
 }
@@ -57,10 +82,17 @@ type Source =
   | { readonly kind: "levels"; readonly entries: readonly (readonly [string, unknown])[] }
   | { readonly kind: "invalid"; readonly value: unknown };
 
-/** A new {@link LoggingBuilder} holding the defaults and no sources. */
+function typeName(value: unknown): string {
+  return value === null ? "null" : typeof value;
+}
+
+/** A new {@link LoggingBuilder} holding the defaults, no sources and no sinks. */
 export function createLoggingBuilder(): LoggingBuilder {
   let defaults = DEFAULT_LEVELS;
   const sources: Source[] = [];
+  const sinks: unknown[] = [];
+  let clock: Clock = systemClock;
+  let redaction: RedactionSetting | undefined;
   const issues: string[] = [];
 
   const builder: LoggingBuilder = {
@@ -82,18 +114,42 @@ export function createLoggingBuilder(): LoggingBuilder {
       issues.push(...parsed.issues);
       return builder;
     },
+    addSink(sink) {
+      sinks.push(sink);
+      return builder;
+    },
+    clock(next) {
+      clock = next;
+      return builder;
+    },
+    redaction(policy) {
+      redaction = policy;
+      return builder;
+    },
     build() {
       const merged: Record<string, Threshold> = Object.create(null);
       for (const source of sources) {
         if (source.kind === "invalid") {
           const value = source.value;
-          throw new LoggingConfigError(`Invalid logger levels of type ${value === null ? "null" : typeof value}: expected an object.`);
+          throw new LoggingConfigError(`Invalid logger levels of type ${typeName(value)}: expected an object.`);
         }
         for (const [key, threshold] of source.entries) {
           merged[validateCategoryKey(key)] = validateThreshold(threshold);
         }
       }
-      return Object.freeze({ defaults, builder: freezeLayer(merged), issues: Object.freeze([...issues]) });
+      for (const sink of sinks) {
+        if (typeof sink !== "object" || sink === null) {
+          throw new LoggingConfigError(`Invalid logger sink of type ${typeName(sink)}: expected an object.`);
+        }
+      }
+      return Object.freeze({
+        defaults,
+        builder: freezeLayer(merged),
+        sinks: Object.freeze([...sinks] as Sink[]),
+        clock,
+        redaction: redaction === undefined ? defaultRedaction() : redaction,
+        issues: Object.freeze([...issues]),
+      });
     },
   };
   return builder;
