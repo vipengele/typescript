@@ -44,6 +44,50 @@ describe("userinfo", () => {
 
   test("only the userinfo before the first / is replaced when the path holds another @", () => {
     expect(redactUrl("https://ada:pw@example.com/a@b")).toBe("https://[REDACTED]:[REDACTED]@example.com/a@b");
+    expect(redactUrl("https://ada@example.com/a@b")).toBe("https://[REDACTED]@example.com/a@b");
+  });
+
+  test("an @ in the query or fragment after a user:pass userinfo is kept, and the query follows the policy", () => {
+    expect(redactUrl("https://u:pw@host/x?email=a@b")).toBe("https://[REDACTED]:[REDACTED]@host/x?email=a@b");
+    expect(redactUrl("https://u:pw@host?token=a@b#c@d")).toBe("https://[REDACTED]:[REDACTED]@host?token=[REDACTED]#c@d");
+    expect(redactUrl("https://u:pw@host/x?email=a@b", { policy: { keys: ["email"] } })).toBe(
+      "https://[REDACTED]:[REDACTED]@host/x?email=[REDACTED]",
+    );
+  });
+
+  test("a raw @ in a password is replaced with it", () => {
+    expect(redactUrl("https://u:p@ss@host/x")).toBe("https://[REDACTED]:[REDACTED]@host/x");
+    expect(redactUrl("https://u:p#s@s@host/a@b")).toBe("https://[REDACTED]:[REDACTED]@host/a@b");
+  });
+
+  test("a port followed by an @ in the path or query is over-redacted up to that @", () => {
+    expect(redactUrl("https://host:8080/a@b")).toBe("https://[REDACTED]:[REDACTED]@b");
+    expect(redactUrl("https://host:8080?e=a@b")).toBe("https://[REDACTED]:[REDACTED]@b");
+  });
+
+  test("a port with no @ anywhere is kept", () => {
+    expect(redactUrl("https://host:8080/a?b#c")).toBe("https://host:8080/a?b#c");
+  });
+
+  test("a password holding an unencoded #, ? or / is replaced whole", () => {
+    expect(redactUrl("postgres://app:p#ss@db/main")).toBe("postgres://[REDACTED]:[REDACTED]@db/main");
+    expect(redactUrl("https://u:pa?ss@host/x")).toBe("https://[REDACTED]:[REDACTED]@host/x");
+    expect(redactUrl("scheme://u:p/w@h")).toBe("scheme://[REDACTED]:[REDACTED]@h");
+  });
+
+  test("the query and fragment are read after the userinfo", () => {
+    const replacement = vi.fn((value: unknown, key: string) => `<${key}:${String(value)}>`);
+    expect(redactUrl("https://u:p?a#b@host/x?token=t#id_token=f", { replacement })).toBe(
+      "https://<username:u>:<password:p?a#b>@host/x?token=<token:t>#id_token=<id_token:f>",
+    );
+  });
+
+  test("an @ after the first /, ? or # is not userinfo when no : comes before it", () => {
+    expect(redactUrl("https://host?email=a@b")).toBe("https://host?email=a@b");
+    expect(redactUrl("https://host/p@x")).toBe("https://host/p@x");
+    expect(redactUrl("https://host/p?e=a@b")).toBe("https://host/p?e=a@b");
+    expect(redactUrl("https://host#a@b")).toBe("https://host#a@b");
+    expect(redactUrl("https://host/p:q@x")).toBe("https://host/p:q@x");
   });
 
   test("keeps the port and the host as written", () => {
@@ -60,6 +104,36 @@ describe("userinfo", () => {
 
   test("replaces userinfo behind leading spaces and control characters, and keeps them", () => {
     expect(redactUrl(" \t\nhttps://ada:pw@example.com")).toBe(" \t\nhttps://[REDACTED]:[REDACTED]@example.com");
+  });
+
+  test("a special scheme reads userinfo after any run of / and \\, an empty one included", () => {
+    expect(redactUrl("https:u:pw@host")).toBe("https:[REDACTED]:[REDACTED]@host");
+    expect(redactUrl("https:/u:pw@host")).toBe("https:/[REDACTED]:[REDACTED]@host");
+    expect(redactUrl("https:\\\\u:pw@host")).toBe("https:\\\\[REDACTED]:[REDACTED]@host");
+    expect(redactUrl("https:\\u:pw@host")).toBe("https:\\[REDACTED]:[REDACTED]@host");
+    expect(redactUrl("https:///u:pw@host")).toBe("https:///[REDACTED]:[REDACTED]@host");
+    expect(redactUrl("https:/\\u@host")).toBe("https:/\\[REDACTED]@host");
+  });
+
+  test("every special scheme is recognised, in any case", () => {
+    for (const scheme of ["http", "https", "ws", "wss", "ftp", "file", "HTTPS", "Wss"]) {
+      expect(redactUrl(`${scheme}:u:pw@host`)).toBe(`${scheme}:[REDACTED]:[REDACTED]@host`);
+    }
+  });
+
+  test("a tab, LF or CR inside the scheme or between the slashes is ignored, and kept", () => {
+    expect(redactUrl("ht\ttp\ns:u:pw@host")).toBe("ht\ttp\ns:[REDACTED]:[REDACTED]@host");
+    expect(redactUrl("https:/\r\n/u:pw@host")).toBe("https:/\r\n/[REDACTED]:[REDACTED]@host");
+    expect(redactUrl("post\tgres:/\t/u:pw@db")).toBe("post\tgres:/\t/[REDACTED]:[REDACTED]@db");
+    expect(redactUrl("/\n/u:pw@host")).toBe("/\n/[REDACTED]:[REDACTED]@host");
+  });
+
+  test("a non-special scheme needs a //", () => {
+    expect(redactUrl("postgres:u:pw@db")).toBe("postgres:u:pw@db");
+    expect(redactUrl("postgres:/u:pw@db")).toBe("postgres:/u:pw@db");
+    expect(redactUrl("postgres:\\\\u:pw@db")).toBe("postgres:\\\\u:pw@db");
+    expect(redactUrl("httpx:u:pw@db")).toBe("httpx:u:pw@db");
+    expect(redactUrl("mailto:a@b")).toBe("mailto:a@b");
   });
 
   test("a \\ does not end the authority, so userinfo before it is not let through", () => {

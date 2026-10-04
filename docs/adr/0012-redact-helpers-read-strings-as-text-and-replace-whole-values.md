@@ -15,7 +15,7 @@ scheme-less, protocol-relative and malformed input is accepted.
   `access%5Ftoken=x` is matched as `access_token`.
 - A name that cannot be decoded (a malformed `%` escape) is redacted. The policy cannot be asked
   about a name that cannot be read, so the value fails closed.
-- The query runs from the first `?` to the first `#`. The fragment is a parameter list, and is
+- The query runs from the first `?` after any userinfo to the next `#`. The fragment is a parameter list, and is
   redacted like a query, only when it contains a `name=value` pair with a non-empty name:
   `#access_token=x` is one, `#section-2` and `#=` are not and are kept whole.
 
@@ -25,6 +25,12 @@ scheme-less, protocol-relative and malformed input is accepted.
 policy: `https://[REDACTED]:[REDACTED]@host`, and `https://[REDACTED]@host` when there is a
 username only. A credential in a URL is not a key a policy names, so no policy is consulted. A
 function replacement receives the part under the key `"username"` or `"password"`.
+
+The userinfo is located fail-closed: a special scheme (`https:`) reads it after any run of `/` and
+`\`, as a WHATWG parser does, and a `user:pass` authority runs to its first `@`, then through any
+further `@` before the next `/`, `?` or `#`, so a password holding an unencoded `#`, `?`, `/` or `@`
+is never cut short. Over-redacting a URL that has a port and a later `@` (`host:8080/a@b`) is the
+accepted cost; a leaked password is not.
 
 ## Header values are replaced whole
 

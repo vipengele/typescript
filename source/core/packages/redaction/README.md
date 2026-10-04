@@ -227,6 +227,16 @@ name the policy matches replaced.
   `https://[REDACTED]:[REDACTED]@host`, and a username with no password gives
   `https://[REDACTED]@host`. A function `Replacement` is called with key `"username"` or
   `"password"`.
+- **Userinfo is found the way a WHATWG parser finds it, and fails closed.** It follows `scheme://`
+  or a leading `//`, and for a special scheme (`http`, `https`, `ws`, `wss`, `ftp`, `file`, in any
+  case) any run of `/` and `\`, so `https:u:pw@host` and `https:\\u:pw@host` are redacted; a tab,
+  LF or CR in the scheme or between the slashes is ignored. When the authority has the `user:pass`
+  shape (a `:` before the first `/`, `?` or `#`), the userinfo runs to its first `@`, and on through
+  any further `@` before the next `/`, `?` or `#`. A password holding an unencoded `#`, `?`, `/` or
+  `@` is replaced whole, and an `@` in the path or query after it (`https://u:pw@host/x?e=a@b`) is
+  kept. A host with a port and a later `@` (`https://host:8080/a@b`) has the same shape and is
+  over-redacted up to that `@`. Without a `:`, an `@` in the path, query or fragment
+  (`https://host/p@x`, `https://host?e=a@b`) is not userinfo.
 - **The URL is read as text and never parsed into a `URL`.** Relative, scheme-less,
   protocol-relative and malformed input is accepted, and every byte outside a redacted value is
   kept as written: `%20` stays `%20`, `+` stays `+`, `~` and `!` stay unencoded, separators and
