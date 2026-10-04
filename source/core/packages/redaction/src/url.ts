@@ -60,9 +60,40 @@ function userinfoEnd(rest: string): number {
 }
 
 /**
- * Splits `url` into its prefix with the userinfo replaced, and the text after the userinfo, from
- * its `@`, in which the query and the fragment are then looked for. `undefined` when there is no
- * userinfo to replace.
+ * Whether a fragment reads as a parameter list: at least one `&`-separated segment is a
+ * `name=value` pair with a non-empty name. `#access_token=x` does; `#section-2` and `#=` do not.
+ */
+function isParameterFragment(fragment: string): boolean {
+  return fragment.split("&").some((segment) => segment.indexOf("=") > 0);
+}
+
+/**
+ * A URL's userinfo replaced, and how the text after it is read. `head` runs to and includes the
+ * userinfo's `@`; `tail` is everything after it.
+ *
+ * When `userinfoEnd` picks an `@` after a `?` or `#` in `rest`, the URL is read two ways at once,
+ * since the text cannot tell which is right: as a password holding that character, in which case
+ * `tail` is a host, path, query and fragment as usual, and as a host and port followed by a query
+ * or fragment that the `@` sits inside, in which case `tail` continues that query or fragment. Every
+ * parameter either reading sees has to reach the policy, so the flags widen the usual reading:
+ *
+ * - `pathIsParams`: the part of `tail` before its first `?` or `#` is redacted as a parameter list.
+ *   Set after a `?` (`host:8080?e=a@b&token=x`), and after a `#` whose fragment, read from that `#`,
+ *   is a parameter list (`host:8080#s=a@b&access_token=x`).
+ * - `fragmentIsParams`: the fragment of `tail` is redacted as a parameter list even when it does
+ *   not read as one on its own. Set in the second case above, where it continues such a fragment.
+ *
+ * The first `#` before the `@` decides over a `?`, since a `?` after a `#` belongs to the fragment.
+ */
+interface RedactedUserinfo {
+  head: string;
+  tail: string;
+  pathIsParams: boolean;
+  fragmentIsParams: boolean;
+}
+
+/**
+ * Replaces the userinfo of `url`, or returns `undefined` when there is none to replace.
  *
  * The userinfo is looked for after the authority prefix, in `rest`, and ends at the `@` that
  * `userinfoEnd` picks. A `\` never ends the authority, so a `\` before an `@` widens the userinfo
@@ -71,7 +102,7 @@ function userinfoEnd(rest: string): number {
  * The username and, when a `:` follows it, the password are both replaced whatever the policy, an
  * empty password included. An empty userinfo (`//@host`) holds nothing to replace and is kept.
  */
-function redactUserinfo(url: string, options: ResolvedStringOptions): { head: string; tail: string } | undefined {
+function redactUserinfo(url: string, options: ResolvedStringOptions): RedactedUserinfo | undefined {
   const prefix = authorityPrefix(url);
   if (prefix === undefined) return undefined;
   const rest = url.slice(prefix.length);
@@ -84,15 +115,14 @@ function redactUserinfo(url: string, options: ResolvedStringOptions): { head: st
   if (colon !== -1) {
     redacted += `:${String(applyReplacement(options.replacement, userinfo.slice(colon + 1), "password"))}`;
   }
-  return { head: `${prefix}${redacted}`, tail: rest.slice(at) };
-}
-
-/**
- * Whether a fragment reads as a parameter list: at least one `&`-separated segment is a
- * `name=value` pair with a non-empty name. `#access_token=x` does; `#section-2` and `#=` do not.
- */
-function isParameterFragment(fragment: string): boolean {
-  return fragment.split("&").some((segment) => segment.indexOf("=") > 0);
+  const hash = userinfo.indexOf("#");
+  const fragmentIsParams = hash !== -1 && isParameterFragment(rest.slice(hash + 1));
+  return {
+    head: `${prefix}${redacted}@`,
+    tail: rest.slice(at + 1),
+    pathIsParams: fragmentIsParams || (hash === -1 && userinfo.includes("?")),
+    fragmentIsParams,
+  };
 }
 
 /**
@@ -107,8 +137,10 @@ function isParameterFragment(fragment: string): boolean {
  *   key `"username"` or `"password"`.
  * - The query runs from the first `?` after the userinfo to the next `#`, and is redacted as
  *   `redactQueryString` redacts one.
- * - The fragment runs from the first `#` after the userinfo to the end. It is redacted the same way only when it
- *   reads as a parameter list, and kept whole otherwise.
+ * - The fragment runs from the first `#` after the userinfo to the end. It is redacted the same way
+ *   only when it reads as a parameter list, and kept whole otherwise.
+ * - When the userinfo's end is ambiguous (`host:8080?e=a@b&token=x`), the text after it is also
+ *   redacted as the query or fragment it may continue, so no parameter skips the policy.
  *
  * `maxBreadth` bounds the query and the fragment separately, each keeping up to that many
  * parameters. The redacted result is cut to `maxStringLength` last.
@@ -120,14 +152,16 @@ export function redactUrl(url: string, options?: RedactStringOptions): string {
   const hash = tail.indexOf("#");
   const beforeHash = hash === -1 ? tail : tail.slice(0, hash);
   const question = beforeHash.indexOf("?");
+  const path = question === -1 ? beforeHash : beforeHash.slice(0, question);
 
-  let result = (userinfo === undefined ? "" : userinfo.head) + (question === -1 ? beforeHash : beforeHash.slice(0, question));
+  let result = userinfo === undefined ? path : userinfo.head + (userinfo.pathIsParams ? redactParams(path, resolved) : path);
   if (question !== -1) {
     result += `?${redactParams(beforeHash.slice(question + 1), resolved)}`;
   }
   if (hash !== -1) {
     const fragment = tail.slice(hash + 1);
-    result += `#${isParameterFragment(fragment) ? redactParams(fragment, resolved) : fragment}`;
+    const isParams = userinfo?.fragmentIsParams === true || isParameterFragment(fragment);
+    result += `#${isParams ? redactParams(fragment, resolved) : fragment}`;
   }
   return truncateString(result, resolved.limits);
 }

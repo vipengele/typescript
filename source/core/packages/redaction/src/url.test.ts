@@ -60,9 +60,39 @@ describe("userinfo", () => {
     expect(redactUrl("https://u:p#s@s@host/a@b")).toBe("https://[REDACTED]:[REDACTED]@host/a@b");
   });
 
-  test("a port followed by an @ in the path or query is over-redacted up to that @", () => {
+  test("a port followed by an @ in the path, query or fragment is over-redacted up to that @", () => {
     expect(redactUrl("https://host:8080/a@b")).toBe("https://[REDACTED]:[REDACTED]@b");
     expect(redactUrl("https://host:8080?e=a@b")).toBe("https://[REDACTED]:[REDACTED]@b");
+    expect(redactUrl("https://host:8080#a@b&c")).toBe("https://[REDACTED]:[REDACTED]@b&c");
+  });
+
+  test("the query an over-redacted @ sits in still has its later parameters redacted", () => {
+    expect(redactUrl("https://host:8080?e=a@b&token=SECRET")).toBe("https://[REDACTED]:[REDACTED]@b&token=[REDACTED]");
+    expect(redactUrl("https://api.example.com:8443/v1?email=a@b.com&token=SECRET")).toBe(
+      "https://[REDACTED]:[REDACTED]@b.com&token=[REDACTED]",
+    );
+    expect(redactUrl("https://host:8080?e=a@b#access_token=SECRET")).toBe("https://[REDACTED]:[REDACTED]@b#access_token=[REDACTED]");
+    expect(redactUrl("https://host:8080/a?e=a@b&token=SECRET", { policy: { keys: ["token"] } })).toBe(
+      "https://[REDACTED]:[REDACTED]@b&token=[REDACTED]",
+    );
+  });
+
+  test("the fragment an over-redacted @ sits in still has its later parameters redacted", () => {
+    expect(redactUrl("https://host:8080/cb#s=a@b&access_token=SECRET")).toBe("https://[REDACTED]:[REDACTED]@b&access_token=[REDACTED]");
+    expect(redactUrl("https://host:8080#s=a@b#x&token=SECRET")).toBe("https://[REDACTED]:[REDACTED]@b#x&token=[REDACTED]");
+    expect(redactUrl("https://host:8080#s?q=a@b&token=SECRET")).toBe("https://[REDACTED]:[REDACTED]@b&token=[REDACTED]");
+    expect(redactUrl("https://host:8080#s=a@b#=x", { policy: { keys: [""] } })).toBe("https://[REDACTED]:[REDACTED]@b#=[REDACTED]");
+    expect(redactUrl("https://host:8080/#=a@b#=x", { policy: { keys: [""] } })).toBe("https://[REDACTED]:[REDACTED]@b#=x");
+  });
+
+  test("a password holding a ? or # leaves the query and fragment after the host redacted by the policy", () => {
+    const policy: RedactionPolicy = { keys: ["token", "access_token"] };
+    expect(redactUrl("https://u:p?ss@host/x?token=SECRET")).toBe("https://[REDACTED]:[REDACTED]@host/x?token=[REDACTED]");
+    expect(redactUrl("https://u:p?ss@host/x?token=SECRET", { policy })).toBe("https://[REDACTED]:[REDACTED]@host/x?token=[REDACTED]");
+    expect(redactUrl("https://u:p#ss@host/#access_token=SECRET")).toBe("https://[REDACTED]:[REDACTED]@host/#access_token=[REDACTED]");
+    expect(redactUrl("https://u:p#ss@host/#access_token=SECRET", { policy })).toBe(
+      "https://[REDACTED]:[REDACTED]@host/#access_token=[REDACTED]",
+    );
   });
 
   test("a port with no @ anywhere is kept", () => {
