@@ -4,7 +4,7 @@ Structured logging and error reporting for the browser and Node, as two entry po
 
 | Entry point | What it is |
 |-------------|------------|
-| `@vipengele/ts-core-observability/logger` | Category-scoped loggers with configurable levels |
+| `@vipengele/ts-core-observability/logger` | Category-scoped loggers with configurable levels, sinks and redaction |
 | `@vipengele/ts-core-observability/errors` | An error reporter: capture, normalization, scopes, breadcrumbs and pluggable transports |
 
 An application that only logs imports only `/logger` and bundles none of the reporter.
@@ -48,10 +48,60 @@ const provider = Logging.createProvider((b) => b.addLevels({ "*": "trace" })); /
 - **Two copies agree** — the default provider and the level table live behind shared `globalThis`
   slots, so a level raised through one copy reaches Loggers created by another.
 
-**What does not exist yet:** sinks, formatters, configuration sources (`VPG_LOG`, browser sources,
-files), Log Records and emit methods. They arrive with sinks (#27), formatters (#28), configuration
-sources (#29), and records and emit methods (#25). A release cut before #25 ships a logger that
-configures levels but cannot emit.
+**Emitting** — a `Logger` has six emit methods. The first three take no error; the last three take
+the thrown value ahead of the attributes:
+
+```ts
+log.trace(message, attributes?);
+log.debug(message, attributes?);
+log.info(message, attributes?);
+log.warn(message, error?, attributes?);
+log.error(message, error?, attributes?);
+log.fatal(message, error?, attributes?);
+
+log.info("saved", { documentId: 7 });
+log.error("save failed", caught, { documentId: 7 });
+```
+
+A call below the level in force does nothing. One that passes the check becomes a `LogRecord`:
+`time` (epoch milliseconds with a sub-millisecond fraction), `level`, `category`, `message`,
+`attributes`, and, when the call passed one, `error`, the thrown value serialized with its whole
+`cause`/`errors` chain. The record carries the call's own attributes only.
+
+**Sinks** — a `Sink` is an object with `write(record, resource)`, where `resource` is the `Resource`
+in force when the record was emitted; that `(record, resource)` arity is part of the
+`vipengele.logger.provider.v1` protocol. `builder.addSink(sink)` adds one, and every sink receives
+every record in the order added:
+
+```ts
+const records: LogRecord[] = [];
+
+Logging.configure((b) => b.addSink({ write: (record) => records.push(record) }));
+```
+
+- **Replacement** — `configure` replaces the sinks, never appends to those of an earlier call, and
+  `Logging.reset()` drops them along with the overrides. A provider from `createProvider` owns its
+  sinks alone and shares none with the default provider.
+- **No sink** — with none configured, emit does nothing.
+- **Clock** — `builder.clock(clock)` replaces the source of `time`; the default is `systemClock`
+  from `@vipengele/ts-core-common`.
+- **A throwing sink** never reaches the caller and never stops another sink from receiving the
+  record. The failure is reported once per failing sink per record through the warn target, which
+  belongs to each copy of the package, like spec issues.
+- **A throwing clock or redaction policy** drops the record silently: no sink receives it, and the
+  caller does not see the throw.
+- **An async `write`** — a promise returned by `write` is neither awaited nor observed, so a
+  rejecting async `write` is the sink's own to handle.
+
+**Redaction** — on by default, using the `secretKeys` preset from `@vipengele/ts-core-redaction`. A
+policy is applied to `attributes` and to the `data` of every link of the error chain, when the record
+is created and before any sink sees it. `builder.redaction(policy)` replaces it and
+`builder.redaction(null)` disables it. A record's `message` and the error's `stack` are not scanned:
+a secret interpolated into a message is the caller's to keep out.
+
+**What the logger does not have:** formatters, and configuration sources (`VPG_LOG`, browser
+sources, files). A sink formats a record itself, and levels are set in code, with `configure`,
+`override` and spec strings.
 
 ## `./errors`
 
