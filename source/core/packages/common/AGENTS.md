@@ -39,5 +39,12 @@ A sub-path needs both a `tsup.config.ts` `entry` and a `package.json` `exports` 
   `DateTimeParseError`.
 - Both errors extend `VipengeleError` and are checked with `isInvalidDateTimeError` /
   `isDateTimeParseError`, never `instanceof`.
+- Each has a locale-aware `format(locale)` and a `parseLocalized`/`tryParseLocalized(str, locale)`
+  pair taking a `./locale` `Locale`; `LocalDate#segments(locale)` returns the formatted date as
+  typed `DateSegment`s (`year`, `month`, `day`, `literal`).
+- `src/types/date-time/locale-format.ts` derives each locale's numeric date and time patterns from
+  `Intl.DateTimeFormat` and caches them per `locale.tag`. Localized time is hour and minute only,
+  and a 12-hour pattern parses its day period. Parsing strips bidi marks; formatting keeps them.
+  The year is exactly four digits; month and day accept one or two.
 - `src/types/date-time/civil.ts` holds the shared civil-calendar arithmetic; `now.ts` reads the
   wall clock in the current time zone through `Intl.DateTimeFormat` and the `Clock` from `src/time/clock`.
