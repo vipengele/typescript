@@ -1,6 +1,6 @@
 # Logging is configured through a shared default provider and a builder
 
-A Logger is obtained from `Logging`, a static class (the same shape as `Numeric`), and reads its
+A Logger is obtained from `Logging`, a frozen facade object (a static-only class is forbidden by the repo's lint), and reads its
 Logger Provider's configuration on every write — never a copy taken when the Logger was created.
 Configuration is composed with a builder that starts from the defaults, and applied atomically:
 
@@ -26,7 +26,7 @@ const provider = Logging.createProvider(b => b.addLevels({ '*': 'trace' }).addSi
 
 ## One default provider per process, plus isolated providers
 
-`Logging`'s static methods act on a default `LoggerProvider` kept on `globalThis`, because the
+`Logging`'s methods act on a default `LoggerProvider` kept on `globalThis` behind the `Symbol.for('vipengele.logger.provider.v1')` slot, because the
 package is routinely loaded more than once — symlinked workspaces, a library that depends on
 `@vipengele/ts-core-observability` directly next to an app on `@vipengele/ts` — and a table each
 copy keeps for itself makes raising a level change a table nothing reads. `createProvider` returns
@@ -42,14 +42,17 @@ module-scope `Logging.logger('x')` that makes a library's logging free to add.
 The registry is split by how each part breaks across versions:
 
 - **The level table** — category to level name — is one key for every version,
-  `Symbol.for('vipengele.logger.levels')`. Its format is a public protocol that never changes
-  incompatibly; a level name a copy does not know resolves to the nearest one it does, never to
+  `Symbol.for('vipengele.logger.levels')`. Each entry is `{ level, severity }`, so a reader that
+  does not know a level name can still place it by its severity. The format is a public protocol
+  that never changes incompatibly. A change replaces the slot's table, never mutates it. A level
+  name a copy does not know resolves to the nearest one it does, never to
   "everything on". This is the switch people flip, so it must reach every copy.
 - **Sinks and provider state** are keyed by record-protocol version,
   `Symbol.for('vipengele.logger.provider.v1')`, bumped only when the Log Record's shape breaks.
   A Sink built for one shape is never handed another.
 - Each copy registers its protocol version; a copy that finds another protocol already present
-  emits one `warn` saying Sinks configured on one do not receive the other's records.
+  emits one `warn` saying Sinks configured on one do not receive the other's records. This warning
+  belongs to the sinks work (#27) and is not emitted by the level-only logger.
 
 One key for everything hands old Sinks new records. One key per package major splits the level
 table, so an application raising a level silently misses a library pinned to the other major.
