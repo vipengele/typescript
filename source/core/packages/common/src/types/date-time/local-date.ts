@@ -152,7 +152,6 @@ export class LocalDate {
 
   /** The date `days` days earlier; the inverse of {@link LocalDate.plusDays}, with its errors. */
   minusDays(days: number): LocalDate {
-    assertAmount(days);
     return this.plusDays(-days);
   }
 
@@ -174,7 +173,6 @@ export class LocalDate {
 
   /** The date `months` months earlier, clamping the day as {@link LocalDate.plusMonths} does, with its errors. */
   minusMonths(months: number): LocalDate {
-    assertAmount(months);
     return this.plusMonths(-months);
   }
 

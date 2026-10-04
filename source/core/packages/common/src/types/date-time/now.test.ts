@@ -149,6 +149,37 @@ describe("civilNow", () => {
   });
 });
 
+describe("civilNow formatter cache", () => {
+  /** The number of formatters built for an explicit zone, which `civilNow` builds once per zone. */
+  function spyOnZonedFormatters(): () => number {
+    const RealDateTimeFormat = Intl.DateTimeFormat;
+    // `civilNow` calls the spy with `new`, which an arrow function cannot answer.
+    // biome-ignore lint/complexity/useArrowFunction: the implementation must be constructible
+    const construct = function (...args: ConstructorParameters<typeof Intl.DateTimeFormat>) {
+      return Reflect.construct(RealDateTimeFormat, args);
+    };
+    const spy = vi.spyOn(Intl, "DateTimeFormat").mockImplementation(construct as unknown as typeof Intl.DateTimeFormat);
+    // `useZone` patches the prototype reached through `Intl.DateTimeFormat`, which the spy would otherwise hide.
+    Object.defineProperty(Intl.DateTimeFormat, "prototype", { value: RealDateTimeFormat.prototype });
+    return () => spy.mock.calls.filter(([, options]) => options?.timeZone !== undefined).length;
+  }
+
+  test("builds one formatter per zone and reuses it", () => {
+    const clock = clockAt("2026-10-01T12:30:00.000Z");
+    useZone("Asia/Tokyo");
+    const zonedFormatters = spyOnZonedFormatters();
+
+    civilNow(clock);
+    civilNow(clock);
+    expect(zonedFormatters()).toBe(1);
+
+    useZone("Australia/Perth");
+    civilNow(clock);
+    civilNow(clock);
+    expect(zonedFormatters()).toBe(2);
+  });
+});
+
 describe("LocalDate.now", () => {
   test("is the date in the runtime's zone", () => {
     useZone("Pacific/Auckland");
