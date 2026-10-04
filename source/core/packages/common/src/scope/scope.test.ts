@@ -43,6 +43,17 @@ describe("Scope.resource", () => {
     expect(Scope.isolated("request", { "user.id": "u-1" }, () => Scope.resource())).toEqual(outside);
     expect(outside["service.name"]).toBe(getScopeTree().root.get("service.name"));
   });
+
+  test("is frozen, so a write to it throws and leaves a later call's result unchanged", () => {
+    const first = Scope.resource();
+    const before = Scope.resource()["service.name"];
+
+    expect(Object.isFrozen(first)).toBe(true);
+    expect(() => {
+      (first as { "service.name": string | undefined })["service.name"] = "tampered";
+    }).toThrow(TypeError);
+    expect(Scope.resource()["service.name"]).toBe(before);
+  });
 });
 
 describe("Scope.propagate", () => {

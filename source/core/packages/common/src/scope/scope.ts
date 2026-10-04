@@ -48,15 +48,19 @@ function isolated<R>(tag: string, attributes: ScopeAttributes, fn: () => R): R {
   return getScopeStore().propagate(createChildScope(getScopeTree().root, tag, attributes), fn);
 }
 
-/** The Resource the root scope holds, read from the realm's one root whatever scope is current. */
+/**
+ * The Resource the root scope holds, read from the realm's one root whatever scope is current. It
+ * is frozen: the logger hands one Resource to every sink for a record, so a sink writing to it
+ * would otherwise change what the sinks after it see.
+ */
 function resource(): Resource {
   const { root } = getScopeTree();
-  return {
+  return Object.freeze({
     "service.name": root.get("service.name") as string | undefined,
     "service.version": root.get("service.version") as string | undefined,
     "deployment.environment.name": root.get("deployment.environment.name") as string | undefined,
     "process.runtime.name": root.get("process.runtime.name") as string | undefined,
-  };
+  });
 }
 
 /**

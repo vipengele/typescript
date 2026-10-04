@@ -42,9 +42,11 @@ export interface Sink {
  *
  * A policy is applied to `attributes` and to every link of the serialized error chain (`error`,
  * and each `cause` and `errors` entry beneath it), when the record is created and before any sink
- * sees it: to the `data` of a link for an `Error`, and to the fields of a structured thrown value
- * that is not an `Error`, carried as JSON text in its synthetic link's `message`. That text is
- * replaced whole when it no longer parses, as when it was cut at the serialization length bound.
+ * sees it: to the `data` and `code` of a link for an `Error`, `code` read under the key `code`,
+ * and to the fields of a structured thrown value that is not an `Error`, carried as JSON text in
+ * its synthetic link's `message`; a thrown string is read the same way when it opens with `{` or
+ * `[` after any leading whitespace and byte order mark. That text is replaced whole when it does
+ * not parse, as when it was cut at the serialization length bound.
  * The record's `message`, and the `message` and `stack` of an `Error`, are not scanned: a secret
  * interpolated into a message is the caller's to keep out.
  */

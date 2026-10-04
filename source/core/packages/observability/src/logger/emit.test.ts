@@ -278,6 +278,37 @@ describe("emitRecord redaction", () => {
     expect(record.error?.data).toEqual({ user: "[REDACTED]" });
   });
 
+  test("a policy matching code redacts the code of every link, as it does the code in data", () => {
+    const sink = collector();
+    const policy: RedactionPolicy = { keys: ["code"] };
+    const deepest = Object.assign(new Error("deepest"), { code: "E_DEEP" });
+    const member = Object.assign(new Error("member", { cause: deepest }), { code: "E_MEMBER" });
+    const error = Object.assign(new AggregateError([member], "outer"), { code: "E_OUTER" });
+
+    emitRecord(settings({ sinks: [sink], redaction: policy }), "error", "a", "m", undefined, error);
+
+    const recorded = sink.written[0]?.record.error;
+    expect(recorded?.code).toBe("[REDACTED]");
+    expect(recorded?.data).toEqual({ code: "[REDACTED]" });
+    expect(recorded?.errors?.[0]?.code).toBe("[REDACTED]");
+    expect(recorded?.errors?.[0]?.cause?.code).toBe("[REDACTED]");
+    expect(JSON.stringify(sink.written[0]?.record)).not.toMatch(/E_DEEP|E_MEMBER|E_OUTER/u);
+    expect([error.code, member.code, deepest.code]).toEqual(["E_OUTER", "E_MEMBER", "E_DEEP"]);
+  });
+
+  test("the secretKeys preset keeps an ordinary code such as ENOENT", () => {
+    const sink = collector();
+    const error = Object.assign(new Error("missing", { cause: Object.assign(new Error("inner"), { code: "EACCES" }) }), {
+      code: "ENOENT",
+    });
+
+    emitRecord(settings({ sinks: [sink], redaction: secretKeys }), "error", "a", "m", undefined, error);
+
+    const recorded = sink.written[0]?.record.error;
+    expect(recorded?.code).toBe("ENOENT");
+    expect(recorded?.cause?.code).toBe("EACCES");
+  });
+
   test("redaction leaves the markers of the bounded attributes intact", () => {
     const sink = collector();
     const wide = Object.fromEntries(Array.from({ length: 101 }, (_, index) => [`k${index}`, index]));
@@ -335,6 +366,37 @@ describe("emitRecord redaction of a thrown value that is not an Error", () => {
     });
   });
 
+  /** Text a response body read with `res.text()` can start with ahead of its JSON. */
+  const leaders = [
+    { name: "a space", leader: " " },
+    { name: "a newline", leader: "\n" },
+    { name: "a tab", leader: "\t" },
+    { name: "a byte order mark", leader: "\uFEFF" },
+    { name: "a byte order mark and whitespace", leader: "\uFEFF\r\n  " },
+  ];
+
+  describe.each(policies)("under $policy, a thrown string led by", ({ redaction, secretKey }) => {
+    test.each(leaders)("$name has its secret redacted", ({ leader }) => {
+      const sink = collector();
+      const body = JSON.stringify({ [secretKey]: SECRET, reason: "quota" });
+
+      emitRecord(settings({ sinks: [sink], redaction }), "error", "a", "m", undefined, `${leader}${body}`);
+      emitRecord(settings({ sinks: [sink], redaction }), "error", "a", "m", undefined, `${leader}[${body}]`);
+
+      expect(JSON.stringify(sink.written[0]?.record)).not.toContain(SECRET);
+      expect(sink.written[0]?.record.error?.message).toBe(`{"${secretKey}":"[REDACTED]","reason":"quota"}`);
+      expect(JSON.stringify(sink.written[1]?.record)).not.toContain(SECRET);
+    });
+  });
+
+  test("structured text after leading whitespace that does not parse is replaced whole", () => {
+    const sink = collector();
+
+    emitRecord(settings({ sinks: [sink], redaction: secretKeys }), "error", "a", "m", undefined, '\uFEFF {"password":"p0"');
+
+    expect(sink.written[0]?.record.error?.message).toBe("[REDACTED: unparseable structured value]");
+  });
+
   test("the fields a policy does not match survive, at the top level and down the chain", () => {
     const sink = collector();
     const aggregate = new AggregateError([{ token: "t1", id: 7 }], "many", { cause: { password: "p1", reason: "quota" } });
@@ -352,7 +414,7 @@ describe("emitRecord redaction of a thrown value that is not an Error", () => {
     const sink = collector();
     const cut = { password: "p0", blob: "x".repeat(9000) };
 
-    for (const thrown of [cut, [cut], "{ not json", "plain failure", 42, null]) {
+    for (const thrown of [cut, [cut], "{ not json", "plain failure", "  padded failure", 42, null]) {
       emitRecord(settings({ sinks: [sink], redaction: secretKeys }), "error", "a", "m", undefined, thrown);
     }
 
@@ -361,6 +423,7 @@ describe("emitRecord redaction of a thrown value that is not an Error", () => {
       "[REDACTED: unparseable structured value]",
       "[REDACTED: unparseable structured value]",
       "plain failure",
+      "  padded failure",
       "42",
       "null",
     ]);

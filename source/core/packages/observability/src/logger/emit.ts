@@ -24,10 +24,11 @@ const UNBOUNDED: RedactOptions = {
 
 /**
  * `redact` returns `unknown`. It copies a plain object as a plain object and only ever replaces
- * values, never keys, so the copy of an `Attributes` is an `Attributes` again.
+ * values, never keys, so the copy of an `Attributes` has the keys it was given, each holding its
+ * value or the policy's replacement — a string unless the policy supplies a replacement function.
  */
-function redactAttributes(attributes: Attributes, policy: RedactionPolicy): Attributes {
-  return redact(attributes, policy, UNBOUNDED) as Attributes;
+function redactAttributes<T extends Attributes>(attributes: T, policy: RedactionPolicy): T {
+  return redact(attributes, policy, UNBOUNDED) as T;
 }
 
 /**
@@ -39,17 +40,21 @@ const UNSCANNABLE = "[REDACTED: unparseable structured value]";
 
 /**
  * The `message` of a synthetic link: the thrown value as it is when it was a string, its JSON
- * text otherwise. Text that opens an object or an array is parsed, redacted and written back as
- * JSON, or replaced whole by {@link UNSCANNABLE} when it does not parse; any other text — a
- * thrown string, number, boolean or `null` — has no keys a policy could match and is kept.
+ * text otherwise. Text that opens an object or an array once leading whitespace and a byte order
+ * mark are skipped — a response body read as text often starts with either — is parsed without
+ * them, redacted and written back as JSON, or replaced whole by {@link UNSCANNABLE} when it does
+ * not parse; any other text — a thrown string, number, boolean or `null` — has no keys a policy
+ * could match and is kept.
  */
 function redactSyntheticMessage(message: string, policy: RedactionPolicy): string {
-  if (!(message.startsWith("{") || message.startsWith("["))) {
+  // `trimStart` strips U+FEFF along with whitespace, and `JSON.parse` rejects a leading U+FEFF.
+  const text = message.trimStart();
+  if (!(text.startsWith("{") || text.startsWith("["))) {
     return message;
   }
   let parsed: unknown;
   try {
-    parsed = JSON.parse(message);
+    parsed = JSON.parse(text);
   } catch {
     return UNSCANNABLE;
   }
@@ -57,13 +62,17 @@ function redactSyntheticMessage(message: string, policy: RedactionPolicy): strin
 }
 
 /**
- * A copy of `error` whose `data`, and that of every `cause` and `errors` entry beneath it, is
- * redacted, as is the `message` of every synthetic link: a thrown value that is not an `Error`
- * carries its fields in that message, not in `data`. The `message` and `stack` of a real error
- * are kept as they are.
+ * A copy of `error` whose `data` and `code`, and those of every `cause` and `errors` entry beneath
+ * it, are redacted, as is the `message` of every synthetic link: a thrown value that is not an
+ * `Error` carries its fields in that message, not in `data`. `code` is passed through the policy
+ * under the key `code`, as it is in `data`, so a policy matching that key leaves it in clear
+ * nowhere. The `message` and `stack` of a real error are kept as they are.
  */
 function redactError(error: SerializedError, policy: RedactionPolicy): SerializedError {
   const redacted: SerializedError = { ...error };
+  if (error.code !== undefined) {
+    redacted.code = redactAttributes({ code: error.code }, policy).code;
+  }
   if (error.synthetic === true) {
     redacted.message = redactSyntheticMessage(error.message, policy);
   }
