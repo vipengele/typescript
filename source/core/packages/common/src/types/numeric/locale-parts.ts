@@ -1,3 +1,5 @@
+import { Locale } from "../../locale";
+
 /**
  * The characters a locale spells a number with: the group separator, the decimal separator and
  * the minus sign.
@@ -19,14 +21,12 @@ export interface LocaleParts {
 const REPRESENTATIVE_VALUE = -12345678.9;
 
 /**
- * Keyed by locale exactly as passed, `undefined` included as its own key. `""` is itself a
- * locale argument — an invalid one, which `Intl.NumberFormat` rejects — so it cannot share a key
- * with the omitted case without a call missing its `RangeError`. A locale's separator characters
- * don't change within a single process — only ICU version affects them, and that's fixed for the
- * process's lifetime — so caching here avoids building an `Intl.NumberFormat` on every
- * `format`/`parse` call.
+ * Keyed by `Locale#tag`, so two `Locale` instances for the same canonical tag share one entry. A
+ * locale's separator characters don't change within a single process — only ICU version affects
+ * them, and that's fixed for the process's lifetime — so caching here avoids building an
+ * `Intl.NumberFormat` on every `format`/`parse` call.
  */
-const CACHE = new Map<string | undefined, LocaleParts>();
+const CACHE = new Map<string, LocaleParts>();
 
 /**
  * Reads a locale's separator characters out of the runtime's own CLDR data.
@@ -41,15 +41,16 @@ const CACHE = new Map<string | undefined, LocaleParts>();
  * Part types other than the three read here are ignored, which matters for `ar-EG` and `fa-IR`:
  * they prefix the output with a `literal` part holding U+200E.
  *
- * @throws {RangeError} when `locale` is not a structurally valid BCP 47 language tag.
+ * An omitted `locale` reads `Locale.default()` on every call, so a change to the runtime's own
+ * locale is observed.
  */
-export function resolveLocaleParts(locale?: string): LocaleParts {
-  const cached = CACHE.get(locale);
+export function resolveLocaleParts(locale: Locale = Locale.default()): LocaleParts {
+  const cached = CACHE.get(locale.tag);
   if (cached !== undefined) {
     return cached;
   }
 
-  const parts = new Intl.NumberFormat(locale, {
+  const parts = new Intl.NumberFormat(locale.tag, {
     numberingSystem: "latn",
     maximumFractionDigits: 1,
   }).formatToParts(REPRESENTATIVE_VALUE);
@@ -69,6 +70,6 @@ export function resolveLocaleParts(locale?: string): LocaleParts {
   }
 
   const resolved = { group, decimal, minus };
-  CACHE.set(locale, resolved);
+  CACHE.set(locale.tag, resolved);
   return resolved;
 }
