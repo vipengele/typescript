@@ -2,28 +2,33 @@ import type { Detector } from "./key-matcher";
 
 /**
  * Built-in value detectors for common secret and personal-data shapes. A scanned value is
- * attacker-controlled, so every quantifier is length-bounded and no two adjacent quantifiers can
- * consume the same character in more than a bounded number of ways: the cost of a scan grows with
- * the value's length times a fixed per-position bound, never exponentially. Patterns carry no `g`
- * or `y` flag; the detector engine makes its own global copy of each.
+ * attacker-controlled, so every pattern costs time linear in the value's length. A quantifier is
+ * either length-bounded, or unbounded over a single character class that a literal separator or the
+ * end of its run terminates, behind a leading anchor (a lookbehind or a word boundary) that rejects a
+ * start position inside that run in constant time, so a run is scanned from a bounded number of start
+ * positions. No two adjacent quantifiers can consume the same character in more than a bounded number
+ * of ways. Patterns carry no `g` or `y` flag; the detector engine makes its own global copy of each.
  */
 
 /**
  * A JSON Web Token: three base64url segments joined by dots, the header starting `eyJ` (the
- * encoding of `{"`). The signature may be empty, as in an unsecured token. A segment past its bound
- * is matched up to the bound, so an oversized token is still mostly covered.
+ * encoding of `{"`). The signature may be empty, as in an unsecured token. No segment has a length
+ * bound, so a token with oversized claims is covered to the end of its signature run rather than
+ * missed: a bound would make a longer segment fail to reach its dot and the whole token go unmatched.
  */
 export const jwt: Detector = Object.freeze({
-  pattern: /(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{1,4096}\.[A-Za-z0-9_-]{1,8192}\.[A-Za-z0-9_-]{0,4096}/,
+  pattern: /(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*/,
 });
 
 /**
  * An `Authorization: Bearer` credential, scheme word included, so the span reveals neither the token
  * nor that a bearer token sat there. The token is RFC 6750's `b64token`: URL-safe and standard
- * base64 characters plus `-._~+/`, then trailing `=` padding.
+ * base64 characters plus `-._~+/`, then trailing `=` padding. The token has no length bound, so the
+ * span runs to the end of the b64token run however long it is, and no tail of a long credential is
+ * kept.
  */
 export const bearerToken: Detector = Object.freeze({
-  pattern: /\bBearer[ \t]{1,16}[A-Za-z0-9\-._~+/]{1,4096}={0,8}/i,
+  pattern: /\bBearer[ \t]{1,16}[A-Za-z0-9\-._~+/]+=*/i,
 });
 
 /** Whether `candidate`'s digits, separators ignored, pass the Luhn checksum every card number carries. */
@@ -44,13 +49,18 @@ function passesLuhn(candidate: string): boolean {
 }
 
 /**
- * A payment card number: 13 to 19 digits, with at most one space or hyphen between any two of them,
- * accepted only when it passes the Luhn checksum. The whole digit run has to be the candidate — a
- * digit, or a separator and a digit, on either side rules it out — so a longer run such as an order
- * id is never redacted piecemeal.
+ * A payment card number, accepted only when it passes the Luhn checksum: 13 to 19 contiguous digits,
+ * or a standard grouping with one separator, a space or a hyphen, used throughout — 4-4-4 then 1 to 7
+ * digits, or Amex's 4-6-5. The candidate cannot touch another digit on either side, so a longer
+ * contiguous run such as an order id is never redacted piecemeal, but a separator and digits may
+ * follow it: a CVV or an expiry date written after the number (`4111 1111 1111 1111 123`,
+ * `4111111111111111 12/25`) is left out of the candidate, which then passes Luhn on the card number
+ * alone. The cost is that a longer grouped number is read by its leading groups: when the first 13
+ * to 19 of its digits happen to pass Luhn, that prefix is redacted. A card number written in any
+ * other grouping, or with mixed separators, is not matched.
  */
 export const creditCard: Detector = Object.freeze({
-  pattern: /(?<!\d[ -]?)\d(?:[ -]?\d){12,18}(?![ -]?\d)/,
+  pattern: /(?<!\d)(?:\d{13,19}|\d{4}([ -])\d{4}\1\d{4}\1\d{1,7}|\d{4}([ -])\d{6}\2\d{5})(?!\d)/,
   validate: passesLuhn,
 });
 

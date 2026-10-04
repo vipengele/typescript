@@ -50,8 +50,10 @@ value that is not a string is converted with `String()`, since it is spliced int
 
 The scan reads the whole string and `maxStringLength` then cuts the result. A secret that straddles
 the cutoff is matched in full and replaced, so no prefix of it survives. The cost is that, with
-detectors on, the work per string is no longer bounded by the characters kept. The built-ins use
-length-bounded quantifiers so a hostile string cannot make them backtrack without limit. A pattern
+detectors on, the work per string is no longer bounded by the characters kept. Each built-in is
+anchored so its cost is linear in the string's length and a hostile string cannot make it backtrack
+without limit; a token pattern has no length bound, so an oversized token is covered whole rather
+than missed or cut short. A pattern
 a caller supplies is a trust boundary: its cost is the caller's to bound.
 
 ## `Detector` is an open type

@@ -25,6 +25,11 @@ describe("jwt", () => {
     expect(matches(jwt, "abc.def.ghi")).toEqual([]);
     expect(matches(jwt, `x${JWT}`)).toEqual([]);
   });
+
+  test("covers a token with segments of any length to the end of its signature", () => {
+    const token = `eyJ${"h".repeat(5000)}.${"p".repeat(20_000)}.${"s".repeat(5000)}`;
+    expect(matches(jwt, `token=${token}; path=/`)).toEqual([token]);
+  });
 });
 
 describe("bearerToken", () => {
@@ -36,6 +41,11 @@ describe("bearerToken", () => {
 
   test("the token stops at a character outside b64token", () => {
     expect(matches(bearerToken, "Bearer abc, next")).toEqual(["Bearer abc"]);
+  });
+
+  test("covers a token of any length to the end of its run, padding included", () => {
+    const credential = `Bearer ${"a".repeat(10_000)}==`;
+    expect(matches(bearerToken, `${credential} next`)).toEqual([credential]);
   });
 
   test("ignores a scheme with no token, other schemes, and Bearer inside a longer word", () => {
@@ -52,10 +62,33 @@ describe("creditCard", () => {
     }
   });
 
-  test("matches Luhn-valid numbers separated by single spaces or hyphens", () => {
+  test("matches Luhn-valid numbers in 4-4-4-N and Amex 4-6-5 groupings with one separator", () => {
     expect(matches(creditCard, "pay 4111 1111 1111 1111 now")).toEqual(["4111 1111 1111 1111"]);
     expect(matches(creditCard, "pay 5500-0000-0000-0004 now")).toEqual(["5500-0000-0000-0004"]);
+    expect(matches(creditCard, "pay 4222 2222 2222 2 now")).toEqual(["4222 2222 2222 2"]);
+    expect(matches(creditCard, "pay 0004-1111-1111-1111111 now")).toEqual(["0004-1111-1111-1111111"]);
     expect(matches(creditCard, "pay 3782 822463 10005 now")).toEqual(["3782 822463 10005"]);
+    expect(matches(creditCard, "pay 3782-822463-10005 now")).toEqual(["3782-822463-10005"]);
+  });
+
+  test("a CVV or expiry date after the number is left out of the span", () => {
+    expect(matches(creditCard, "4111 1111 1111 1111 123")).toEqual(["4111 1111 1111 1111"]);
+    expect(matches(creditCard, "4111111111111111 123")).toEqual(["4111111111111111"]);
+    expect(matches(creditCard, "4111 1111 1111 1111 12/25")).toEqual(["4111 1111 1111 1111"]);
+    expect(matches(creditCard, "4111111111111111 12/25")).toEqual(["4111111111111111"]);
+    expect(matches(creditCard, "4111-1111-1111-1111-123")).toEqual(["4111-1111-1111-1111"]);
+    expect(matches(creditCard, "3782 822463 10005 1234")).toEqual(["3782 822463 10005"]);
+  });
+
+  test("ignores other groupings and mixed separators", () => {
+    expect(matches(creditCard, "4111 11111111 1111")).toEqual([]);
+    expect(matches(creditCard, "4111-1111 1111-1111")).toEqual([]);
+    expect(matches(creditCard, "3782 822463-10005")).toEqual([]);
+  });
+
+  test("a longer grouped number is read by its leading groups", () => {
+    expect(matches(creditCard, "id 4111 1111 1111 1111 1111 1111")).toEqual(["4111 1111 1111 1111"]);
+    expect(matches(creditCard, "id 0000 4111 1111 1111 1111")).toEqual([]);
   });
 
   test("leaves Luhn-failing digit runs untouched", () => {
@@ -68,11 +101,11 @@ describe("creditCard", () => {
   test("leaves digit runs shorter than 13 or longer than 19 untouched, even when Luhn-valid", () => {
     expect(matches(creditCard, "id 000000000000")).toEqual([]);
     expect(matches(creditCard, "id 00004111111111111111")).toEqual([]);
-    expect(matches(creditCard, "id 0000 4111 1111 1111 1111")).toEqual([]);
+    expect(matches(creditCard, "id 41111111111111111111111111")).toEqual([]);
     expect(matches(creditCard, `id ${"0".repeat(40)}`)).toEqual([]);
   });
 
-  test("double separators split a run into separate candidates", () => {
+  test("a double separator ends a grouping", () => {
     expect(matches(creditCard, "4111111111111111  4111111111111111")).toEqual(["4111111111111111", "4111111111111111"]);
     expect(matches(creditCard, "4111 1111--1111 1111")).toEqual([]);
   });
@@ -187,9 +220,10 @@ describe("valueDetectors", () => {
   });
 });
 
-// Each fixture is large enough that an unbounded or nested-quantifier pattern would backtrack for
-// an impractically long time; the assertions are on the spans found, never on elapsed time.
-describe("pathological inputs complete with bounded results", () => {
+// Each fixture is large enough that a pattern costing more than linear time in the value's length
+// would run for an impractically long time; the assertions are on the spans found, never on elapsed
+// time.
+describe("pathological inputs complete with the expected spans", () => {
   const size = 50_000;
 
   test.each([
@@ -201,12 +235,21 @@ describe("pathological inputs complete with bounded results", () => {
     ["a long run of hyphenated label characters", `a@${"a-".repeat(size)}`, 0],
     ["eyJ followed by dots", `eyJ${".".repeat(size)}`, 0],
     ["a long base64url run with no dots", `eyJ${"a".repeat(size)}`, 0],
+    ["a header then a long payload run with no second dot", `eyJa.${"b".repeat(size)}`, 0],
+    ["a header then a long payload run then a dot", `eyJa.${"b".repeat(size)}.`, 1],
     ["repeated eyJ headers", "eyJ".repeat(size), 0],
+    ["repeated eyJ headers each followed by a dot", "eyJ.".repeat(size / 4), 0],
+    ["repeated one-character segments, three to a token", "eyJa.".repeat(9999), 3333],
+    ["repeated two-segment strings separated by spaces", "eyJa.b ".repeat(size / 7), 0],
     ["a long digit run", "4".repeat(size), 0],
     ["alternating digits and spaces", "4 ".repeat(size), 0],
     ["alternating digits and hyphens", "4-".repeat(size), 0],
+    ["repeated Luhn-failing four-digit groups", "4111 ".repeat(size / 5), 0],
     ["Bearer followed by spaces", `Bearer${" ".repeat(size)}`, 0],
     ["a long b64token run", `Bearer ${"a".repeat(size)}`, 1],
+    ["a short token then alternating characters and spaces", `Bearer ${"a ".repeat(size / 2)}`, 1],
+    ["a long run of padding", `Bearer a${"=".repeat(size)}`, 1],
+    ["repeated Bearer schemes, each taking the next as its token", "Bearer ".repeat(7000), 3500],
     ["a long uppercase run", `AKIA${"A".repeat(size)}`, 0],
     ["a long ghp_ run", `ghp_${"a".repeat(size)}`, 0],
     ["a long github_pat_ run", `github_pat_${"_".repeat(size)}`, 0],

@@ -193,18 +193,24 @@ redact("shipped ORD-12345678", composePolicies(secretKeys, { keys: [], detectors
 
 Each is exported from the package root.
 
-| Detector       | Matches                                                                                     |
-| -------------- | ------------------------------------------------------------------------------------------- |
-| `jwt`          | A JSON Web Token.                                                                           |
-| `bearerToken`  | A `Bearer` token; the span includes the `Bearer` scheme.                                    |
-| `creditCard`   | 13 to 19 digits with optional single space or hyphen separators, validated with the Luhn check. |
-| `email`        | An email address.                                                                           |
-| `awsAccessKey` | An AWS access key ID.                                                                       |
-| `githubToken`  | A GitHub token.                                                                             |
-| `stripeKey`    | A Stripe secret or restricted key; publishable keys are not matched.                        |
+| Detector       | Matches                                                                                                                        |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `jwt`          | A JSON Web Token, to the end of its signature however long its segments are.                                                   |
+| `bearerToken`  | A `Bearer` token, to the end of the token however long; the span includes the `Bearer` scheme.                                 |
+| `creditCard`   | 13 to 19 contiguous digits, or 4-4-4-N or Amex 4-6-5 groups with one space or hyphen separator, validated with the Luhn check. |
+| `email`        | An email address.                                                                                                              |
+| `awsAccessKey` | An AWS access key ID.                                                                                                          |
+| `githubToken`  | A GitHub token.                                                                                                                |
+| `stripeKey`    | A Stripe secret or restricted key; publishable keys are not matched.                                                           |
 
-`valueDetectors` is a frozen array bundling all seven. The built-in patterns use length-bounded
-quantifiers, so none backtracks catastrophically.
+`valueDetectors` is a frozen array bundling all seven. Each built-in pattern costs time linear in
+the string's length: an unbounded quantifier repeats one character class behind a leading anchor
+that rejects a start position inside the run at once, and every other quantifier is length-bounded.
+
+`creditCard` leaves a CVV or an expiry date written after the number (`4111 1111 1111 1111 123`)
+out of the candidate, so the card number is still checked and redacted on its own. A longer grouped
+number is read by its leading groups instead: when its first 13 to 19 digits happen to pass the
+Luhn check, that prefix is redacted and the rest kept.
 
 ### What is scanned
 
@@ -495,7 +501,7 @@ stack depth grows with the input's depth.
   validated for catastrophic backtracking or cost, and detectors scan a string in full before it is
   cut. Build a policy from patterns and functions you wrote or reviewed, the same way you would
   trust any other code compiled into your program; do not construct one from a pattern string an
-  untrusted caller supplied. The built-in detectors use length-bounded quantifiers.
+  untrusted caller supplied. The built-in detectors cost time linear in the string's length.
 - **`Map` key-matching only applies to string keys.** A `Map` entry whose key is not a string is
   never tested against the policy, and the key itself is carried into the output by reference,
   unredacted — its value is still walked and redacted recursively, but sensitive data held on an
