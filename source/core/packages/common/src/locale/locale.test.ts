@@ -1,0 +1,118 @@
+import { afterEach, describe, expect, test, vi } from "vitest";
+import { Locale } from "./index";
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
+describe("construction", () => {
+  test("keeps a valid tag", () => {
+    expect(new Locale("sv-SE").tag).toBe("sv-SE");
+  });
+
+  test("canonicalizes the tag's case", () => {
+    expect(new Locale("EN-us").tag).toBe("en-US");
+  });
+
+  test.each(["", "not a tag", "en_US"])("rejects %j with a RangeError", (tag) => {
+    expect(() => new Locale(tag)).toThrow(RangeError);
+  });
+});
+
+describe("Locale.default", () => {
+  test("wraps the runtime's resolved locale", () => {
+    const resolved = new Intl.DateTimeFormat().resolvedOptions().locale;
+
+    expect(Locale.default().tag).toBe(resolved);
+  });
+
+  test("reads the runtime locale on every call", () => {
+    const spy = vi
+      .spyOn(Intl.DateTimeFormat.prototype, "resolvedOptions")
+      .mockReturnValueOnce({ locale: "de-DE" } as Intl.ResolvedDateTimeFormatOptions)
+      .mockReturnValueOnce({ locale: "ja-JP" } as Intl.ResolvedDateTimeFormatOptions);
+
+    expect(Locale.default().tag).toBe("de-DE");
+    expect(Locale.default().tag).toBe("ja-JP");
+    expect(spy).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("hour cycle", () => {
+  test("en-US is a 12-hour locale", () => {
+    const locale = new Locale("en-US");
+
+    expect(["h11", "h12"]).toContain(locale.hourCycle);
+    expect(locale.uses24Hour).toBe(false);
+  });
+
+  test("de-DE is a 24-hour locale", () => {
+    const locale = new Locale("de-DE");
+
+    expect(["h23", "h24"]).toContain(locale.hourCycle);
+    expect(locale.uses24Hour).toBe(true);
+  });
+
+  test("an explicit hour-cycle extension is honoured", () => {
+    expect(new Locale("en-US-u-hc-h23").uses24Hour).toBe(true);
+    expect(new Locale("de-DE-u-hc-h12").uses24Hour).toBe(false);
+  });
+
+  test.each([
+    ["h11", false],
+    ["h12", false],
+    ["h23", true],
+    ["h24", true],
+  ] as const)("%s maps to uses24Hour %s", (hourCycle, expected) => {
+    vi.spyOn(Intl.DateTimeFormat.prototype, "resolvedOptions").mockReturnValue({
+      hourCycle,
+    } as Intl.ResolvedDateTimeFormatOptions);
+
+    expect(new Locale("en-US").uses24Hour).toBe(expected);
+  });
+});
+
+describe("monthNames", () => {
+  test("lists January through December in English", () => {
+    const names = new Locale("en-US").monthNames("long");
+
+    expect(names).toHaveLength(12);
+    expect(names[0]).toBe("January");
+    expect(names[11]).toBe("December");
+  });
+
+  test("short style abbreviates", () => {
+    expect(new Locale("en-US").monthNames("short").slice(0, 3)).toEqual(["Jan", "Feb", "Mar"]);
+  });
+
+  test("narrow style is a single letter in English", () => {
+    expect(new Locale("en-US").monthNames("narrow")[0]).toBe("J");
+  });
+
+  test("names follow the locale", () => {
+    expect(new Locale("fr-FR").monthNames("long")[1]).toBe("février");
+  });
+});
+
+describe("weekdayNames", () => {
+  test("starts on Monday and ends on Sunday regardless of locale", () => {
+    const en = new Locale("en-US").weekdayNames("long");
+    const ar = new Locale("ar-EG").weekdayNames("long");
+
+    expect(en).toEqual(["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]);
+    expect(ar).toHaveLength(7);
+    expect(ar[0]).not.toBe(en[0]);
+  });
+
+  test("short style abbreviates", () => {
+    expect(new Locale("en-US").weekdayNames("short")).toEqual(["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]);
+  });
+
+  test("narrow style is a single letter in English", () => {
+    expect(new Locale("en-US").weekdayNames("narrow")[0]).toBe("M");
+  });
+
+  test("names follow the locale", () => {
+    expect(new Locale("de-DE").weekdayNames("long")[0]).toBe("Montag");
+  });
+});
