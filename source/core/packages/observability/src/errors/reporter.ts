@@ -1,6 +1,7 @@
 import type { AttributesInput, Level } from "@vipengele/ts-core-common";
 import { ReporterBuilder } from "./builder";
 import type { Mechanism } from "./event";
+import { setupIntegrations } from "./integration";
 import { createCapture } from "./pipeline";
 
 /** What {@link Reporter.captureException} accepts beside the error itself. */
@@ -22,7 +23,10 @@ export interface Reporter {
   captureMessage(message: string, level?: Level): string;
   /** Delegates to the transport's `flush`; resolves `true` when there is no transport. */
   flush(timeoutMs?: number): Promise<boolean>;
-  /** Delegates to the transport's `close`; resolves `true` when there is no transport. */
+  /**
+   * Removes every integration, once, then delegates to the transport's `close`; resolves `true`
+   * when there is no transport.
+   */
   close(timeoutMs?: number): Promise<boolean>;
 }
 
@@ -31,13 +35,22 @@ const CAPTURED: Mechanism = { handled: true, source: "capture" };
 
 /**
  * Creates a {@link Reporter} from a builder that starts from the defaults — no transport, the
- * high-resolution epoch clock — and that `configure` adds to. Creating one installs nothing: every
- * piece of state lives in the returned object.
+ * high-resolution epoch clock, no integrations — and that `configure` adds to. Without
+ * integrations, creating one installs nothing: every piece of state lives in the returned object.
+ * Each integration is set up here, and whatever global state it installs belongs to the reporter
+ * until `close()` removes it.
  */
 export function createReporter(configure?: (builder: ReporterBuilder) => ReporterBuilder): Reporter {
   const initial = new ReporterBuilder();
-  const { transport, clock } = (configure === undefined ? initial : configure(initial)).build();
+  const { transport, clock, integrations } = (configure === undefined ? initial : configure(initial)).build();
   const capture = createCapture({ clock, transport, processors: [], filters: [] });
+  const flush = async (timeoutMs?: number): Promise<boolean> => (transport === undefined ? true : transport.flush(timeoutMs));
+  const teardown = setupIntegrations(integrations, {
+    capture(error, { mechanism, level, attributes }) {
+      return capture({ kind: "exception", error, level, attributes }, { ...mechanism });
+    },
+    flush,
+  });
 
   return {
     captureException(error, context) {
@@ -46,10 +59,9 @@ export function createReporter(configure?: (builder: ReporterBuilder) => Reporte
     captureMessage(message, level) {
       return capture({ kind: "message", message, level }, { ...CAPTURED });
     },
-    async flush(timeoutMs) {
-      return transport === undefined ? true : transport.flush(timeoutMs);
-    },
+    flush,
     async close(timeoutMs) {
+      teardown();
       return transport === undefined ? true : transport.close(timeoutMs);
     },
   };
