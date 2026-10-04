@@ -1,6 +1,11 @@
 export { redact } from "./redact";
 export { secretKeys } from "./secret-keys";
 export { composePolicies } from "./compose-policies";
+export { redactUrl } from "./url";
+export { redactQueryString } from "./query-string";
+export { redactHeaders } from "./headers";
 export type { RedactionPolicy, KeyMatcher } from "./key-matcher";
 export type { RedactOptions } from "./redact";
 export type { Replacement } from "./replacement";
+export type { RedactStringOptions } from "./query-string";
+export type { HeaderRecord, HeaderTuples } from "./headers";

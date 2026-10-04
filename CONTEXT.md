@@ -63,7 +63,7 @@ A dotted name (`services.editing`) identifying where a record comes from. Levels
 category prefix, and the longest matching prefix wins.
 
 **Log Record**:
-One structured log entry: timestamp, level, category, message, attributes and optionally an error.
+One structured log entry: time, level, category, message, attributes and optionally an error.
 _Avoid_: line, log line (a record is not text until a formatter makes it so)
 
 **Sink**:
@@ -79,6 +79,18 @@ One captured error after normalization and enrichment: the exception chain with 
 frames, its mechanism (handled or unhandled, and what caught it), its scope's context and its
 breadcrumbs.
 _Avoid_: exception (that is one link of the chain), issue (a grouping on the backend)
+
+**Frame**:
+One parsed entry of an Error Event's exception stack: a function, a file, a line and a column, each
+present only when the engine reported it. Frames are ordered as the engine prints them, so the
+first is the throw site.
+_Avoid_: stack line (a frame is parsed, not text), call site
+
+**In-app**:
+Describes a Frame that is the application's own code, as opposed to a dependency, a runtime builtin
+or a file the engine did not name. Which code counts as the application's is configured per Reporter
+by its project root; with none set, every Frame that is not a dependency or a builtin is in-app.
+_Avoid_: first-party, user code
 
 **Runtime identity**:
 The family `detectRuntime` from `@vipengele/ts-core-common/runtime` reports code is executing in:

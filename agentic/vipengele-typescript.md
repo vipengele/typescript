@@ -32,7 +32,8 @@ Error Event, Scope, Breadcrumb, Transport) before naming things.
     (`current`/`propagate`/`inherit`/`isolated`/`useCarrier`), the ambient context tree the logger
     and the error reporter both read attributes from, built on `./context`'s store; its root holds
     the four reserved `Resource` keys (`service.name`, `service.version`,
-    `deployment.environment.name`, `process.runtime.name`), and `@isolatedScope`/`@scoped` wrap a
+    `deployment.environment.name`, `process.runtime.name`) and which `Scope.resource()` reads back as a
+    `Resource`, the value handed to every Sink; `@isolatedScope`/`@scoped` wrap a
     method body in `Scope.isolated`/`Scope.inherit` under either decorator dialect
     (`agentic/rules/method-decorator-supports-both-dialects.md`, ADR-0006). `./serialization`'s
     `serializeError` is the one place a thrown value's whole `cause`/`errors` chain is walked into
@@ -41,7 +42,10 @@ Error Event, Scope, Breadcrumb, Transport) before naming things.
     root, not a sub-path, since every package that logs or reports needs them.
   - `packages/redaction` — `@vipengele/ts-core-redaction`: the reusable redaction library. A `RedactionPolicy` matches keys by exact string, regex or
     `{ segments }` (word-segment match), carves exceptions out with `except`, and composes through
-    `composePolicies`; `secretKeys` is the frozen preset (ADR-0011).
+    `composePolicies`; `secretKeys` is the frozen preset (ADR-0011). `redactUrl`,
+    `redactQueryString` and `redactHeaders` redact secrets in transit — they read a URL or query
+    string as text and a header list by name, always replace URL userinfo, and replace a matched
+    header's whole value (ADR-0012).
   - `packages/observability` — `@vipengele/ts-core-observability`: the logger (`./logger`) and the
     error reporter (`./errors`), two entry points of one package. `./logger`'s `Logging` facade
     configures the default `LoggerProvider` through a layered builder or a spec string
@@ -49,7 +53,11 @@ Error Event, Scope, Breadcrumb, Transport) before naming things.
     throws `LoggingConfigError`); the level table and the default provider live in two
     `globalThis` slots (`vipengele.logger.levels`, `vipengele.logger.provider.v1`) so every
     resolved copy of the package agrees (ADR-0005), and a category with nothing configured
-    resolves to `warn`. `./errors`'s `createReporter`
+    resolves to `warn`. A `Logger`'s `trace`..`fatal` calls that pass the level check build a
+    `LogRecord` (attributes normalized, errors through `serializeError`, both redacted with
+    `secretKeys` unless the builder's `redaction` says otherwise) and write it with the Resource to
+    every `Sink` the builder's `addSink` added, `clock` supplying `time`; a throwing sink goes to
+    the provider's `onSinkError` and never reaches the caller (ADR-0007, ADR-0011). `./errors`'s `createReporter`
     builds a `Reporter` from a `ReporterBuilder`; `captureException`/`captureMessage` run every
     event through a five-stage pipeline (normalize, enrich, processors, filter, transport) and hand
     the survivor to a `Transport`, the fire-and-forget delivery contract (ADR-0010;
@@ -61,8 +69,9 @@ Error Event, Scope, Breadcrumb, Transport) before naming things.
   depends on `@vipengele/ts-core-common` and `@vipengele/ts-core-redaction` — a pin plus a
   `link:` override in its `pnpm-workspace.yaml` for each (ADR-0009) — and re-exports `Numeric`
   from `@vipengele/ts-core-common`'s `./types/numeric` sub-path, `Locale` (with `HourCycle`,
-  `IsoWeekday`, `NameStyle`) from its `./locale` sub-path, and `redact`, `secretKeys` and
-  `composePolicies` (with `RedactionPolicy`, `KeyMatcher`, `RedactOptions`, `Replacement`) from
+  `IsoWeekday`, `NameStyle`) from its `./locale` sub-path, and `redact`, `secretKeys`,
+  `composePolicies`, `redactUrl`, `redactQueryString` and `redactHeaders` (with `RedactionPolicy`,
+  `KeyMatcher`, `RedactOptions`, `RedactStringOptions`, `Replacement`) from
   `@vipengele/ts-core-redaction`.
 - A sub-path of `@vipengele/ts-core-common` needs both a `tsup.config.ts` entry and a
   `package.json` `exports` key; `src/package-exports.test.ts` fails when either is missing.

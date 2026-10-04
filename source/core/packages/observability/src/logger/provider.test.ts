@@ -1,9 +1,15 @@
-import type { Threshold } from "@vipengele/ts-core-common";
+import { systemClock, type Threshold } from "@vipengele/ts-core-common";
+import type { Resource } from "@vipengele/ts-core-common/scope";
+import { secretKeys } from "@vipengele/ts-core-redaction";
 import { describe, expect, test, vi } from "vitest";
 import { isLoggingConfigError } from "./config-error";
 import { entryFor } from "./levels";
+import { createLogger, type Logger } from "./logger";
 import { createLoggerProvider } from "./provider";
+import type { EmitSettings, Sink } from "./record";
 import type { LoggingSettings } from "./settings";
+
+vi.mock("./logger", { spy: true });
 
 const LEVELS_SLOT = Symbol.for("vipengele.logger.levels");
 const PROVIDER_SLOT = Symbol.for("vipengele.logger.provider.v1");
@@ -17,6 +23,16 @@ function layersOf(settings: LoggingSettings): Record<string, Record<string, Thre
     builder: { ...settings.layers.builder },
     overrides: { ...settings.layers.overrides },
   };
+}
+
+function sink(): Sink {
+  return { write: () => {} };
+}
+
+/** The emit settings getter the provider handed to `createLogger` when it made `logger`. */
+function emitOf(logger: Logger): () => EmitSettings {
+  const index = vi.mocked(createLogger).mock.results.findIndex((result) => result.value === logger);
+  return vi.mocked(createLogger).mock.calls[index]?.[2] as () => EmitSettings;
 }
 
 describe("createLoggerProvider", () => {
@@ -339,5 +355,180 @@ describe("snapshots", () => {
     provider.configure((b) => b.addSpec("bad"));
 
     expect(order).toEqual(["publish", "issues"]);
+  });
+});
+
+describe("sinks, clock and redaction", () => {
+  test("a provider starts with no sinks, the system clock and the secretKeys redaction", () => {
+    const settings = createLoggerProvider().override("a", null);
+
+    expect(settings.sinks).toEqual([]);
+    expect(settings.clock).toBe(systemClock);
+    expect(settings.redaction).toBe(secretKeys);
+  });
+
+  test("the starting configure sets them", () => {
+    const only = sink();
+    const clock = () => 1;
+    const provider = createLoggerProvider((b) => b.addSink(only).clock(clock).redaction(null));
+
+    const emit = emitOf(provider.logger("a"))();
+
+    expect(emit.sinks).toEqual([only]);
+    expect(emit.clock).toBe(clock);
+    expect(emit.redaction).toBeNull();
+  });
+
+  test("each configure replaces the sinks, clock and redaction, never appending to an earlier sink list", () => {
+    const [first, second, third] = [sink(), sink(), sink()];
+    const provider = createLoggerProvider();
+
+    const before = provider.configure((b) =>
+      b
+        .addSink(first)
+        .addSink(second)
+        .clock(() => 1)
+        .redaction(null),
+    );
+    const after = provider.configure((b) => b.addSink(third));
+
+    expect(before.sinks).toEqual([first, second]);
+    expect(before.redaction).toBeNull();
+    expect(after.sinks).toEqual([third]);
+    expect(after.clock).toBe(systemClock);
+    expect(after.redaction).toBe(secretKeys);
+  });
+
+  test("a settings snapshot shows the replaced sinks while publish receives the same snapshot", () => {
+    const publish = vi.fn();
+    const [first, second] = [sink(), sink()];
+    const provider = createLoggerProvider((b) => b.addSink(first), { publish });
+
+    const settings = provider.configure((b) => b.addLevels({ a: "debug" }).addSink(second));
+
+    expect(settings.sinks).toEqual([second]);
+    expect({ ...settings.layers.builder }).toEqual({ a: "debug" });
+    expect(publish).toHaveBeenCalledTimes(1);
+    expect(publish.mock.calls[0]?.[0]).toBe(settings);
+  });
+
+  test("override keeps the sinks, clock and redaction in force; reset restores the defaults", () => {
+    const only = sink();
+    const clock = () => 1;
+    const provider = createLoggerProvider((b) => b.addSink(only).clock(clock).redaction(null));
+
+    const overridden = provider.override("a", "trace");
+    expect(overridden.sinks).toEqual([only]);
+    expect(overridden.clock).toBe(clock);
+    expect(overridden.redaction).toBeNull();
+
+    const reset = provider.reset();
+    expect(reset.sinks).toEqual([]);
+    expect(reset.clock).toBe(systemClock);
+    expect(reset.redaction).toBe(secretKeys);
+    expect(emitOf(provider.logger("a"))().sinks).toEqual([]);
+  });
+
+  test("a configure that throws leaves the sinks, clock and redaction in force untouched", () => {
+    const only = sink();
+    const clock = () => 1;
+    const provider = createLoggerProvider((b) => b.addSink(only).clock(clock).redaction(null));
+    const emit = emitOf(provider.logger("a"));
+    const inForce = emit();
+
+    expect(() =>
+      provider.configure((b) =>
+        b
+          .addSink(sink())
+          .addSink(null as unknown as Sink)
+          .clock(() => 2),
+      ),
+    ).toThrow(isConfigError);
+    expect(() => provider.configure((b) => b.addSink(sink()).addLevels({ a: "loud" as Threshold }))).toThrow(isConfigError);
+    expect(() =>
+      provider.configure((b) => {
+        b.addSink(sink()).redaction({ keys: ["ssn"] });
+        throw new Error("boom");
+      }),
+    ).toThrow("boom");
+
+    expect(emit()).toBe(inForce);
+    expect(emit().sinks).toEqual([only]);
+    expect(emit().clock).toBe(clock);
+    expect(emit().redaction).toBeNull();
+    expect(provider.override("a", null).sinks).toEqual([only]);
+  });
+
+  test("an invalid starting sink throws a LoggingConfigError", () => {
+    expect(() => createLoggerProvider((b) => b.addSink(undefined as unknown as Sink))).toThrow(isConfigError);
+  });
+
+  test("providers never share a sink list", () => {
+    const only = sink();
+    const one = createLoggerProvider();
+    const other = createLoggerProvider();
+
+    one.configure((b) => b.addSink(only));
+
+    expect(emitOf(one.logger("a"))().sinks).toEqual([only]);
+    expect(emitOf(other.logger("a"))().sinks).toEqual([]);
+  });
+});
+
+describe("emit settings", () => {
+  test("every Logger of a provider reads the configuration in force on each call, not at its creation", () => {
+    const provider = createLoggerProvider();
+    const emit = emitOf(provider.logger("a"));
+    const only = sink();
+
+    expect(emit().sinks).toEqual([]);
+    provider.configure((b) => b.addSink(only));
+    expect(emit().sinks).toEqual([only]);
+    expect(emitOf(provider.logger("b"))()).toBe(emit());
+  });
+
+  test("are frozen", () => {
+    expect(Object.isFrozen(emitOf(createLoggerProvider().logger("a"))())).toBe(true);
+  });
+
+  test("without options, the resource is frozen with all four keys undefined and a sink error is dropped", () => {
+    const emit = emitOf(createLoggerProvider().logger("a"))();
+
+    expect(emit.resource()).toEqual({
+      "service.name": undefined,
+      "service.version": undefined,
+      "deployment.environment.name": undefined,
+      "process.runtime.name": undefined,
+    });
+    expect(Object.keys(emit.resource())).toHaveLength(4);
+    expect(Object.isFrozen(emit.resource())).toBe(true);
+    expect(emit.onSinkError(new Error("lost"))).toBeUndefined();
+  });
+
+  test("resource and onSinkError come from the options, called on the options object", () => {
+    const resource: Resource = {
+      "service.name": "checkout",
+      "service.version": "1.2.3",
+      "deployment.environment.name": "production",
+      "process.runtime.name": "node",
+    };
+    const seen: unknown[] = [];
+    const options = {
+      resource(): Resource {
+        expect(this).toBe(options);
+        return resource;
+      },
+      onSinkError(error: unknown): void {
+        expect(this).toBe(options);
+        seen.push(error);
+      },
+    };
+    const failure = new Error("sink down");
+
+    const emit = emitOf(createLoggerProvider(undefined, options).logger("a"))();
+    emit.onSinkError(failure);
+
+    expect(emit.resource()).toBe(resource);
+    expect(seen).toEqual([failure]);
   });
 });

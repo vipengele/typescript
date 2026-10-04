@@ -40,12 +40,15 @@ export interface Mechanism {
   data?: Attributes;
 }
 
-/** One parsed frame of an {@link ExceptionRecord}'s stack. */
+/**
+ * One parsed frame of an {@link ExceptionRecord}'s stack. `ExceptionRecord.frames` keeps the
+ * engine's order: `frames[0]` is the throw site.
+ */
 export interface StackFrame {
   function?: string;
   file?: string;
   line?: number;
   column?: number;
-  /** The frame belongs to a dependency rather than application code. */
+  /** The frame is the application's own code, not a dependency, a runtime builtin or an unknown file. */
   inApp?: boolean;
 }

@@ -4,7 +4,7 @@ Structured logging and error reporting for the browser and Node, as two entry po
 
 | Entry point | What it is |
 |-------------|------------|
-| `@vipengele/ts-core-observability/logger` | Category-scoped loggers with configurable levels |
+| `@vipengele/ts-core-observability/logger` | Category-scoped loggers with configurable levels, sinks and redaction |
 | `@vipengele/ts-core-observability/errors` | An error reporter: capture, normalization, scopes, breadcrumbs and pluggable transports |
 
 An application that only logs imports only `/logger` and bundles none of the reporter.
@@ -48,10 +48,66 @@ const provider = Logging.createProvider((b) => b.addLevels({ "*": "trace" })); /
 - **Two copies agree** — the default provider and the level table live behind shared `globalThis`
   slots, so a level raised through one copy reaches Loggers created by another.
 
-**What does not exist yet:** sinks, formatters, configuration sources (`VPG_LOG`, browser sources,
-files), Log Records and emit methods. They arrive with sinks (#27), formatters (#28), configuration
-sources (#29), and records and emit methods (#25). A release cut before #25 ships a logger that
-configures levels but cannot emit.
+**Emitting** — a `Logger` has six emit methods. The first three take no error; the last three take
+the thrown value ahead of the attributes:
+
+```ts
+log.trace(message, attributes?);
+log.debug(message, attributes?);
+log.info(message, attributes?);
+log.warn(message, error?, attributes?);
+log.error(message, error?, attributes?);
+log.fatal(message, error?, attributes?);
+
+log.info("saved", { documentId: 7 });
+log.error("save failed", caught, { documentId: 7 });
+```
+
+A call below the level in force does nothing. One that passes the check becomes a `LogRecord`:
+`time` (epoch milliseconds with a sub-millisecond fraction), `level`, `category`, `message`,
+`attributes`, and, when the call passed one, `error`, the thrown value serialized with its whole
+`cause`/`errors` chain. The record carries the call's own attributes only.
+
+**Sinks** — a `Sink` is an object with `write(record, resource)`, where `resource` is the `Resource`
+in force when the record was emitted; that `(record, resource)` arity is part of the
+`vipengele.logger.provider.v1` protocol. `builder.addSink(sink)` adds one, and every sink receives
+every record in the order added:
+
+```ts
+const records: LogRecord[] = [];
+
+Logging.configure((b) => b.addSink({ write: (record) => records.push(record) }));
+```
+
+- **Replacement** — `configure` replaces the sinks, never appends to those of an earlier call, and
+  `Logging.reset()` drops them along with the overrides. A provider from `createProvider` owns its
+  sinks alone and shares none with the default provider.
+- **No sink** — with none configured, emit does nothing.
+- **Clock** — `builder.clock(clock)` replaces the source of `time`; the default is `systemClock`
+  from `@vipengele/ts-core-common`.
+- **A throwing sink** never reaches the caller and never stops another sink from receiving the
+  record. The failure is reported once per failing sink per record through the warn target, which
+  belongs to each copy of the package, like spec issues.
+- **A throwing clock or redaction policy** drops the record silently: no sink receives it, and the
+  caller does not see the throw.
+- **An async `write`** — a promise returned by `write` is neither awaited nor observed, so a
+  rejecting async `write` is the sink's own to handle.
+
+**Redaction** — on by default, using the `secretKeys` preset from `@vipengele/ts-core-redaction`. A
+policy is applied to `attributes` and to every link of the error chain, when the record is created
+and before any sink sees it: to the `data` of an `Error` and to its `code`, read under the key
+`code`, and to the fields of a structured thrown value that is not an `Error` (a plain object, an
+array, a parsed API error body), whether it was thrown itself or reached through a `cause` or an
+`errors` entry. A thrown string that opens with `{` or `[` once leading whitespace and a byte order
+mark are skipped is parsed and redacted the same way. Such a value's JSON text is replaced whole by
+`"[REDACTED: unparseable structured value]"` when it does not parse, as when it was cut at the
+serialization length bound. `builder.redaction(policy)` replaces it and `builder.redaction(null)`
+disables it. A record's `message`, and the `message` and `stack` of an `Error`, are not scanned: a
+secret interpolated into a message is the caller's to keep out.
+
+**What the logger does not have:** formatters, and configuration sources (`VPG_LOG`, browser
+sources, files). A sink formats a record itself, and levels are set in code, with `configure`,
+`override` and spec strings.
 
 ## `./errors`
 
@@ -108,6 +164,57 @@ resolve `true` in that case, since there is nothing to wait on.
 
 **An unknown level** — a `CaptureContext.level` or `captureMessage` level that is not one of the six
 `Level` values (or is absent) becomes `"error"`.
+
+### Stack frames
+
+Every `ExceptionRecord` — the event's `exception` and each `cause` and `errors` link under it —
+carries `frames: StackFrame[]`, parsed from its `stack`:
+
+```ts
+interface StackFrame {
+  function?: string;
+  file?: string;
+  line?: number;
+  column?: number;
+  inApp?: boolean;
+}
+```
+
+V8, SpiderMonkey and JavaScriptCore stacks all parse, and a line that is not a frame (the
+`Error: message` header, `[native code]`, a truncation marker) is dropped. The raw `stack` stays a
+string on the record and is the lossless record; `frames` is a convenience over it. Parsing never
+throws, and a missing or unreadable stack gives `[]`. `frames` is set in the normalize stage, so
+processors see it.
+
+**Frame order** is the engine's: `frames[0]` is the throw site. A transport that targets a
+bottom-first format reverses the array at its own edge.
+
+**In-app** — `inApp: true` marks the application's own code. A frame is not in-app when:
+
+- it has no `file`;
+- its `file` has a `node_modules` path segment, whether it is a filesystem path or an `http(s)://`
+  URL;
+- its `file` uses the `node:` scheme.
+
+Every other frame is in-app when no project root is set. With a root, a frame is in-app only when
+its `file` is under the root on a path boundary: `/app` covers `/app/x.js` but not
+`/application/x.js`. `file://` URLs and backslashes are normalised before comparing, so
+`C:\app\x.js` and `file:///C:/app/x.js` match the same root. An empty or whitespace-only root
+counts as unset.
+
+`builder.projectRoot()` sets the root. It takes a filesystem path or a URL prefix, since a browser's
+frames are URLs:
+
+```ts
+const nodeReporter = createReporter((builder) => builder.projectRoot("/srv/checkout"));
+const browserReporter = createReporter((builder) => builder.projectRoot("https://app.example.com/"));
+```
+
+**No self-detection** — the reporter does not mark its own frames not-in-app. Deriving its location
+from `import.meta.url` is wrong under bundling: it resolves to the application's bundle, so every
+application frame would be marked not-in-app. Unbundled, the reporter's frames sit under
+`node_modules` and are already not in-app. Bundled into an application, its own frames are in-app;
+that is accepted.
 
 ### Global handlers
 

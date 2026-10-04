@@ -14,6 +14,12 @@ function onlyEvent(events: readonly ErrorEvent[]): ErrorEvent {
   return events[0] as ErrorEvent;
 }
 
+/** Gives `error` a V8-shaped stack with one frame in `file`, whatever engine runs the test. */
+function withStack<T extends Error>(error: T, file: string): T {
+  error.stack = `${error.name}: ${error.message}\n    at run (${file}:1:2)`;
+  return error;
+}
+
 function aThrowingTransport(): Transport {
   return {
     send: () => {
@@ -26,7 +32,7 @@ function aThrowingTransport(): Transport {
 
 describe("createReporter", () => {
   describe("captureException", () => {
-    it("sends an event carrying the serialized error with empty frames, and returns its id", () => {
+    it("sends an event carrying the serialized error with its parsed frames, and returns its id", () => {
       const transport = createTestTransport();
       const reporter = createReporter((b) => b.transport(transport));
       const error = new TypeError("bad input");
@@ -40,8 +46,12 @@ describe("createReporter", () => {
       expect(event.mechanism).toEqual({ handled: true, source: "capture" });
       expect(event.attributes).toEqual({});
       expect(event).not.toHaveProperty("message");
-      expect(event.exception).toMatchObject({ type: "TypeError", message: "bad input", frames: [] });
+      expect(event.exception).toMatchObject({ type: "TypeError", message: "bad input" });
       expect(event.exception?.stack).toBe(error.stack);
+      expect(event.exception?.frames.length).toBeGreaterThan(0);
+      for (const frame of event.exception?.frames ?? []) {
+        expect(frame.inApp).toEqual(expect.any(Boolean));
+      }
     });
 
     it("marks a thrown non-Error as synthetic", () => {
@@ -50,15 +60,16 @@ describe("createReporter", () => {
 
       reporter.captureException("just a string");
 
-      expect(onlyEvent(transport.events).exception).toEqual({ type: "Error", message: "just a string", synthetic: true, frames: [] });
+      expect(onlyEvent(transport.events).exception).toMatchObject({ type: "Error", message: "just a string", synthetic: true });
     });
 
     it("gives every link of the cause and errors chain its own frames", () => {
       const transport = createTestTransport();
       const reporter = createReporter((b) => b.transport(transport));
-      const root = new Error("root");
-      const aggregate = new AggregateError([new RangeError("first"), 42], "several", { cause: root });
-      const outer = new Error("outer", { cause: aggregate });
+      const root = withStack(new Error("root"), "/app/root.js");
+      const first = withStack(new RangeError("first"), "/app/first.js");
+      const aggregate = withStack(new AggregateError([first, 42], "several", { cause: root }), "/app/aggregate.js");
+      const outer = withStack(new Error("outer", { cause: aggregate }), "/app/outer.js");
 
       reporter.captureException(outer);
 
@@ -66,19 +77,98 @@ describe("createReporter", () => {
       expect(exception).toMatchObject({
         type: "Error",
         message: "outer",
-        frames: [],
+        frames: [{ function: "run", file: "/app/outer.js", line: 1, column: 2, inApp: true }],
         cause: {
           type: "AggregateError",
           message: "several",
-          frames: [],
-          cause: { type: "Error", message: "root", frames: [] },
+          frames: [{ file: "/app/aggregate.js" }],
+          cause: { type: "Error", message: "root", frames: [{ file: "/app/root.js" }] },
           errors: [
-            { type: "RangeError", message: "first", frames: [] },
+            { type: "RangeError", message: "first", frames: [{ file: "/app/first.js" }] },
             { type: "Error", message: "42", synthetic: true, frames: [] },
           ],
         },
       });
       expect(exception?.cause?.cause).not.toHaveProperty("cause");
+    });
+
+    it("keeps frames in engine order with the throw site first, and the raw stack a string", () => {
+      const transport = createTestTransport();
+      const reporter = createReporter((b) => b.transport(transport));
+      const error = new Error("boom");
+      error.stack = "Error: boom\n    at thrower (/app/a.js:1:2)\n    at caller (/app/b.js:3:4)";
+
+      reporter.captureException(error);
+
+      const exception = onlyEvent(transport.events).exception;
+      expect(exception?.frames.map((frame) => frame.function)).toEqual(["thrower", "caller"]);
+      expect(exception?.stack).toBe(error.stack);
+    });
+
+    it("treats every frame outside node_modules as in-app without a project root", () => {
+      const transport = createTestTransport();
+      const reporter = createReporter((b) => b.transport(transport));
+      const error = new Error("boom");
+      error.stack = "Error: boom\n    at a (/srv/other/a.js:1:2)\n    at b (/app/node_modules/dep/b.js:3:4)";
+
+      reporter.captureException(error);
+
+      expect(onlyEvent(transport.events).exception?.frames.map((frame) => frame.inApp)).toEqual([true, false]);
+    });
+
+    it("marks only frames under the project root as in-app, on every link of the chain", () => {
+      const transport = createTestTransport();
+      const reporter = createReporter((b) => b.transport(transport).projectRoot("/app"));
+      const cause = new Error("cause");
+      cause.stack = "Error: cause\n    at c (/application/c.js:1:2)\n    at d (/app/d.js:1:2)";
+      const error = new Error("boom", { cause });
+      error.stack = "Error: boom\n    at a (/app/a.js:1:2)\n    at b (/srv/b.js:3:4)";
+
+      reporter.captureException(error);
+
+      const exception = onlyEvent(transport.events).exception;
+      expect(exception?.frames.map((frame) => frame.inApp)).toEqual([true, false]);
+      expect(exception?.cause?.frames.map((frame) => frame.inApp)).toEqual([false, true]);
+    });
+
+    it("matches a URL prefix project root against browser frames", () => {
+      const transport = createTestTransport();
+      const reporter = createReporter((b) => b.transport(transport).projectRoot("https://app.example.com/"));
+      const error = new Error("boom");
+      error.stack = "Error: boom\n    at a (https://app.example.com/main.js:1:2)\n    at b (https://cdn.example.com/lib.js:3:4)";
+
+      reporter.captureException(error);
+
+      expect(onlyEvent(transport.events).exception?.frames.map((frame) => frame.inApp)).toEqual([true, false]);
+    });
+
+    it("treats a blank project root as unset", () => {
+      const transport = createTestTransport();
+      const reporter = createReporter((b) => b.transport(transport).projectRoot("  "));
+      const error = new Error("boom");
+      error.stack = "Error: boom\n    at a (/srv/a.js:1:2)";
+
+      reporter.captureException(error);
+
+      expect(onlyEvent(transport.events).exception?.frames.map((frame) => frame.inApp)).toEqual([true]);
+    });
+
+    it.each([
+      ["garbage", "\u0000￿ not a stack ((( @@@ :::"],
+      ["a non-string", { toString: (): string => "x" }],
+      ["a huge string", `Error: x\n${"    at f (/app/a.js:1:2)\n".repeat(50_000)}`],
+      ["an unterminated frame", "Error: x\n    at (((("],
+    ])("still delivers the event when the stack is %s", (_, stack) => {
+      const transport = createTestTransport();
+      const reporter = createReporter((b) => b.transport(transport).projectRoot("/app"));
+      const error = new Error("boom");
+      Object.defineProperty(error, "stack", { value: stack });
+
+      expect(reporter.captureException(error)).toMatch(EVENT_ID);
+
+      const exception = onlyEvent(transport.events).exception;
+      expect(exception).toMatchObject({ message: "boom" });
+      expect(Array.isArray(exception?.frames)).toBe(true);
     });
 
     it("normalizes the caller's attributes into a snapshot", () => {

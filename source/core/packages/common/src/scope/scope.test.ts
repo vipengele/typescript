@@ -27,6 +27,35 @@ describe("Scope.current", () => {
   });
 });
 
+describe("Scope.resource", () => {
+  test("holds the root's four reserved keys", () => {
+    expect(Object.keys(Scope.resource()).sort()).toEqual([
+      "deployment.environment.name",
+      "process.runtime.name",
+      "service.name",
+      "service.version",
+    ]);
+  });
+
+  test("reads the same values from inside an isolated scope", () => {
+    const outside = Scope.resource();
+
+    expect(Scope.isolated("request", { "user.id": "u-1" }, () => Scope.resource())).toEqual(outside);
+    expect(outside["service.name"]).toBe(getScopeTree().root.get("service.name"));
+  });
+
+  test("is frozen, so a write to it throws and leaves a later call's result unchanged", () => {
+    const first = Scope.resource();
+    const before = Scope.resource()["service.name"];
+
+    expect(Object.isFrozen(first)).toBe(true);
+    expect(() => {
+      (first as { "service.name": string | undefined })["service.name"] = "tampered";
+    }).toThrow(TypeError);
+    expect(Scope.resource()["service.name"]).toBe(before);
+  });
+});
+
 describe("Scope.propagate", () => {
   test("makes a scope current for fn, and restores the enclosing one once fn returns", () => {
     const request = Scope.isolated("request", {}, () => Scope.current());

@@ -19,6 +19,16 @@ pnpm format:check
 A sub-path needs both a `tsup.config.ts` `entry` and a `package.json` `exports` key;
 `src/package-exports.test.ts` fails when either is missing.
 
+## Scope (`src/scope`, `./scope`)
+
+- `Scope` is the ambient context tree: `current`, `propagate`, `inherit`, `isolated`, `resource`,
+  `useCarrier`. Its root holds the four reserved Resource keys (`service.name`,
+  `service.version`, `deployment.environment.name`, `process.runtime.name`).
+- `Scope.resource()` returns the `Resource` (exported type) read from the realm's one root,
+  whatever scope is current. The logger passes it to every Sink per record; it is a function, not a
+  captured value, because an application may supply the Resource after a Logger was created.
+- `@isolatedScope`/`@scoped` support both decorator dialects (`agentic/rules/method-decorator-supports-both-dialects.md` at the repo root).
+
 ## `./types/date-time`
 
 - `LocalDate`, `LocalTime` and `LocalDateTime` are immutable and zoneless: a civil date and/or
