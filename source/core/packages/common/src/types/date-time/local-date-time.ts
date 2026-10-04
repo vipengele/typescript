@@ -1,7 +1,9 @@
+import type { Clock } from "../../time/clock";
 import type { IsoDayOfWeek } from "./civil";
 import { DateTimeParseError, type DateTimeTryParseResult } from "./errors";
 import { LocalDate } from "./local-date";
 import { LocalTime } from "./local-time";
+import { civilNow } from "./now";
 
 /** The date-time `str` spells in ISO 8601 `<date>T<time>` form, or `undefined` when it spells none. */
 function parseValue(str: string): LocalDateTime | undefined {
@@ -49,6 +51,19 @@ export class LocalDateTime {
    */
   static ofFields(year: number, month: number, day: number, hour: number, minute: number, second = 0, millisecond = 0): LocalDateTime {
     return new LocalDateTime(LocalDate.of(year, month, day), LocalTime.of(hour, minute, second, millisecond));
+  }
+
+  /**
+   * The current date and time of day in the runtime's time zone, to the millisecond, at the
+   * instant `clock` reads (by default `systemClock`). The date and the time come from one
+   * reading of the clock.
+   *
+   * @throws {RangeError} when the clock returns a value that is not a finite time within ±8.64e15 ms of the epoch.
+   * @throws {InvalidDateTimeError} when the date falls outside 0001-01-01 to 9999-12-31.
+   */
+  static now(clock?: Clock): LocalDateTime {
+    const { year, month, day, hour, minute, second, millisecond } = civilNow(clock);
+    return LocalDateTime.ofFields(year, month, day, hour, minute, second, millisecond);
   }
 
   /**

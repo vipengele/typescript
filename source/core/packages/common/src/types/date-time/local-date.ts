@@ -1,5 +1,7 @@
+import type { Clock } from "../../time/clock";
 import { civilFromDays, daysFromCivil, dayOfWeekFromDays, type IsoDayOfWeek, lengthOfMonth } from "./civil";
 import { DateTimeParseError, type DateTimeTryParseResult, InvalidDateTimeError } from "./errors";
+import { civilNow } from "./now";
 
 /** The earliest year a {@link LocalDate} holds; year 0 and earlier have no four-digit ISO form. */
 const MIN_YEAR = 1;
@@ -79,6 +81,18 @@ export class LocalDate {
       throw new InvalidDateTimeError(`Invalid date: ${reason}.`);
     }
     return new LocalDate(year, month, day);
+  }
+
+  /**
+   * Today's date in the runtime's time zone, at the instant `clock` reads (by default
+   * `systemClock`).
+   *
+   * @throws {RangeError} when the clock returns a value that is not a finite time within ±8.64e15 ms of the epoch.
+   * @throws {InvalidDateTimeError} when the date falls outside 0001-01-01 to 9999-12-31.
+   */
+  static now(clock?: Clock): LocalDate {
+    const { year, month, day } = civilNow(clock);
+    return LocalDate.of(year, month, day);
   }
 
   /**

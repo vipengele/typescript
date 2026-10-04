@@ -1,4 +1,6 @@
+import type { Clock } from "../../time/clock";
 import { DateTimeParseError, type DateTimeTryParseResult, InvalidDateTimeError } from "./errors";
+import { civilNow } from "./now";
 
 /** `HH:mm`, `HH:mm:ss` or `HH:mm:ss.S` to `HH:mm:ss.SSS`, exactly: no zone designator, no surrounding space. */
 const ISO_TIME = /^(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?$/;
@@ -70,6 +72,17 @@ export class LocalTime {
       throw new InvalidDateTimeError(`Invalid time: ${reason}.`);
     }
     return new LocalTime(hour, minute, second, millisecond);
+  }
+
+  /**
+   * The current time of day in the runtime's time zone, to the millisecond, at the instant `clock`
+   * reads (by default `systemClock`).
+   *
+   * @throws {RangeError} when the clock returns a value that is not a finite time within ±8.64e15 ms of the epoch.
+   */
+  static now(clock?: Clock): LocalTime {
+    const { hour, minute, second, millisecond } = civilNow(clock);
+    return LocalTime.of(hour, minute, second, millisecond);
   }
 
   /**
