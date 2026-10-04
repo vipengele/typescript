@@ -1,4 +1,5 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
+import { Locale } from "../../locale";
 import { format } from "./format";
 
 /** No-break space, `sv-SE`'s group separator. */
@@ -17,6 +18,8 @@ const DE_CH_GROUP = new Intl.NumberFormat("de-CH", { numberingSystem: "latn" })
   .formatToParts(1234)
   .find((part) => part.type === "group")?.value;
 
+const EN_US = new Locale("en-US");
+
 describe("locale-specific output", () => {
   test.for([
     ["sv-SE", 1234567.89, `1${NBSP}234${NBSP}567,89`],
@@ -31,54 +34,90 @@ describe("locale-specific output", () => {
     ["fa-IR", -12345678.9, `${LTR}${MINUS}12,345,678.9`],
     ["en-IN", 1234567.89, "12,34,567.89"],
     ["en-IN", -12345678.9, "-1,23,45,678.9"],
-  ] as const)("%s formats %d", ([locale, value, expected]) => {
-    expect(format(value, locale)).toBe(expected);
+  ] as const)("%s formats %d", ([tag, value, expected]) => {
+    expect(format(value, new Locale(tag))).toBe(expected);
   });
 });
 
 describe("numbering system", () => {
-  test.for(["ar-EG", "fa-IR", "en-IN"])("%s emits ASCII digits and no others", (locale) => {
-    expect(format(1234567.89, locale)).toMatch(/[0-9]/);
-    expect(format(1234567.89, locale)).not.toMatch(/(?![0-9])\p{Nd}/u);
+  test.for(["ar-EG", "fa-IR", "en-IN"])("%s emits ASCII digits and no others", (tag) => {
+    expect(format(1234567.89, new Locale(tag))).toMatch(/[0-9]/);
+    expect(format(1234567.89, new Locale(tag))).not.toMatch(/(?![0-9])\p{Nd}/u);
   });
 
   test("ar-EG would use Arabic-Indic digits without the forced numbering system", () => {
-    expect(new Intl.NumberFormat("ar-EG").format(1234)).not.toBe(format(1234, "ar-EG"));
+    expect(new Intl.NumberFormat("ar-EG").format(1234)).not.toBe(format(1234, new Locale("ar-EG")));
   });
 });
 
 describe("maximumFractionDigits", () => {
   test("defaults to 20 rather than the platform's silently rounding 3", () => {
-    expect(format(0.123456789, "en-US")).toBe("0.123456789");
+    expect(format(0.123456789, EN_US)).toBe("0.123456789");
   });
 
   test("an explicit value rounds to it", () => {
-    expect(format(1.239, "en-US", { maximumFractionDigits: 2 })).toBe("1.24");
+    expect(format(1.239, EN_US, { maximumFractionDigits: 2 })).toBe("1.24");
   });
 
   test("zero drops the fractional part entirely", () => {
-    expect(format(1234.6, "en-US", { maximumFractionDigits: 0 })).toBe("1,235");
+    expect(format(1234.6, EN_US, { maximumFractionDigits: 0 })).toBe("1,235");
   });
 });
 
 describe("non-finite values", () => {
   test.for([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])("%d raises RangeError", (value) => {
-    expect(() => format(value, "en-US")).toThrow(RangeError);
+    expect(() => format(value, EN_US)).toThrow(RangeError);
   });
 });
 
-test("an omitted locale formats with the runtime's default locale", () => {
-  const defaultLocale = new Intl.NumberFormat().resolvedOptions().locale;
+test("an omitted locale formats with Locale.default()", () => {
+  const spy = vi.spyOn(Locale, "default").mockReturnValue(new Locale("de-DE"));
 
-  expect(format(1234567.89)).toBe(format(1234567.89, defaultLocale));
+  try {
+    expect(format(1234567.89)).toBe("1.234.567,89");
+  } finally {
+    spy.mockRestore();
+  }
 });
 
-test("an invalid language tag raises RangeError", () => {
-  expect(() => format(1, "not a locale")).toThrow(RangeError);
+test("an omitted locale is read on every call rather than fixed at the first", () => {
+  const spy = vi.spyOn(Locale, "default");
+
+  try {
+    spy.mockReturnValue(new Locale("de-DE"));
+    expect(format(1234.5)).toBe("1.234,5");
+
+    spy.mockReturnValue(EN_US);
+    expect(format(1234.5)).toBe("1,234.5");
+  } finally {
+    spy.mockRestore();
+  }
 });
 
-test("an empty string still raises RangeError after the omitted locale has been cached", () => {
-  format(1);
+test("two Locale instances for the same tag format alike", () => {
+  expect(format(1234.5, new Locale("sv-SE"))).toBe(format(1234.5, new Locale("sv-se")));
+});
 
-  expect(() => format(1, "")).toThrow(RangeError);
+describe("formatter cache", () => {
+  test("constructs one Intl.NumberFormat per locale tag and maximumFractionDigits", () => {
+    const spy = vi.spyOn(Intl, "NumberFormat");
+
+    try {
+      const locale = new Locale("nl-BE");
+      expect(format(1234.5, locale)).toBe(format(1234.5, locale));
+      expect(spy).toHaveBeenCalledTimes(1);
+
+      expect(format(1.23456, locale, { maximumFractionDigits: 2 })).toBe("1,23");
+      expect(spy).toHaveBeenCalledTimes(2);
+
+      format(1.23456, locale, { maximumFractionDigits: 2 });
+      format(1234.5, locale);
+      expect(spy).toHaveBeenCalledTimes(2);
+
+      format(1234.5, new Locale("nl-BE"), { maximumFractionDigits: 2 });
+      expect(spy).toHaveBeenCalledTimes(2);
+    } finally {
+      spy.mockRestore();
+    }
+  });
 });

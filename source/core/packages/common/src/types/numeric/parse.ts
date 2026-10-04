@@ -1,3 +1,4 @@
+import { Locale } from "../../locale";
 import { resolveLocaleParts } from "./locale-parts";
 import { NumericParseError } from "./numeric-parse-error";
 
@@ -52,7 +53,7 @@ function asciiEquivalent(separator: string): string {
  * separator. Handing the string to `Number` instead would read `""`, `"  "` and `"0x10"` as
  * numbers.
  */
-function parseValue(str: string, locale?: string): number | undefined {
+function parseValue(str: string, locale: Locale): number | undefined {
   const { group, decimal, minus } = resolveLocaleParts(locale);
 
   let text = "";
@@ -104,18 +105,15 @@ function parseValue(str: string, locale?: string): number | undefined {
 }
 
 /**
- * Reads the number `str` spells in `locale`, or in the runtime's default locale when `locale` is
- * omitted. Both the locale's own separator characters and their ASCII equivalents are accepted,
+ * Reads the number `str` spells in `locale`, or in `Locale.default()` when `locale` is omitted. Both the locale's own separator characters and their ASCII equivalents are accepted,
  * so `format`'s output and a retyping of it on an ASCII keyboard read back the same value.
  *
  * Digits are ASCII 0-9 only, matching `format`'s forced `numberingSystem: "latn"`. A string
  * written in another numbering system — Arabic-Indic, Devanagari — does not parse.
  *
- * @throws {RangeError} when `locale` is not a structurally valid BCP 47 language tag. An invalid
- * tag is a programmer error, not a parse failure, so it propagates unwrapped.
  * @throws {NumericParseError} when `str` does not spell a number in `locale`.
  */
-export function parse(str: string, locale?: string): number {
+export function parse(str: string, locale: Locale = Locale.default()): number {
   const value = parseValue(str, locale);
 
   if (value === undefined) {
@@ -128,12 +126,8 @@ export function parse(str: string, locale?: string): number {
 /**
  * The non-throwing counterpart of {@link parse}: an unparseable `str` yields
  * `{ success: false }` rather than a {@link NumericParseError}.
- *
- * @throws {RangeError} when `locale` is not a structurally valid BCP 47 language tag. An invalid
- * tag is a programmer error rather than a parse failure, so it propagates out of here too
- * instead of turning into an unsuccessful result.
  */
-export function tryParse(str: string, locale?: string): TryParseResult {
+export function tryParse(str: string, locale: Locale = Locale.default()): TryParseResult {
   const value = parseValue(str, locale);
 
   return value === undefined ? { success: false } : { success: true, value };

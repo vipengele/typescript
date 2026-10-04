@@ -1,3 +1,4 @@
+import type { Locale } from "../../locale";
 import { format, type FormatOptions } from "./format";
 import { isNumericParseError, NumericParseError } from "./numeric-parse-error";
 import { parse, tryParse, type TryParseResult } from "./parse";
@@ -8,17 +9,17 @@ import { parse, tryParse, type TryParseResult } from "./parse";
  */
 export class Numeric {
   /** @see {@link format} */
-  static format(value: number, locale?: string, options?: FormatOptions): string {
+  static format(value: number, locale?: Locale, options?: FormatOptions): string {
     return format(value, locale, options);
   }
 
   /** @see {@link parse} */
-  static parse(str: string, locale?: string): number {
+  static parse(str: string, locale?: Locale): number {
     return parse(str, locale);
   }
 
   /** @see {@link tryParse} */
-  static tryParse(str: string, locale?: string): TryParseResult {
+  static tryParse(str: string, locale?: Locale): TryParseResult {
     return tryParse(str, locale);
   }
 }

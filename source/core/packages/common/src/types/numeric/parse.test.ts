@@ -1,4 +1,5 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
+import { Locale } from "../../locale";
 import { format } from "./format";
 import { isNumericParseError, NumericParseError } from "./numeric-parse-error";
 import { parse, tryParse } from "./parse";
@@ -19,13 +20,16 @@ const DE_CH_GROUP = new Intl.NumberFormat("de-CH", { numberingSystem: "latn" })
   .formatToParts(1234)
   .find((part) => part.type === "group")?.value;
 
+const EN_US = new Locale("en-US");
+
 const LOCALES = ["sv-SE", "fr-FR", "de-CH", "ar-EG", "fa-IR", "en-IN", "de-DE", "en-US"] as const;
 
 const ROUND_TRIP_VALUES = [0, 1, -1, 0.5, 1234567.89, -12345678.9, 0.123456789, 12345678901234] as const;
 
 describe("round-trip through format", () => {
-  for (const locale of LOCALES) {
-    test.for(ROUND_TRIP_VALUES)(`${locale} reads back %d`, (value) => {
+  for (const tag of LOCALES) {
+    const locale = new Locale(tag);
+    test.for(ROUND_TRIP_VALUES)(`${tag} reads back %d`, (value) => {
       expect(parse(format(value, locale), locale)).toBe(value);
     });
   }
@@ -46,8 +50,8 @@ describe("locale-specific input", () => {
     ["en-IN", "12,34,567.89", 1234567.89],
     ["en-IN", "-1,23,45,678.9", -12345678.9],
     ["de-DE", "12.345.678,9", 12345678.9],
-  ] as const)("%s parses %s", ([locale, text, expected]) => {
-    expect(parse(text, locale)).toBe(expected);
+  ] as const)("%s parses %s", ([tag, text, expected]) => {
+    expect(parse(text, new Locale(tag))).toBe(expected);
   });
 });
 
@@ -61,11 +65,12 @@ describe("ASCII-typed input", () => {
     ["ar-EG", "-12,345,678.9", -12345678.9],
     ["fa-IR", "-12,345,678.9", -12345678.9],
     ["en-IN", "-1,23,45,678.9", -12345678.9],
-  ] as const)("%s parses %s typed on an ASCII keyboard", ([locale, text, expected]) => {
-    expect(parse(text, locale)).toBe(expected);
+  ] as const)("%s parses %s typed on an ASCII keyboard", ([tag, text, expected]) => {
+    expect(parse(text, new Locale(tag))).toBe(expected);
   });
 
-  test.for(LOCALES)("%s reads its own negative output retyped in ASCII", (locale) => {
+  test.for(LOCALES)("%s reads its own negative output retyped in ASCII", (tag) => {
+    const locale = new Locale(tag);
     const typed = format(-12345678.9, locale).replace(/‎/g, "").replace(/−/g, "-").replace(/[  ]/g, " ");
 
     expect(parse(typed, locale)).toBe(-12345678.9);
@@ -74,24 +79,26 @@ describe("ASCII-typed input", () => {
 
 describe("grouping", () => {
   test("en-IN's irregular groups are stripped without validating their size", () => {
-    expect(parse("1,23,45,678", "en-IN")).toBe(12345678);
+    expect(parse("1,23,45,678", new Locale("en-IN"))).toBe(12345678);
   });
 
   test("groups of any size are stripped, wherever they sit", () => {
-    expect(parse("1,2,3,4", "en-US")).toBe(1234);
+    expect(parse("1,2,3,4", EN_US)).toBe(1234);
   });
 
   test("a group separator is optional", () => {
-    expect(parse("12345678.9", "en-US")).toBe(12345678.9);
+    expect(parse("12345678.9", EN_US)).toBe(12345678.9);
   });
 });
 
 describe("invisible marks", () => {
-  test.for(["ar-EG", "fa-IR"] as const)("%s parses a positive value, which carries no mark", (locale) => {
+  test.for(["ar-EG", "fa-IR"] as const)("%s parses a positive value, which carries no mark", (tag) => {
+    const locale = new Locale(tag);
     expect(parse(format(1234.5, locale), locale)).toBe(1234.5);
   });
 
-  test.for(["ar-EG", "fa-IR"] as const)("%s parses a negative value, which carries a leading U+200E", (locale) => {
+  test.for(["ar-EG", "fa-IR"] as const)("%s parses a negative value, which carries a leading U+200E", (tag) => {
+    const locale = new Locale(tag);
     const formatted = format(-1234.5, locale);
 
     expect(formatted).toContain(LTR);
@@ -99,7 +106,7 @@ describe("invisible marks", () => {
   });
 
   test("a mark is stripped wherever it sits, for any locale", () => {
-    expect(parse(`﻿1​234‏.5`, "en-US")).toBe(1234.5);
+    expect(parse(`﻿1​234‏.5`, EN_US)).toBe(1234.5);
   });
 });
 
@@ -107,23 +114,23 @@ describe("parse failures", () => {
   test.for(["", "   ", "‎", "1.2.3", "1,2.3.4", "abc", "12abc", "0x10", "1e3", "-", "1 234", "+1"] as const)(
     "%o raises NumericParseError",
     (text) => {
-      expect(() => parse(text, "en-US")).toThrow(NumericParseError);
+      expect(() => parse(text, EN_US)).toThrow(NumericParseError);
     },
   );
 
   test.for(["", "   ", "1.2.3", "abc"] as const)("%o is an unsuccessful tryParse", (text) => {
-    expect(tryParse(text, "en-US")).toEqual({ success: false });
+    expect(tryParse(text, EN_US)).toEqual({ success: false });
   });
 
   test("a number too large for a double is a failure, not Infinity", () => {
     const tooLarge = `1${"0".repeat(400)}`;
 
-    expect(tryParse(tooLarge, "en-US")).toEqual({ success: false });
+    expect(tryParse(tooLarge, EN_US)).toEqual({ success: false });
   });
 
   test("the raised error is recognised by its guard", () => {
     try {
-      parse("", "en-US");
+      parse("", EN_US);
       expect.unreachable("parse accepted an empty string");
     } catch (error) {
       expect(isNumericParseError(error)).toBe(true);
@@ -131,11 +138,11 @@ describe("parse failures", () => {
   });
 
   test("the message quotes the string that failed", () => {
-    expect(() => parse("1.2.3", "en-US")).toThrow('"1.2.3"');
+    expect(() => parse("1.2.3", EN_US)).toThrow('"1.2.3"');
   });
 
   test("a separator-only string is a failure", () => {
-    expect(tryParse(".", "en-US")).toEqual({ success: false });
+    expect(tryParse(".", EN_US)).toEqual({ success: false });
   });
 });
 
@@ -147,49 +154,50 @@ describe("lenient but unambiguous forms", () => {
     ["-.5", -0.5],
     ["007", 7],
   ] as const)("en-US parses %s", ([text, expected]) => {
-    expect(parse(text, "en-US")).toBe(expected);
+    expect(parse(text, EN_US)).toBe(expected);
   });
 });
 
 describe("tryParse", () => {
   test("a parseable string yields the value", () => {
-    expect(tryParse("1,234.5", "en-US")).toEqual({ success: true, value: 1234.5 });
+    expect(tryParse("1,234.5", EN_US)).toEqual({ success: true, value: 1234.5 });
   });
 
   test("an unsuccessful result carries no value", () => {
-    expect(tryParse("nope", "en-US").value).toBeUndefined();
+    expect(tryParse("nope", EN_US).value).toBeUndefined();
   });
 });
 
 describe("the default locale", () => {
-  const defaultLocale = new Intl.NumberFormat().resolvedOptions().locale;
+  const DE_DE = new Locale("de-DE");
 
   test("parse reads what the default locale formats", () => {
-    expect(parse(format(-12345678.9))).toBe(-12345678.9);
+    const spy = vi.spyOn(Locale, "default").mockReturnValue(DE_DE);
+
+    try {
+      expect(parse(format(-12345678.9))).toBe(-12345678.9);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
-  test("an omitted locale parses as the resolved default does", () => {
-    const text = format(1234567.89, defaultLocale);
+  test("an omitted locale parses as Locale.default() does", () => {
+    const spy = vi.spyOn(Locale, "default").mockReturnValue(DE_DE);
 
-    expect(parse(text)).toBe(parse(text, defaultLocale));
+    try {
+      expect(parse("1.234.567,89")).toBe(1234567.89);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   test("tryParse follows the same default", () => {
-    expect(tryParse(format(1234.5))).toEqual(tryParse(format(1234.5), defaultLocale));
-  });
-});
+    const spy = vi.spyOn(Locale, "default").mockReturnValue(DE_DE);
 
-describe("an invalid language tag", () => {
-  test("propagates a RangeError out of parse, unwrapped", () => {
-    expect(() => parse("1", "not a locale")).toThrow(RangeError);
-    expect(() => parse("1", "not a locale")).not.toThrow(NumericParseError);
-  });
-
-  test("propagates a RangeError out of tryParse rather than becoming an unsuccessful result", () => {
-    expect(() => tryParse("1", "not a locale")).toThrow(RangeError);
-  });
-
-  test("propagates even when the string is unparseable anyway", () => {
-    expect(() => tryParse("nope", "not a locale")).toThrow(RangeError);
+    try {
+      expect(tryParse("1.234,5")).toEqual({ success: true, value: 1234.5 });
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

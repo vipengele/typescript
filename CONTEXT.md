@@ -125,6 +125,19 @@ What delivers Error Events (and exported Log Records) out of the process: consol
 Owns batching, retry, `flush()` and `close()`.
 _Avoid_: exporter (OTel's word; use it only for OTLP specifically)
 
+**Locale**:
+The language-and-region convention a number or a date is read and written in. Defaults to the
+Runtime's own and can be constructed to override it. One value serves numbers and dates, so the two
+in one application follow the same convention.
+_Avoid_: language (a locale also fixes region-specific conventions), culture
+
+**Local Value**:
+A date, a time or a date and time with no time zone: `LocalDate`, `LocalTime`, `LocalDateTime`.
+It names a point on a calendar or a clock face, not an instant. The zone is consulted only to
+read the current moment (`now()`), never to build, compare or format one. Owned by
+`@vipengele/ts-core-common`.
+_Avoid_: timestamp, instant (those name a point on the timeline), `Date` (carries an implicit zone)
+
 **Integration**:
 A piece a Reporter installs when it is created and removes when it is closed, such as a listener on
 global state. Added to the builder by `name`; adding the same name again replaces the earlier one.
