@@ -6,6 +6,7 @@ import type {
   GlobalErrorEventLike,
   GlobalEventTarget,
   GlobalHandlersOptions,
+  GlobalProcess,
   GlobalRejectionEventLike,
   Integration,
   IntegrationCaptureContext,
@@ -36,6 +37,7 @@ test("the entry point exports the globalHandlers integration and its options", (
   expectTypeOf(entry.globalHandlers).returns.toEqualTypeOf<Integration>();
   expectTypeOf<GlobalHandlersOptions["onUncaught"]>().toEqualTypeOf<ExitPolicy>();
   expectTypeOf<GlobalHandlersOptions["eventTarget"]>().toEqualTypeOf<GlobalEventTarget | undefined>();
+  expectTypeOf<GlobalHandlersOptions["process"]>().toEqualTypeOf<GlobalProcess | undefined>();
   expectTypeOf<GlobalErrorEventLike>().not.toEqualTypeOf<globalThis.ErrorEvent>();
   expectTypeOf<GlobalRejectionEventLike["reason"]>().toEqualTypeOf<unknown>();
 });

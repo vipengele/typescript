@@ -8,6 +8,7 @@ export type {
   GlobalErrorEventLike,
   GlobalEventTarget,
   GlobalHandlersOptions,
+  GlobalProcess,
   GlobalRejectionEventLike,
 } from "./integrations/global-handlers";
 export { createReporter } from "./reporter";
