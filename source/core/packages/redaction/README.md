@@ -228,7 +228,7 @@ name the policy matches replaced.
   `https://[REDACTED]@host`. A function `Replacement` is called with key `"username"` or
   `"password"`.
 - **Userinfo is found the way a WHATWG parser finds it, and fails closed.** It follows `scheme://`
-  or a leading `//`, and for a special scheme (`http`, `https`, `ws`, `wss`, `ftp`, `file`, in any
+  or two leading separators, each `/` or `\` (`//host`, `\\host`, `/\host`), and for a special scheme (`http`, `https`, `ws`, `wss`, `ftp`, `file`, in any
   case) any run of `/` and `\`, so `https:u:pw@host` and `https:\\u:pw@host` are redacted; a tab,
   LF or CR in the scheme or between the slashes is ignored. When the authority has the `user:pass`
   shape (a `:` before the first `/`, `?` or `#`), the userinfo runs to its first `@`, and on through

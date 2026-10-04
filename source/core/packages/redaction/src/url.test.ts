@@ -158,6 +158,14 @@ describe("userinfo", () => {
     expect(redactUrl("/\n/u:pw@host")).toBe("/\n/[REDACTED]:[REDACTED]@host");
   });
 
+  test("a scheme-less URL opens an authority with any two of / and \\", () => {
+    expect(redactUrl("\\\\u:pw@host/x")).toBe("\\\\[REDACTED]:[REDACTED]@host/x");
+    expect(redactUrl("/\\u:pw@host/x")).toBe("/\\[REDACTED]:[REDACTED]@host/x");
+    expect(redactUrl("\\/u:pw@host")).toBe("\\/[REDACTED]:[REDACTED]@host");
+    expect(redactUrl("\\\t\\u@host")).toBe("\\\t\\[REDACTED]@host");
+    expect(redactUrl("\\u:pw@host")).toBe("\\u:pw@host");
+  });
+
   test("a non-special scheme needs a //", () => {
     expect(redactUrl("postgres:u:pw@db")).toBe("postgres:u:pw@db");
     expect(redactUrl("postgres:/u:pw@db")).toBe("postgres:/u:pw@db");

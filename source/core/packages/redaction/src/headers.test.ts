@@ -86,6 +86,14 @@ describe("Headers input", () => {
     expect(latin.get("authorization")).toBe("[REDACTED]");
     expect(redactHeaders(headersOf(["Accept", "abc"]), { maxStringLength: 3 }).get("accept")).toBe("abc");
   });
+
+  test("a throwing replacement propagates, as it does for a record", () => {
+    const replacement = (): never => {
+      throw new Error("boom");
+    };
+    expect(() => redactHeaders(headersOf(["Authorization", "x"]), { replacement })).toThrow("boom");
+    expect(() => redactHeaders({ Authorization: "x" }, { replacement })).toThrow("boom");
+  });
 });
 
 describe("record input", () => {

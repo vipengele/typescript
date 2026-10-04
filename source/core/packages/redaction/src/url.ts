@@ -11,8 +11,14 @@ import { applyReplacement } from "./replacement";
  */
 const AUTHORITY_START = /^[\0-\x20]*(?:([A-Za-z][A-Za-z0-9+.\t\n\r-]*):)?([\t\n\r/\\]*)/;
 
-/** The `//` that opens the authority of a non-special scheme or a protocol-relative URL. */
+/** The `//` that opens the authority of a non-special scheme, where `\` is not a slash. */
 const DOUBLE_SLASH = /^[\t\n\r]*\/[\t\n\r]*\//;
+
+/**
+ * The two separators that open the authority of a scheme-less URL. Each may be `/` or `\`, since a
+ * WHATWG parser resolving it against an `http:` or `https:` base reads `\` as a slash.
+ */
+const SCHEMELESS_DOUBLE_SLASH = /^[\t\n\r]*[/\\][\t\n\r]*[/\\]/;
 
 /** The schemes a WHATWG parser treats as special: they read userinfo after any run of `/` or `\`. */
 const SPECIAL_SCHEMES = new Set(["http", "https", "ws", "wss", "ftp", "file"]);
@@ -21,8 +27,10 @@ const SPECIAL_SCHEMES = new Set(["http", "https", "ws", "wss", "ftp", "file"]);
  * The prefix of `url` up to where its authority begins, or `undefined` when it has none. A special
  * scheme (case-insensitive, with any tab, LF or CR removed) is followed by an authority after any
  * run of `/` and `\`, an empty run included, so `https:u:pw@host` and `https:\\u:pw@host` have
- * one, as a WHATWG parser reads them. Any other scheme, and a scheme-less string, needs a `//`. The
- * prefix is returned as written, tabs and newlines included, so those bytes are kept.
+ * one, as a WHATWG parser reads them. Any other scheme needs a `//`. A scheme-less string needs two
+ * separators, each `/` or `\`, so `\\u:pw@host` and `/\u:pw@host` have an authority, as they do
+ * when resolved against a special base. The prefix is returned as written, tabs and newlines
+ * included, so those bytes are kept.
  */
 function authorityPrefix(url: string): string | undefined {
   // Every part of the pattern is optional, so it matches every string.
@@ -30,7 +38,7 @@ function authorityPrefix(url: string): string | undefined {
   if (scheme !== undefined && SPECIAL_SCHEMES.has(scheme.replace(/[\t\n\r]/g, "").toLowerCase())) {
     return whole;
   }
-  const slashes = DOUBLE_SLASH.exec(run)?.[0];
+  const slashes = (scheme === undefined ? SCHEMELESS_DOUBLE_SLASH : DOUBLE_SLASH).exec(run)?.[0];
   return slashes === undefined ? undefined : whole.slice(0, whole.length - run.length) + slashes;
 }
 
@@ -131,8 +139,9 @@ function redactUserinfo(url: string, options: ResolvedStringOptions): RedactedUs
  * so relative, scheme-less, protocol-relative and malformed input is accepted, the function never
  * throws on its contents, and every byte outside a replaced part is kept as written.
  *
- * - Userinfo is looked for only when the string has an authority (`scheme://`, a leading `//`, or
- *   a special scheme such as `https:` followed by any run of `/` and `\`). Both its parts are
+ * - Userinfo is looked for only when the string has an authority (`scheme://`, two leading
+ *   separators each `/` or `\`, or a special scheme such as `https:` followed by any run of `/` and
+ *   `\`). Both its parts are
  *   always replaced, whatever the policy; the replacement receives the part as written under the
  *   key `"username"` or `"password"`.
  * - The query runs from the first `?` after the userinfo to the next `#`, and is redacted as

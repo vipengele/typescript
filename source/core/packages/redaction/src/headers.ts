@@ -47,8 +47,11 @@ function redactHeadersObject(headers: Headers, options: ResolvedStringOptions): 
   const entries = [...headers];
   const out = new Headers();
   for (const [name, value] of keepWithinBreadth(entries, options.limits)) {
+    // Only the append is guarded: a value the Headers rejects falls back to the placeholder, while a
+    // throwing replacement propagates as it does for a record or pairs.
+    const redacted = redactValue(name, value, options);
     try {
-      out.append(name, redactValue(name, value, options));
+      out.append(name, redacted);
     } catch {
       out.append(name, HEADERS_FALLBACK);
     }
