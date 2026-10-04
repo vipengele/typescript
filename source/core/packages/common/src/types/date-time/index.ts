@@ -7,3 +7,4 @@ export {
   isInvalidDateTimeError,
 } from "./errors";
 export { LocalDate } from "./local-date";
+export { LocalTime } from "./local-time";
