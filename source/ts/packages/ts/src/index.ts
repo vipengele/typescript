@@ -20,6 +20,8 @@ export {
   email,
   githubToken,
   jwt,
+  maskKeepLast,
+  pseudonymize,
   redact,
   redactHeaders,
   redactQueryString,
@@ -28,7 +30,16 @@ export {
   stripeKey,
   valueDetectors,
 } from "@vipengele/ts-core-redaction";
-export type { Detector, RedactionPolicy, KeyMatcher, RedactOptions, RedactStringOptions, Replacement } from "@vipengele/ts-core-redaction";
+export type {
+  Detector,
+  MaskOptions,
+  PseudonymizeOptions,
+  RedactionPolicy,
+  KeyMatcher,
+  RedactOptions,
+  RedactStringOptions,
+  Replacement,
+} from "@vipengele/ts-core-redaction";
 export { normalizeAttributes } from "@vipengele/ts-core-common/attributes";
 export type { AttributeValue, Attributes, AttributesInput, NormalizeAttributesOptions } from "@vipengele/ts-core-common/attributes";
 export { VipengeleError } from "@vipengele/ts-core-common";

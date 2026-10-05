@@ -20,8 +20,10 @@ import type {
   HourCycle,
   IsoDayOfWeek,
   IsoWeekday,
+  MaskOptions,
   NameStyle,
   NormalizeAttributesOptions,
+  PseudonymizeOptions,
   RedactStringOptions,
 } from "./index";
 import {
@@ -40,8 +42,10 @@ import {
   LocalDateTime,
   Locale,
   LocalTime,
+  maskKeepLast,
   Numeric,
   normalizeAttributes,
+  pseudonymize,
   redact,
   redactHeaders,
   redactQueryString,
@@ -177,6 +181,25 @@ test("githubToken resolves from @vipengele/ts-core-redaction as a detector", () 
 
 test("stripeKey resolves from @vipengele/ts-core-redaction as a detector", () => {
   expect(stripeKey.pattern.test(`sk_live_${"a".repeat(24)}`)).toBe(true);
+});
+
+test("maskKeepLast resolves from @vipengele/ts-core-redaction and masks all but the last characters", () => {
+  const options: MaskOptions = { maskChar: "#" };
+
+  expect(redact({ card: "4242424242424242" }, { keys: ["card"] }, { replacement: maskKeepLast(4) })).toEqual({ card: "**** 4242" });
+  expect(redact({ card: "4242424242424242" }, { keys: ["card"] }, { replacement: maskKeepLast(4, options) })).toEqual({
+    card: "#### 4242",
+  });
+});
+
+test("pseudonymize resolves from @vipengele/ts-core-redaction and yields a deterministic token", () => {
+  const options: PseudonymizeOptions = { key: "k" };
+  const replacement = pseudonymize(options);
+  const first = redact({ id: "alice" }, { keys: ["id"] }, { replacement });
+  const second = redact({ id: "alice" }, { keys: ["id"] }, { replacement });
+
+  expect(first).toEqual(second);
+  expect((first as { id: string }).id).toMatch(/^pseud_[0-9a-f]{16}$/);
 });
 
 test("VipengeleError resolves from @vipengele/ts-core-common", () => {
