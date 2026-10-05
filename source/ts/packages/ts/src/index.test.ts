@@ -1,12 +1,16 @@
 // biome-ignore-all lint/security/noSecrets: the redaction fixtures are URL and header strings, flagged only for their entropy
 import {
   DateTimeParseError as CoreDateTimeParseError,
+  Instant as CoreInstant,
   InvalidDateTimeError as CoreInvalidDateTimeError,
   LocalDate as CoreLocalDate,
   LocalDateTime as CoreLocalDateTime,
   LocalTime as CoreLocalTime,
+  UnknownZoneError as CoreUnknownZoneError,
+  ZoneId as CoreZoneId,
   isDateTimeParseError as coreIsDateTimeParseError,
   isInvalidDateTimeError as coreIsInvalidDateTimeError,
+  isUnknownZoneError as coreIsUnknownZoneError,
 } from "@vipengele/ts-core-common/types/date-time";
 import { expect, test } from "vitest";
 import type {
@@ -32,9 +36,11 @@ import {
   DateTimeParseError,
   email,
   githubToken,
+  Instant,
   InvalidDateTimeError,
   isDateTimeParseError,
   isInvalidDateTimeError,
+  isUnknownZoneError,
   jwt,
   LocalDate,
   LocalDateTime,
@@ -49,8 +55,10 @@ import {
   Scope,
   secretKeys,
   stripeKey,
+  UnknownZoneError,
   VipengeleError,
   valueDetectors,
+  ZoneId,
 } from "./index";
 
 test("Numeric resolves from @vipengele/ts-core-common and round-trips a number", () => {
@@ -79,6 +87,10 @@ test("the date-time values are the @vipengele/ts-core-common/types/date-time exp
   expect(DateTimeParseError).toBe(CoreDateTimeParseError);
   expect(isInvalidDateTimeError).toBe(coreIsInvalidDateTimeError);
   expect(isDateTimeParseError).toBe(coreIsDateTimeParseError);
+  expect(ZoneId).toBe(CoreZoneId);
+  expect(Instant).toBe(CoreInstant);
+  expect(UnknownZoneError).toBe(CoreUnknownZoneError);
+  expect(isUnknownZoneError).toBe(coreIsUnknownZoneError);
 });
 
 test("LocalDate formats and segments a date in a locale", () => {

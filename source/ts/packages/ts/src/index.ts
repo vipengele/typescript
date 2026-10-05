@@ -3,12 +3,16 @@ export { Locale } from "@vipengele/ts-core-common/locale";
 export type { HourCycle, IsoWeekday, NameStyle } from "@vipengele/ts-core-common/locale";
 export {
   DateTimeParseError,
+  Instant,
   InvalidDateTimeError,
   isDateTimeParseError,
   isInvalidDateTimeError,
+  isUnknownZoneError,
   LocalDate,
   LocalDateTime,
   LocalTime,
+  UnknownZoneError,
+  ZoneId,
 } from "@vipengele/ts-core-common/types/date-time";
 export type { DateSegment, DateSegmentType, DateTimeTryParseResult, IsoDayOfWeek } from "@vipengele/ts-core-common/types/date-time";
 export { Scope } from "@vipengele/ts-core-common/scope";

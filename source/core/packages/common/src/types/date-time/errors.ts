@@ -6,6 +6,9 @@ const INVALID_DATE_TIME_ERROR_CODE = "common.date-time.invalid";
 /** The `code` every {@link DateTimeParseError} carries, and the only thing {@link isDateTimeParseError} matches on. */
 const DATE_TIME_PARSE_ERROR_CODE = "common.date-time.parse";
 
+/** The `code` every {@link UnknownZoneError} carries, and the only thing {@link isUnknownZoneError} matches on. */
+const UNKNOWN_ZONE_ERROR_CODE = "common.date-time.unknown-zone";
+
 /**
  * Raised when a date or time is built from fields that do not name one: a month outside 1-12, a
  * day past the end of its month, a non-integer field. Construction never rolls an overflowing
@@ -21,6 +24,14 @@ export class InvalidDateTimeError extends VipengeleError {
  */
 export class DateTimeParseError extends VipengeleError {
   readonly code = DATE_TIME_PARSE_ERROR_CODE;
+}
+
+/**
+ * Raised when a string does not name a time zone: one `Intl` does not recognize, an empty string,
+ * or a fixed UTC offset such as `+05:30` or `Z`, which is an offset rather than a named zone.
+ */
+export class UnknownZoneError extends VipengeleError {
+  readonly code = UNKNOWN_ZONE_ERROR_CODE;
 }
 
 /** The outcome of a date or time `tryParse`. `value` is present exactly when `success` is `true`. */
@@ -49,4 +60,12 @@ export function isInvalidDateTimeError(value: unknown): value is InvalidDateTime
  */
 export function isDateTimeParseError(value: unknown): value is DateTimeParseError {
   return value instanceof Error && (value as Partial<VipengeleError>).code === DATE_TIME_PARSE_ERROR_CODE;
+}
+
+/**
+ * Narrows `value` to an {@link UnknownZoneError}. Matches on the `code` string for the reason
+ * {@link isInvalidDateTimeError} gives.
+ */
+export function isUnknownZoneError(value: unknown): value is UnknownZoneError {
+  return value instanceof Error && (value as Partial<VipengeleError>).code === UNKNOWN_ZONE_ERROR_CODE;
 }
