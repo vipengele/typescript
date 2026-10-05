@@ -112,14 +112,27 @@ class TreeScope implements ScopeNode {
   }
 
   set(key: string, value: unknown): void {
-    const root = rootOf(this);
-    if (root === this) {
-      throw new ReservedScopeKeyError(`Cannot set "${key}" on the root scope, which never changes except through \`setResource\`.`);
-    }
-    if (Object.hasOwn(root[ATTRIBUTES], key)) {
-      throw new ReservedScopeKeyError(`Cannot set "${key}": the root scope holds it, and no other scope may.`);
-    }
+    assertSettable(this, key);
     this[ATTRIBUTES][key] = value;
+  }
+}
+
+/**
+ * Throws unless `key` may be set on `scope`: `scope` must not be the root, and the root must not
+ * hold `key`. It is the check {@link Scope.set} runs, exposed so a caller writing several keys can
+ * validate them all before writing any.
+ *
+ * Framework-internal, not for application use.
+ *
+ * @throws {ReservedScopeKeyError} when `scope` is the root or the root holds `key`.
+ */
+export function assertSettable(scope: Scope, key: string): void {
+  const root = rootOf(scope as ScopeNode);
+  if (root === scope) {
+    throw new ReservedScopeKeyError(`Cannot set "${key}" on the root scope, which never changes except through \`setResource\`.`);
+  }
+  if (Object.hasOwn(root[ATTRIBUTES], key)) {
+    throw new ReservedScopeKeyError(`Cannot set "${key}": the root scope holds it, and no other scope may.`);
   }
 }
 

@@ -1,5 +1,6 @@
 import type { ContextCarrier } from "../context";
 import {
+  assertSettable,
   createChildScope,
   getScopeTree,
   type Resource,
@@ -81,6 +82,77 @@ function setResource(resource: Partial<Resource>): void {
   setRootResource(getScopeTree().root, resource);
 }
 
+/** Writes every `[key, value]` pair to the current scope, validating all keys before writing any. */
+function writeAll(entries: readonly (readonly [string, unknown])[]): void {
+  const scope = current();
+  for (const [key] of entries) {
+    assertSettable(scope, key);
+  }
+  for (const [key, value] of entries) {
+    scope.set(key, value);
+  }
+}
+
+/** The user attributes {@link setUser} writes. */
+export interface ScopeUser {
+  readonly id?: string | undefined;
+  readonly email?: string | undefined;
+  readonly username?: string | undefined;
+}
+
+/**
+ * Sets `user.id`, `user.email` and `user.username` on the current scope, from the fields of `user`
+ * that are not `undefined`. Descendants see them; the ancestors do not.
+ *
+ * Every key is validated before any is written, so a refusal leaves the scope as it was.
+ *
+ * @throws {ReservedScopeKeyError} when a key is one the root holds.
+ */
+function setUser(user: ScopeUser): void {
+  const entries: [string, unknown][] = [];
+  if (user.id !== undefined) {
+    entries.push(["user.id", user.id]);
+  }
+  if (user.email !== undefined) {
+    entries.push(["user.email", user.email]);
+  }
+  if (user.username !== undefined) {
+    entries.push(["user.username", user.username]);
+  }
+  writeAll(entries);
+}
+
+/**
+ * Sets the attribute `key` to `value` on the current scope. Descendants see it; the ancestors do not.
+ *
+ * Reporter redaction splits keys on every non-alphanumeric character, so a tag such as
+ * `sessionId` or `token` is masked by the default `secretKeys`.
+ *
+ * @throws {ReservedScopeKeyError} when `key` is one the root holds.
+ */
+function setTag(key: string, value: unknown): void {
+  writeAll([[key, value]]);
+}
+
+/**
+ * Sets one attribute per own field of `data` on the current scope, keyed `name.field` with `field`
+ * taken verbatim; a nested value stays a value. Descendants see them; the ancestors do not.
+ *
+ * Every key is validated before any is written, so a refusal leaves the scope as it was.
+ *
+ * Reporter redaction splits keys on every non-alphanumeric character, so `session.id` carries the
+ * word `id` of a `session` and a context named `token` is masked by the default `secretKeys`.
+ *
+ * @throws {TypeError} when `name` is not a non-empty string.
+ * @throws {ReservedScopeKeyError} when a key is one the root holds.
+ */
+function setContext(name: string, data: Readonly<Record<string, unknown>>): void {
+  if (typeof name !== "string" || name === "") {
+    throw new TypeError("Scope.setContext requires `name` to be a non-empty string.");
+  }
+  writeAll(Object.entries(data).map(([field, value]) => [`${name}.${field}`, value] as const));
+}
+
 /**
  * Replaces the carrier the current scope rides on — a zone.js-backed carrier in an application that
  * already runs under zone.js, say. The replacement is seen immediately by every copy of the package
@@ -102,5 +174,8 @@ export const Scope = {
   isolated,
   resource,
   setResource,
+  setUser,
+  setTag,
+  setContext,
   useCarrier,
 } as const;
