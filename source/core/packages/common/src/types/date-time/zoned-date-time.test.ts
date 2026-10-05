@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { isInvalidDateTimeError, isZoneResolutionError } from "./errors";
+import { isDateTimeParseError, isInvalidDateTimeError, isUnknownZoneError, isZoneResolutionError } from "./errors";
 import { LocalDateTime } from "./local-date-time";
 import type { Disambiguation } from "./zone-resolve";
 import { ZoneId } from "./zone-id";
@@ -652,5 +652,291 @@ describe("ZonedDateTime arithmetic past its range", () => {
     { name: "minusMonths before 0001-01-01", start: "0001-01-15T12:00", step: (v: ZonedDateTime) => v.minusMonths(1) },
   ])("$name throws an InvalidDateTimeError", ({ start, step }) => {
     expect(isInvalidDateTimeError(thrown(() => step(zoned(start, "Europe/Berlin"))))).toBe(true);
+  });
+});
+
+describe("ZonedDateTime#toString", () => {
+  test.for([
+    { name: "Berlin in summer", local: "2026-10-01T14:30", zone: "Europe/Berlin", text: "2026-10-01T14:30+02:00[Europe/Berlin]" },
+    { name: "Berlin in winter", local: "2026-01-15T08:00", zone: "Europe/Berlin", text: "2026-01-15T08:00+01:00[Europe/Berlin]" },
+    {
+      name: "New York, west of Greenwich",
+      local: "2026-01-15T08:00",
+      zone: "America/New_York",
+      text: "2026-01-15T08:00-05:00[America/New_York]",
+    },
+    { name: "Tehran, a half-hour offset", local: "2026-02-03T04:05", zone: "Asia/Tehran", text: "2026-02-03T04:05+03:30[Asia/Tehran]" },
+    {
+      name: "a nanosecond fraction",
+      local: "2026-07-15T13:45:30.123456789",
+      zone: "Europe/Berlin",
+      text: "2026-07-15T13:45:30.123456789+02:00[Europe/Berlin]",
+    },
+    {
+      name: "a millisecond fraction",
+      local: "2026-07-15T13:45:30.5",
+      zone: "Europe/Berlin",
+      text: "2026-07-15T13:45:30.500+02:00[Europe/Berlin]",
+    },
+    { name: "whole seconds", local: "2026-07-15T13:45:30", zone: "Europe/Berlin", text: "2026-07-15T13:45:30+02:00[Europe/Berlin]" },
+    {
+      name: "Berlin's local mean time",
+      local: "1880-06-01T12:00",
+      zone: "Europe/Berlin",
+      text: "1880-06-01T12:00+00:53:28[Europe/Berlin]",
+    },
+    {
+      name: "New York's local mean time",
+      local: "1880-06-01T12:00",
+      zone: "America/New_York",
+      text: "1880-06-01T12:00-04:56:02[America/New_York]",
+    },
+  ])("writes the local date-time, the offset and the zone: $name", ({ local, zone, text }) => {
+    expect(zoned(local, zone).toString()).toBe(text);
+  });
+
+  test("writes a zero offset as +00:00 in UTC, never Z", () => {
+    const value = zoned("2026-07-15T12:00", "UTC");
+
+    expect(value.toString()).toBe(`2026-07-15T12:00+00:00[${value.zone.id}]`);
+    expect(value.toString()).toMatch(/^2026-07-15T12:00\+00:00\[(?:Etc\/)?UTC\]$/);
+  });
+
+  test("writes a zero offset as +00:00 in a zone that reads at UTC", () => {
+    expect(zoned("2026-01-15T12:00", "Europe/London").toString()).toBe("2026-01-15T12:00+00:00[Europe/London]");
+  });
+
+  test("writes each reading of a time in an overlap with its own offset", () => {
+    expect(zoned("2026-10-25T02:30", "Europe/Berlin", "earlier").toString()).toBe("2026-10-25T02:30+02:00[Europe/Berlin]");
+    expect(zoned("2026-10-25T02:30", "Europe/Berlin", "later").toString()).toBe("2026-10-25T02:30+01:00[Europe/Berlin]");
+  });
+
+  test("writes the shifted time a value built in a gap holds", () => {
+    expect(zoned("2026-03-29T02:30", "Europe/Berlin").toString()).toBe("2026-03-29T03:30+02:00[Europe/Berlin]");
+  });
+});
+
+describe("ZonedDateTime.parse", () => {
+  test("reads the local date-time, the offset and the zone", () => {
+    expect(parts(ZonedDateTime.parse("2026-10-01T14:30+02:00[Europe/Berlin]"))).toEqual({
+      local: "2026-10-01T14:30",
+      zone: "Europe/Berlin",
+      offsetSeconds: 7200,
+      instant: "2026-10-01T12:30:00Z",
+    });
+  });
+
+  test("reads a negative offset", () => {
+    expect(parts(ZonedDateTime.parse("2026-01-15T08:00-05:00[America/New_York]"))).toEqual({
+      local: "2026-01-15T08:00",
+      zone: "America/New_York",
+      offsetSeconds: -18_000,
+      instant: "2026-01-15T13:00:00Z",
+    });
+  });
+
+  test("reads the zone name as ZoneId.of does, case-insensitively and canonically", () => {
+    expect(ZonedDateTime.parse("2026-10-01T14:30+02:00[europe/berlin]").zone.id).toBe("Europe/Berlin");
+  });
+
+  test("reads an offset written with zero seconds", () => {
+    expect(ZonedDateTime.parse("2026-10-01T14:30+02:00:00[Europe/Berlin]").offsetSeconds).toBe(7200);
+  });
+
+  test.for([
+    { name: "Berlin in summer, to the nanosecond", text: "2026-07-15T13:45:30.123456789+02:00[Europe/Berlin]" },
+    { name: "New York in winter", text: "2026-12-31T23:59:59.999999999-05:00[America/New_York]" },
+    { name: "Tehran", text: "2026-02-03T04:05:06.700+03:30[Asia/Tehran]" },
+    { name: "the last nanosecond before Berlin's spring-forward gap", text: "2026-03-29T01:59:59.999999999+01:00[Europe/Berlin]" },
+    { name: "the first moment after Berlin's spring-forward gap", text: "2026-03-29T03:00+02:00[Europe/Berlin]" },
+    { name: "the earlier reading of a time in Berlin's overlap", text: "2026-10-25T02:30+02:00[Europe/Berlin]" },
+    { name: "the later reading of a time in Berlin's overlap", text: "2026-10-25T02:30+01:00[Europe/Berlin]" },
+    { name: "the earlier reading of a time in New York's overlap", text: "2026-11-01T01:30:00.000000001-04:00[America/New_York]" },
+    { name: "the later reading of a time in New York's overlap", text: "2026-11-01T01:30:00.000000001-05:00[America/New_York]" },
+    { name: "Berlin's local mean time, with offset seconds", text: "1880-06-01T12:00+00:53:28[Europe/Berlin]" },
+    { name: "New York's local mean time, with negative offset seconds", text: "1880-06-01T12:00-04:56:02[America/New_York]" },
+  ])("reads back what toString writes: $name", ({ text }) => {
+    expect(ZonedDateTime.parse(text).toString()).toBe(text);
+  });
+
+  test("reads the two readings of a time in an overlap as two instants an hour apart", () => {
+    const first = ZonedDateTime.parse("2026-10-25T02:30+02:00[Europe/Berlin]");
+    const second = ZonedDateTime.parse("2026-10-25T02:30+01:00[Europe/Berlin]");
+
+    expect(first.toInstant().toString()).toBe("2026-10-25T00:30:00Z");
+    expect(second.toInstant().toString()).toBe("2026-10-25T01:30:00Z");
+  });
+
+  test.for([
+    { name: "Berlin's earlier overlap reading", local: "2026-10-25T02:30", zone: "Europe/Berlin", mode: "earlier" },
+    { name: "Berlin's later overlap reading", local: "2026-10-25T02:30", zone: "Europe/Berlin", mode: "later" },
+    { name: "a value built in a gap", local: "2026-03-29T02:30:15.25", zone: "Europe/Berlin", mode: "compatible" },
+    { name: "a local mean time", local: "0001-01-01T00:00", zone: "Europe/Berlin", mode: "compatible" },
+    { name: "the last nanosecond of 9999", local: "9999-12-31T23:59:59.999999999", zone: "Pacific/Kiritimati", mode: "compatible" },
+  ] as const)("gives a value equal to the one toString wrote: $name", ({ local, zone, mode }) => {
+    const value = zoned(local, zone, mode);
+    const read = ZonedDateTime.parse(value.toString());
+
+    expect(read.equals(value)).toBe(true);
+    expect(parts(read)).toEqual(parts(value));
+  });
+
+  test("gives a frozen value", () => {
+    expect(Object.isFrozen(ZonedDateTime.parse("2026-10-01T14:30+02:00[Europe/Berlin]"))).toBe(true);
+  });
+});
+
+describe("ZonedDateTime.parse refusing a string", () => {
+  test.for([
+    { name: "an empty string", text: "" },
+    { name: "prose", text: "next Tuesday" },
+    { name: "a local date-time alone", text: "2026-07-15T12:00" },
+    { name: "an offset and no zone", text: "2026-07-15T12:00+02:00" },
+    { name: "a zone and no offset", text: "2026-07-15T12:00[Europe/Berlin]" },
+    { name: "Z in place of the offset", text: "2026-07-15T10:00Z[Europe/Berlin]" },
+    { name: "an offset with a one-digit hour", text: "2026-07-15T12:00+2:00[Europe/Berlin]" },
+    { name: "an offset with no colon", text: "2026-07-15T12:00+0200[Europe/Berlin]" },
+    { name: "an offset with hours only", text: "2026-07-15T12:00+02[Europe/Berlin]" },
+    { name: "an unclosed bracket", text: "2026-07-15T12:00+02:00[Europe/Berlin" },
+    { name: "empty brackets", text: "2026-07-15T12:00+02:00[]" },
+    { name: "text after the closing bracket", text: "2026-07-15T12:00+02:00[Europe/Berlin]x" },
+    { name: "a second bracketed name", text: "2026-07-15T12:00+02:00[Europe/Berlin][u-ca=iso8601]" },
+  ])("refuses $name as not in the form", ({ text }) => {
+    const error = thrown(() => ZonedDateTime.parse(text));
+
+    expect(isDateTimeParseError(error)).toBe(true);
+    expect((error as Error).message).toBe(
+      `Cannot parse ${JSON.stringify(text)} as an ISO 8601 zoned date-time: expected <date>T<time>±HH:mm[<zone>].`,
+    );
+  });
+
+  test.for([
+    { name: "a lower-case t separator", local: "2026-07-15t12:00" },
+    { name: "a date that does not exist", local: "2026-02-30T12:00" },
+    { name: "hour 24", local: "2026-07-15T24:00" },
+    { name: "a space for the separator", local: "2026-07-15 12:00" },
+    { name: "leading space", local: " 2026-07-15T12:00" },
+    { name: "a ten-digit fraction", local: "2026-07-15T12:00:00.1234567890" },
+  ])("refuses $name in the local part", ({ local }) => {
+    const text = `${local}+02:00[Europe/Berlin]`;
+    const error = thrown(() => ZonedDateTime.parse(text));
+
+    expect(isDateTimeParseError(error)).toBe(true);
+    expect((error as Error).message).toBe(
+      `Cannot parse ${JSON.stringify(text)} as an ISO 8601 zoned date-time: ${JSON.stringify(local)} is not a date and a time.`,
+    );
+  });
+
+  test.for([
+    { name: "hour 24", offset: "+24:00" },
+    { name: "hour 25", offset: "+25:00" },
+    { name: "minute 60", offset: "+02:60" },
+    { name: "second 60", offset: "+00:53:60" },
+    { name: "a negative hour 99", offset: "-99:00" },
+  ])("refuses an offset out of range: $name", ({ offset }) => {
+    const text = `2026-07-15T12:00${offset}[Europe/Berlin]`;
+    const error = thrown(() => ZonedDateTime.parse(text));
+
+    expect(isDateTimeParseError(error)).toBe(true);
+    expect((error as Error).message).toBe(
+      `Cannot parse ${JSON.stringify(text)} as an ISO 8601 zoned date-time: the offset's hour must be 00-23 and its minute and second 00-59.`,
+    );
+  });
+
+  test.for(["-00:00", "-00:00:00"])("refuses the negative zero offset %s", (offset) => {
+    const text = `2026-07-15T12:00${offset}[UTC]`;
+    const error = thrown(() => ZonedDateTime.parse(text));
+
+    expect(isDateTimeParseError(error)).toBe(true);
+    expect((error as Error).message).toBe(
+      `Cannot parse ${JSON.stringify(text)} as an ISO 8601 zoned date-time: a zero offset is written +00:00, not -00:00.`,
+    );
+  });
+
+  test.for([
+    { name: "a name Intl does not know", zone: "Mars/Olympus_Mons" },
+    { name: "a fixed offset", zone: "+02:00" },
+    { name: "Z", zone: "Z" },
+  ])("refuses $name in the brackets with a DateTimeParseError, not an UnknownZoneError", ({ zone }) => {
+    const text = `2026-07-15T12:00+02:00[${zone}]`;
+    const error = thrown(() => ZonedDateTime.parse(text));
+
+    expect(isDateTimeParseError(error)).toBe(true);
+    expect(isUnknownZoneError(error)).toBe(false);
+    expect((error as Error).message).toBe(
+      `Cannot parse ${JSON.stringify(text)} as an ISO 8601 zoned date-time: unknown time zone ${JSON.stringify(zone)}.`,
+    );
+  });
+
+  test.for([
+    {
+      name: "a winter offset in Berlin's summer",
+      text: "2026-07-15T12:00+01:00[Europe/Berlin]",
+      detail: "Europe/Berlin does not read 2026-07-15T12:00 at offset +01:00",
+    },
+    {
+      name: "the sign flipped",
+      text: "2026-01-15T08:00+05:00[America/New_York]",
+      detail: "America/New_York does not read 2026-01-15T08:00 at offset +05:00",
+    },
+    {
+      name: "a zero offset in Berlin",
+      text: "2026-07-15T12:00+00:00[Europe/Berlin]",
+      detail: "Europe/Berlin does not read 2026-07-15T12:00 at offset +00:00",
+    },
+    {
+      name: "a whole-minute offset for a local mean time",
+      text: "1880-06-01T12:00+00:53[Europe/Berlin]",
+      detail: "Europe/Berlin does not read 1880-06-01T12:00 at offset +00:53",
+    },
+    {
+      name: "an offset neither reading of an overlap has",
+      text: "2026-10-25T02:30+03:00[Europe/Berlin]",
+      detail: "Europe/Berlin does not read 2026-10-25T02:30 at offset +03:00",
+    },
+    {
+      name: "a time in a gap with the offset before it",
+      text: "2026-03-29T02:30+01:00[Europe/Berlin]",
+      detail: "Europe/Berlin does not read 2026-03-29T02:30 at offset +01:00",
+    },
+    {
+      name: "a time in a gap with the offset after it",
+      text: "2026-03-29T02:30+02:00[Europe/Berlin]",
+      detail: "Europe/Berlin does not read 2026-03-29T02:30 at offset +02:00",
+    },
+    {
+      name: "a time in New York's gap with a seconds offset",
+      text: "2026-03-08T02:30:00.5-04:30:30[America/New_York]",
+      detail: "America/New_York does not read 2026-03-08T02:30:00.500 at offset -04:30:30",
+    },
+  ])("refuses an offset the zone does not read the time in: $name", ({ text, detail }) => {
+    const error = thrown(() => ZonedDateTime.parse(text));
+
+    expect(isDateTimeParseError(error)).toBe(true);
+    expect((error as Error).message).toBe(`Cannot parse ${JSON.stringify(text)} as an ISO 8601 zoned date-time: ${detail}.`);
+  });
+});
+
+describe("ZonedDateTime.tryParse", () => {
+  test("yields success and the value for a zoned date-time", () => {
+    const result = ZonedDateTime.tryParse("2026-10-25T02:30+01:00[Europe/Berlin]");
+
+    expect(result.success).toBe(true);
+    expect(result.value?.toString()).toBe("2026-10-25T02:30+01:00[Europe/Berlin]");
+    expect(result.value?.equals(ZonedDateTime.parse("2026-10-25T02:30+01:00[Europe/Berlin]"))).toBe(true);
+  });
+
+  test.for([
+    "",
+    "next Tuesday",
+    "2026-07-15T12:00+02:00",
+    "2026-02-30T12:00+01:00[Europe/Berlin]",
+    "2026-07-15T12:00+25:00[Europe/Berlin]",
+    "2026-07-15T12:00-00:00[UTC]",
+    "2026-07-15T12:00+02:00[Mars/Olympus_Mons]",
+    "2026-07-15T12:00+01:00[Europe/Berlin]",
+    "2026-03-29T02:30+02:00[Europe/Berlin]",
+  ])("yields only success: false, without throwing, for %o", (text) => {
+    expect(ZonedDateTime.tryParse(text)).toStrictEqual({ success: false });
   });
 });
