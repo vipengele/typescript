@@ -18,9 +18,18 @@ function useZone(timeZone: string): void {
   });
 }
 
-/** A clock pinned to the instant `iso` spells. */
-function clockAt(iso: string): () => number {
-  return () => new Date(iso).getTime();
+/** A clock pinned to the instant `iso` spells, `fraction` milliseconds later. */
+function clockAt(iso: string, fraction = 0): () => number {
+  return () => new Date(iso).getTime() + fraction;
+}
+
+/**
+ * Makes `systemClock` read `epochMilliseconds`. The time origin is pinned to zero so the reading
+ * is exactly the mocked `performance.now()`, with no rounding from adding the real origin.
+ */
+function useSystemClock(epochMilliseconds: number): void {
+  vi.spyOn(performance, "timeOrigin", "get").mockReturnValue(0);
+  vi.spyOn(performance, "now").mockReturnValue(epochMilliseconds);
 }
 
 afterEach(() => {
@@ -38,7 +47,7 @@ describe("civilNow", () => {
       hour: 0,
       minute: 0,
       second: 0,
-      millisecond: 0,
+      nanosecond: 0,
     });
   });
 
@@ -76,24 +85,51 @@ describe("civilNow", () => {
     expect([behind.day, behind.hour]).toEqual([30, 22]);
   });
 
-  test("takes the millisecond from the instant", () => {
+  test("takes the fraction of the second from the instant", () => {
     useZone("UTC");
 
-    expect(civilNow(clockAt("2026-10-01T14:30:05.250Z"))).toMatchObject({ hour: 14, minute: 30, second: 5, millisecond: 250 });
+    expect(civilNow(clockAt("2026-10-01T14:30:05.250Z"))).toMatchObject({ hour: 14, minute: 30, second: 5, nanosecond: 250_000_000 });
   });
 
-  test("reads an instant before the epoch with a millisecond from 0 to 999", () => {
+  test("floors a sub-millisecond reading to the microsecond, never rounding it", () => {
     useZone("UTC");
 
-    expect(civilNow(() => -1)).toEqual({ year: 1969, month: 12, day: 31, hour: 23, minute: 59, second: 59, millisecond: 999 });
-    expect(civilNow(() => -1002)).toMatchObject({ second: 58, millisecond: 998 });
+    // 0.4375 is 7/16, exact in a double at this magnitude, and so is the reading times 1000:
+    // 123 437.5 µs, which floors to 123 437 where rounding would give 123 438.
+    expect(civilNow(clockAt("2026-10-01T14:30:05.123Z", 0.4375))).toMatchObject({ second: 5, nanosecond: 123_437_000 });
+    // 2^-9 ms is 1.953125 µs, exact in a double.
+    expect(civilNow(() => 2 ** -9)).toEqual({ year: 1970, month: 1, day: 1, hour: 0, minute: 0, second: 0, nanosecond: 1000 });
+    expect(civilNow(() => 1.75)).toMatchObject({ year: 1970, second: 0, nanosecond: 1_750_000 });
   });
 
-  test("floors the clock's sub-millisecond fraction", () => {
+  test("leaves the last three digits of the nanosecond at zero", () => {
     useZone("UTC");
 
-    expect(civilNow(() => 1.9)).toMatchObject({ year: 1970, second: 0, millisecond: 1 });
-    expect(civilNow(() => -0.5)).toMatchObject({ year: 1969, second: 59, millisecond: 999 });
+    for (const fraction of [0.4375, 2 ** -9, 0.999_999_9]) {
+      expect(civilNow(clockAt("2026-10-01T14:30:05.123Z", fraction)).nanosecond % 1000).toBe(0);
+    }
+  });
+
+  test("reads an instant before the epoch with a fraction from 0 to 999 999 000", () => {
+    useZone("UTC");
+
+    expect(civilNow(() => -1)).toEqual({ year: 1969, month: 12, day: 31, hour: 23, minute: 59, second: 59, nanosecond: 999_000_000 });
+    expect(civilNow(() => -1002)).toMatchObject({ second: 58, nanosecond: 998_000_000 });
+  });
+
+  test("floors a sub-microsecond reading before the epoch into 1969", () => {
+    useZone("UTC");
+
+    // -2^-11 ms is -0.48828125 µs, exact in a double; it floors to -1 µs, not to 0.
+    expect(civilNow(() => -(2 ** -11))).toEqual({
+      year: 1969,
+      month: 12,
+      day: 31,
+      hour: 23,
+      minute: 59,
+      second: 59,
+      nanosecond: 999_999_000,
+    });
   });
 
   test("rolls into the next year ahead of UTC", () => {
@@ -140,12 +176,9 @@ describe("civilNow", () => {
 
   test("reads the system clock by default", () => {
     useZone("UTC");
-    const instant = new Date("2026-10-01T14:30:05.250Z").getTime();
-    // Half a millisecond of headroom keeps the floored sum on `instant` despite the rounding of
-    // `timeOrigin + now()`.
-    vi.spyOn(performance, "now").mockReturnValue(instant + 0.5 - performance.timeOrigin);
+    useSystemClock(new Date("2026-10-01T14:30:05.250Z").getTime() + 0.5);
 
-    expect(civilNow()).toMatchObject({ year: 2026, month: 10, day: 1, hour: 14, minute: 30, second: 5, millisecond: 250 });
+    expect(civilNow()).toEqual({ year: 2026, month: 10, day: 1, hour: 14, minute: 30, second: 5, nanosecond: 250_500_000 });
   });
 });
 
@@ -189,7 +222,7 @@ describe("LocalDate.now", () => {
 
   test("reads the system clock by default", () => {
     useZone("UTC");
-    vi.spyOn(performance, "now").mockReturnValue(new Date("2024-02-29T12:00:00.000Z").getTime() + 0.5 - performance.timeOrigin);
+    useSystemClock(new Date("2024-02-29T12:00:00.000Z").getTime());
 
     expect(LocalDate.now()).toEqual(LocalDate.of(2024, 2, 29));
   });
@@ -203,10 +236,14 @@ describe("LocalDate.now", () => {
 });
 
 describe("LocalTime.now", () => {
-  test("is the time of day in the runtime's zone, to the millisecond", () => {
+  test("is the time of day in the runtime's zone, to the microsecond", () => {
     useZone("America/Los_Angeles");
 
-    expect(LocalTime.now(clockAt("2026-10-01T05:06:07.089Z"))).toEqual(LocalTime.of(22, 6, 7, 89));
+    // 0.4375 ms is exact in a double, and floors to 437 µs.
+    const time = LocalTime.now(clockAt("2026-10-01T05:06:07.089Z", 0.4375));
+    expect(time).toEqual(LocalTime.of(22, 6, 7, 89_437_000));
+    expect(time.toString()).toBe("22:06:07.089437");
+    expect(Object.isFrozen(time)).toBe(true);
   });
 
   test("is 00:00 at midnight", () => {
@@ -217,9 +254,9 @@ describe("LocalTime.now", () => {
 
   test("reads the system clock by default", () => {
     useZone("UTC");
-    vi.spyOn(performance, "now").mockReturnValue(new Date("2026-10-01T14:30:05.250Z").getTime() + 0.5 - performance.timeOrigin);
+    useSystemClock(new Date("2026-10-01T14:30:05.250Z").getTime() + 0.5);
 
-    expect(LocalTime.now()).toEqual(LocalTime.of(14, 30, 5, 250));
+    expect(LocalTime.now()).toEqual(LocalTime.of(14, 30, 5, 250_500_000));
   });
 });
 
@@ -228,6 +265,29 @@ describe("LocalDateTime.now", () => {
     useZone("Pacific/Auckland");
 
     expect(LocalDateTime.now(clockAt("2024-12-31T23:30:00.125Z")).toString()).toBe("2025-01-01T12:30:00.125");
+  });
+
+  test("is to the microsecond, floored", () => {
+    useZone("UTC");
+
+    // 0.4375 ms is exact in a double; the reading floors to 123 437 µs rather than rounding up.
+    const value = LocalDateTime.now(clockAt("2026-10-01T14:30:00.123Z", 0.4375));
+    expect(value.toString()).toBe("2026-10-01T14:30:00.123437");
+    expect(value.time.nanosecond).toBe(123_437_000);
+    expect(Object.isFrozen(value)).toBe(true);
+  });
+
+  test("writes a single microsecond as a six-digit fraction", () => {
+    useZone("UTC");
+
+    // 2^-9 ms is 1.953125 µs, exact in a double, and floors to 1 µs.
+    expect(LocalDateTime.now(() => 2 ** -9).toString()).toBe("1970-01-01T00:00:00.000001");
+  });
+
+  test("is midnight at hour 0", () => {
+    useZone("UTC");
+
+    expect(LocalDateTime.now(clockAt("2026-10-01T00:00:00.000Z")).time.hour).toBe(0);
   });
 
   test("reads the clock once for both the date and the time", () => {
@@ -240,9 +300,9 @@ describe("LocalDateTime.now", () => {
 
   test("reads the system clock by default", () => {
     useZone("UTC");
-    vi.spyOn(performance, "now").mockReturnValue(new Date("2026-10-01T00:00:00.000Z").getTime() + 0.5 - performance.timeOrigin);
+    useSystemClock(new Date("2026-10-01T00:00:00.000Z").getTime() + 0.5);
 
-    expect(LocalDateTime.now().toString()).toBe("2026-10-01T00:00");
+    expect(LocalDateTime.now().toString()).toBe("2026-10-01T00:00:00.000500");
   });
 
   test("rejects a date outside 0001-01-01 to 9999-12-31 with InvalidDateTimeError", () => {

@@ -13,14 +13,28 @@ test("of combines a date and a time", () => {
   expect(value.time).toBe(time);
 });
 
-test("ofFields defaults the second and the millisecond to zero", () => {
+test("ofFields defaults the second and the nanosecond to zero", () => {
   const value = LocalDateTime.ofFields(2026, 10, 1, 14, 30);
   expect(value.date.equals(LocalDate.of(2026, 10, 1))).toBe(true);
   expect(value.time.equals(LocalTime.of(14, 30, 0, 0))).toBe(true);
 });
 
 test("ofFields takes every field", () => {
-  expect(LocalDateTime.ofFields(2026, 10, 1, 14, 30, 5, 250).toString()).toBe("2026-10-01T14:30:05.250");
+  const value = LocalDateTime.ofFields(2026, 10, 1, 14, 30, 5, 250_000_000);
+  expect(value.time.nanosecond).toBe(250_000_000);
+  expect(value.toString()).toBe("2026-10-01T14:30:05.250");
+  expect(LocalDateTime.ofFields(2026, 10, 1, 14, 30, 5, 123_456_789).toString()).toBe("2026-10-01T14:30:05.123456789");
+});
+
+test("ofFields rejects a nanosecond outside 0 to 999 999 999 with InvalidDateTimeError", () => {
+  for (const nanosecond of [-1, 1_000_000_000, 0.5]) {
+    try {
+      LocalDateTime.ofFields(2026, 10, 1, 14, 30, 5, nanosecond);
+      expect.unreachable();
+    } catch (error) {
+      expect(isInvalidDateTimeError(error)).toBe(true);
+    }
+  }
 });
 
 test.each([
@@ -47,9 +61,12 @@ test.each([
   "2026-10-01T14:30",
   "2026-10-01T14:30:05",
   "2026-10-01T14:30:05.250",
+  "2026-10-01T14:30:05.123456",
+  "2026-10-01T14:30:05.000001",
+  "2026-10-01T14:30:05.123456789",
   "2026-10-01T00:00",
   "0001-01-01T00:00",
-  "9999-12-31T23:59:59.999",
+  "9999-12-31T23:59:59.999999999",
 ])("parse then toString round-trips %s", (iso) => {
   expect(LocalDateTime.parse(iso).toString()).toBe(iso);
   const result = LocalDateTime.tryParse(iso);
@@ -59,7 +76,16 @@ test.each([
 
 test("parse reads the fields of each form", () => {
   const value = LocalDateTime.parse("2026-10-01T14:30:05.25");
-  expect(value.equals(LocalDateTime.ofFields(2026, 10, 1, 14, 30, 5, 250))).toBe(true);
+  expect(value.equals(LocalDateTime.ofFields(2026, 10, 1, 14, 30, 5, 250_000_000))).toBe(true);
+  expect(value.time.nanosecond).toBe(250_000_000);
+  expect(LocalDateTime.parse("2026-10-01T14:30:05.1234").time.nanosecond).toBe(123_400_000);
+  expect(LocalDateTime.parse("2026-10-01T14:30:05.000000001").time.nanosecond).toBe(1);
+});
+
+test("parse writes the fraction back in the shortest of 3, 6 or 9 digits", () => {
+  expect(LocalDateTime.parse("2026-10-01T14:30:05.1").toString()).toBe("2026-10-01T14:30:05.100");
+  expect(LocalDateTime.parse("2026-10-01T14:30:05.1234").toString()).toBe("2026-10-01T14:30:05.123400");
+  expect(LocalDateTime.parse("2026-10-01T14:30:05.1234567").toString()).toBe("2026-10-01T14:30:05.123456700");
 });
 
 test.each([
@@ -79,6 +105,8 @@ test.each([
   "2026-10-01T10:00:60",
   "2026-10-01T10:00Z",
   " 2026-10-01T10:00",
+  "2026-10-01T10:00:00.",
+  "2026-10-01T10:00:00.1234567890",
 ])("parse rejects %j with DateTimeParseError and tryParse reports failure", (str) => {
   try {
     LocalDateTime.parse(str);
@@ -184,8 +212,8 @@ describe("LocalDateTime#format", () => {
     expect(LocalDateTime.ofFields(2026, 2, 3, 0, 0).format(new Locale("en-US-u-hc-h24"))).toBe("02/03/2026, 00:00");
   });
 
-  test("writes the second and the millisecond nowhere", () => {
-    expect(LocalDateTime.ofFields(2026, 2, 3, 13, 30, 45, 999).format(new Locale("de-DE"))).toBe("03.02.2026, 13:30");
+  test("writes the second and the nanosecond nowhere", () => {
+    expect(LocalDateTime.ofFields(2026, 2, 3, 13, 30, 45, 999_999_999).format(new Locale("de-DE"))).toBe("03.02.2026, 13:30");
   });
 
   test("an omitted locale writes in Locale.default()", () => {
@@ -228,9 +256,9 @@ describe("LocalDateTime.parseLocalized and tryParseLocalized", () => {
     expect(LocalDateTime.tryParseLocalized(formatted, locale).value?.toString()).toBe(iso);
   });
 
-  test("reads back a date-time with seconds at second 0 and millisecond 0", () => {
+  test("reads back a date-time with seconds at second 0 and nanosecond 0", () => {
     const locale = new Locale("en-US");
-    const value = LocalDateTime.parseLocalized(LocalDateTime.ofFields(2026, 2, 3, 13, 30, 45, 999).format(locale), locale);
+    const value = LocalDateTime.parseLocalized(LocalDateTime.ofFields(2026, 2, 3, 13, 30, 45, 999_999_999).format(locale), locale);
 
     expect(value.equals(LocalDateTime.ofFields(2026, 2, 3, 13, 30))).toBe(true);
   });

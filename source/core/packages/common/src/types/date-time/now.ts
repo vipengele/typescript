@@ -9,7 +9,8 @@ export interface CivilDateTimeFields {
   readonly hour: number;
   readonly minute: number;
   readonly second: number;
-  readonly millisecond: number;
+  /** The nanosecond of the second, a whole number of microseconds: the last three digits are zero. */
+  readonly nanosecond: number;
 }
 
 /** The largest distance from the epoch, in milliseconds, an ECMAScript time value spans. */
@@ -52,17 +53,19 @@ function resolveFormatter(timeZone: string): Intl.DateTimeFormat {
  * The zone is read from `Intl.DateTimeFormat().resolvedOptions().timeZone` on every call, so a
  * change to the runtime's zone is seen by the next call. The conversion is `Intl`'s, in a fixed
  * locale with the Gregorian calendar, Latin digits and the `h23` hour cycle, so the fields do not
- * depend on the runtime's default locale and midnight is hour 0 rather than 24. The millisecond
- * comes from the instant itself, which `Intl` does not format.
+ * depend on the runtime's default locale and midnight is hour 0 rather than 24. The fraction of
+ * the second comes from the instant itself, which `Intl` does not format.
  *
- * The clock's sub-millisecond fraction is dropped by flooring, so an instant just before the
- * epoch is in 1969, not 1970.
+ * The clock reading is floored to the microsecond, never rounded, so the nanosecond's last three
+ * digits are zero and an instant just before the epoch is in 1969, not 1970. The flooring is
+ * exact while the reading in microseconds is a safe integer, from 1684 to 2255.
  *
  * @throws {RangeError} when the clock returns a value that is not a finite time within
  *   ±8.64e15 milliseconds of the epoch.
  */
 export function civilNow(clock: Clock = systemClock): CivilDateTimeFields {
-  const epochMilliseconds = Math.floor(clock());
+  const epochMicroseconds = Math.floor(clock() * 1000);
+  const epochMilliseconds = Math.floor(epochMicroseconds / 1000);
   if (!(Math.abs(epochMilliseconds) <= MAX_EPOCH_MILLISECONDS)) {
     throw new RangeError(`The clock must return epoch milliseconds within ±${MAX_EPOCH_MILLISECONDS}, got ${epochMilliseconds}.`);
   }
@@ -85,6 +88,6 @@ export function civilNow(clock: Clock = systemClock): CivilDateTimeFields {
     hour: fields.hour as number,
     minute: fields.minute as number,
     second: fields.second as number,
-    millisecond: ((epochMilliseconds % 1000) + 1000) % 1000,
+    nanosecond: (((epochMicroseconds % 1_000_000) + 1_000_000) % 1_000_000) * 1000,
   };
 }

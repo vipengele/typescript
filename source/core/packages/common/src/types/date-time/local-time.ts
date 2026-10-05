@@ -96,14 +96,15 @@ export class LocalTime {
   }
 
   /**
-   * The current time of day in the runtime's time zone, to the millisecond, at the instant `clock`
-   * reads (by default `systemClock`).
+   * The current time of day in the runtime's time zone, to the microsecond, at the instant `clock`
+   * reads (by default `systemClock`). The reading is floored, never rounded, so the nanosecond's
+   * last three digits are zero.
    *
    * @throws {RangeError} when the clock returns a value that is not a finite time within ±8.64e15 ms of the epoch.
    */
   static now(clock?: Clock): LocalTime {
-    const { hour, minute, second, millisecond } = civilNow(clock);
-    return LocalTime.of(hour, minute, second, millisecond * 1_000_000);
+    const { hour, minute, second, nanosecond } = civilNow(clock);
+    return LocalTime.of(hour, minute, second, nanosecond);
   }
 
   /**

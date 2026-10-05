@@ -40,7 +40,7 @@ function parseLocalizedValue(str: string, locale: Locale): LocalDateTime | undef
 
 /**
  * A date and a time of day with no time zone: a {@link LocalDate} and a {@link LocalTime} taken
- * together, from 0001-01-01T00:00 to 9999-12-31T23:59:59.999.
+ * together, from 0001-01-01T00:00 to 9999-12-31T23:59:59.999999999.
  *
  * Both components are validated by their own types, so every instance names a real moment on the
  * civil calendar. Instances are frozen; every operation returns a new one.
@@ -68,27 +68,28 @@ export class LocalDateTime {
    * @throws {InvalidDateTimeError} when the fields do not name a date and a time: see
    *   {@link LocalDate.of} and {@link LocalTime.of} for the ranges.
    */
-  static ofFields(year: number, month: number, day: number, hour: number, minute: number, second = 0, millisecond = 0): LocalDateTime {
-    return new LocalDateTime(LocalDate.of(year, month, day), LocalTime.of(hour, minute, second, millisecond));
+  static ofFields(year: number, month: number, day: number, hour: number, minute: number, second = 0, nanosecond = 0): LocalDateTime {
+    return new LocalDateTime(LocalDate.of(year, month, day), LocalTime.of(hour, minute, second, nanosecond));
   }
 
   /**
-   * The current date and time of day in the runtime's time zone, to the millisecond, at the
+   * The current date and time of day in the runtime's time zone, to the microsecond, at the
    * instant `clock` reads (by default `systemClock`). The date and the time come from one
-   * reading of the clock.
+   * reading of the clock, floored rather than rounded, so the nanosecond's last three digits are
+   * zero.
    *
    * @throws {RangeError} when the clock returns a value that is not a finite time within ±8.64e15 ms of the epoch.
    * @throws {InvalidDateTimeError} when the date falls outside 0001-01-01 to 9999-12-31.
    */
   static now(clock?: Clock): LocalDateTime {
-    const { year, month, day, hour, minute, second, millisecond } = civilNow(clock);
-    return LocalDateTime.ofFields(year, month, day, hour, minute, second, millisecond);
+    const { year, month, day, hour, minute, second, nanosecond } = civilNow(clock);
+    return LocalDateTime.ofFields(year, month, day, hour, minute, second, nanosecond);
   }
 
   /**
    * Reads the ISO 8601 date-time `str` spells, in `<date>T<time>` form: `2026-10-01T14:30`,
    * `2026-10-01T14:30:05` or `2026-10-01T14:30:05.250`. The date and the time follow the rules of
-   * {@link LocalDate.parse} and {@link LocalTime.parse}.
+   * {@link LocalDate.parse} and {@link LocalTime.parse}, so the fraction takes one to nine digits.
    *
    * @throws {DateTimeParseError} when `str` is not in that form, or its fields do not name a date
    *   and a time (`2026-02-30T10:00`, `2026-10-01T24:00`).
@@ -114,7 +115,7 @@ export class LocalDateTime {
    * Reads the date-time `str` writes in `locale`'s layout, or in `Locale.default()` when `locale`
    * is omitted: `02/03/2026, 01:30 PM` in `en-US`, `03.02.2026, 13:30` in `de-DE`. The date
    * follows {@link LocalDate.parseLocalized}'s rules and the time
-   * {@link LocalTime.parseLocalized}'s, so the result's second and millisecond are zero. Whether
+   * {@link LocalTime.parseLocalized}'s, so the result's second and nanosecond are zero. Whether
    * the date or the time comes first, and the text around them, are read from `Intl`, matching
    * {@link LocalDateTime#format}; whitespace in that text matches any whitespace.
    *
@@ -189,7 +190,7 @@ export class LocalDateTime {
    * When `Intl`'s combined output does not hold the two as separate runs, the date comes first
    * and a single space separates them.
    *
-   * Like {@link LocalTime#format}, the second and the millisecond are not written, so
+   * Like {@link LocalTime#format}, the second and the nanosecond are not written, so
    * {@link LocalDateTime.parseLocalized} under the same locale reads back this date-time with
    * both set to zero.
    */
@@ -197,7 +198,10 @@ export class LocalDateTime {
     return formatDateTime(this.date, this.time, locale);
   }
 
-  /** The ISO 8601 date-time, the date and the time joined by `T`: `2026-10-01T14:30`, `2026-10-01T14:30:05.250`. */
+  /**
+   * The ISO 8601 date-time, the date and the time joined by `T` as {@link LocalTime#toString}
+   * writes it: `2026-10-01T14:30`, `2026-10-01T14:30:05.250`, `2026-10-01T14:30:05.123456`.
+   */
   toString(): string {
     return `${this.date}T${this.time}`;
   }
