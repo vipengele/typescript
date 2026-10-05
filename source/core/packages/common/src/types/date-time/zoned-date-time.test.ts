@@ -843,6 +843,16 @@ describe("ZonedDateTime.parse refusing a string", () => {
     );
   });
 
+  test("reads the largest hour, minute and second of an offset as in range and leaves the refusal to the zone", () => {
+    const text = "2026-07-15T12:00+23:59:59[Europe/Berlin]";
+    const error = thrown(() => ZonedDateTime.parse(text));
+
+    expect(isDateTimeParseError(error)).toBe(true);
+    expect((error as Error).message).toBe(
+      `Cannot parse ${JSON.stringify(text)} as an ISO 8601 zoned date-time: Europe/Berlin does not read 2026-07-15T12:00 at offset +23:59:59.`,
+    );
+  });
+
   test.for(["-00:00", "-00:00:00"])("refuses the negative zero offset %s", (offset) => {
     const text = `2026-07-15T12:00${offset}[UTC]`;
     const error = thrown(() => ZonedDateTime.parse(text));
