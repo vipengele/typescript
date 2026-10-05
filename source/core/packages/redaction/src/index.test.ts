@@ -8,6 +8,8 @@ import {
   email,
   githubToken,
   jwt,
+  maskKeepLast,
+  pseudonymize,
   redact,
   redactHeaders,
   redactQueryString,
@@ -18,6 +20,8 @@ import {
   type Detector,
   type HeaderRecord,
   type HeaderTuples,
+  type MaskOptions,
+  type PseudonymizeOptions,
   type RedactionPolicy,
   type RedactStringOptions,
 } from "./index";
@@ -67,6 +71,24 @@ test("redactHeaders redacts a record, tuples and a Headers", () => {
   expect(redactHeaders(record)).toStrictEqual({ Authorization: MASK, Accept: "text/plain" });
   expect(redactHeaders(tuples)).toStrictEqual([["Authorization", MASK]]);
   expect(redactHeaders(new Headers({ Authorization: "b x" })).get("authorization")).toBe(MASK);
+});
+
+test("maskKeepLast masks all but the tail of a matched value", () => {
+  const options: MaskOptions = { maskChar: "#" };
+
+  expect(redact({ card: "4242424242424242" }, { keys: ["card"] }, { replacement: maskKeepLast(4, options) })).toStrictEqual({
+    card: "#### 4242",
+  });
+});
+
+test("pseudonymize replaces a matched value with a stable token", () => {
+  const options: PseudonymizeOptions = { key: "secret", prefix: "u_", length: 8 };
+  const replacement = pseudonymize(options);
+  const first = redact({ user: "alice" }, { keys: ["user"] }, { replacement }) as { user: string };
+  const second = redact({ user: "alice" }, { keys: ["user"] }, { replacement }) as { user: string };
+
+  expect(first.user).toMatch(/^u_[0-9a-f]{8}$/);
+  expect(second).toStrictEqual(first);
 });
 
 function expectFrozenDetector(detector: Detector): void {
@@ -134,6 +156,8 @@ test("exposes exactly the public value exports", async () => {
     "email",
     "githubToken",
     "jwt",
+    "maskKeepLast",
+    "pseudonymize",
     "redact",
     "redactHeaders",
     "redactQueryString",
