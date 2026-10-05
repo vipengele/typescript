@@ -89,6 +89,65 @@ describe("ISO parse then format round-trips", () => {
   });
 });
 
+describe("ISO fractions of a second", () => {
+  const FORMS = [
+    "14:30",
+    "14:30:05",
+    "14:30:05.250",
+    "14:30:05.000001",
+    "14:30:05.123456",
+    "14:30:05.000000001",
+    "14:30:05.123456789",
+    "00:00:00.999999999",
+    "23:59:59.100",
+  ];
+
+  test.each(FORMS)("LocalTime %s round-trips", (text) => {
+    const time = LocalTime.parse(text);
+    expect(time.toString()).toBe(text);
+    expect(LocalTime.parse(time.toString()).equals(time)).toBe(true);
+  });
+
+  test.each(FORMS)("LocalDateTime %s round-trips", (text) => {
+    const value = LocalDateTime.parse(`2026-10-01T${text}`);
+    expect(value.toString()).toBe(`2026-10-01T${text}`);
+    expect(LocalDateTime.parse(value.toString()).equals(value)).toBe(true);
+  });
+
+  test.each([
+    ["14:30:05.5", "14:30:05.500"],
+    ["14:30:05.1234", "14:30:05.123400"],
+    ["14:30:05.12", "14:30:05.120"],
+    ["14:30:05.120000000", "14:30:05.120"],
+    ["14:30:05.123000", "14:30:05.123"],
+    ["14:30:05.0000010", "14:30:05.000001"],
+    ["14:30:05.000000000", "14:30:05"],
+    ["14:30:00.000000000", "14:30"],
+  ])("a non-shortest fraction in %s normalises to %s", (text, expected) => {
+    expect(LocalTime.parse(text).toString()).toBe(expected);
+    expect(LocalDateTime.parse(`2026-10-01T${text}`).toString()).toBe(`2026-10-01T${expected}`);
+  });
+
+  test("a fraction is read as digits of a second and never rounded", () => {
+    expect(LocalTime.parse("14:30:05.999999999").nanosecond).toBe(999_999_999);
+    expect(LocalTime.parse("14:30:05.1234").nanosecond).toBe(123_400_000);
+  });
+
+  test("a fraction of ten digits is rejected", () => {
+    throwsParse(() => LocalTime.parse("14:30:05.1234567890"));
+    throwsParse(() => LocalDateTime.parse("2026-10-01T14:30:05.1234567890"));
+    expect(LocalTime.tryParse("14:30:05.1234567890")).toEqual({ success: false });
+    expect(LocalDateTime.tryParse("2026-10-01T14:30:05.1234567890")).toEqual({ success: false });
+  });
+
+  test("a nanosecond out of range is rejected", () => {
+    for (const nanosecond of [-1, 1_000_000_000, 1.5, Number.NaN]) {
+      throwsInvalid(() => LocalTime.of(12, 0, 0, nanosecond));
+      throwsInvalid(() => LocalDateTime.ofFields(2026, 10, 1, 12, 0, 0, nanosecond));
+    }
+  });
+});
+
 describe("plusDays(n).minusDays(n) is the identity", () => {
   const starts = ["2024-02-28", "2024-12-31", "2023-02-28", "2000-02-29", "1900-03-01", "2026-10-01", "2024-01-01"];
 
@@ -150,6 +209,26 @@ describe("compare agrees with equals", () => {
         expect(Math.sign(LocalDateTime.compare(a, b)) === -Math.sign(LocalDateTime.compare(b, a))).toBe(true);
       }
     }
+  });
+
+  test("a nanosecond-only difference orders the values and breaks equality", () => {
+    const nanos = [0, 1, 999, 1_000, 999_999, 1_000_000, 123_456_789, 999_999_999];
+    for (const a of nanos) {
+      for (const b of nanos) {
+        const timeA = LocalTime.of(14, 30, 5, a);
+        const timeB = LocalTime.of(14, 30, 5, b);
+        const valueA = LocalDateTime.ofFields(2026, 10, 1, 14, 30, 5, a);
+        const valueB = LocalDateTime.ofFields(2026, 10, 1, 14, 30, 5, b);
+        expect(Math.sign(LocalTime.compare(timeA, timeB))).toBe(Math.sign(a - b));
+        expect(Math.sign(LocalDateTime.compare(valueA, valueB))).toBe(Math.sign(a - b));
+        expect(timeA.equals(timeB)).toBe(a === b);
+        expect(valueA.equals(valueB)).toBe(a === b);
+      }
+    }
+  });
+
+  test("a later second outranks an earlier nanosecond", () => {
+    expect(LocalTime.compare(LocalTime.of(0, 0, 1, 0), LocalTime.of(0, 0, 0, 999_999_999))).toBeGreaterThan(0);
   });
 
   test("equal values built separately compare as zero", () => {
@@ -271,6 +350,18 @@ describe("localized format then parse round-trips", () => {
       const result = LocalDate.tryParseLocalized(date.format(locale), locale);
       expect(result.success).toBe(true);
       expect(result.value?.toString()).toBe(text);
+    });
+
+    test("a time with a fraction of a second parses back with zero second and nanosecond", () => {
+      const time = LocalTime.parse("14:30:05.123456789");
+      const parsed = LocalTime.parseLocalized(time.format(locale), locale);
+      expect(parsed.hour).toBe(14);
+      expect(parsed.minute).toBe(30);
+      expect(parsed.second).toBe(0);
+      expect(parsed.nanosecond).toBe(0);
+      const value = LocalDateTime.parse("2026-10-01T14:30:05.123456789");
+      const parsedValue = LocalDateTime.parseLocalized(value.format(locale), locale);
+      expect(parsedValue.toString()).toBe("2026-10-01T14:30");
     });
 
     test("LocalTime keeps hour and minute and zeroes the rest", () => {
