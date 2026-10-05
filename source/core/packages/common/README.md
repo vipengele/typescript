@@ -193,13 +193,19 @@ LocalDate.now().toString(); // today's date on the clock's local calendar
 
 - `of(...)` (`LocalDateTime.ofFields(...)` for the flat form, `LocalDateTime.of(date, time)` to
   combine two values) — validates its fields; `LocalDate` runs from 0001-01-01 to 9999-12-31.
-- `parse(str)` reads ISO 8601 and throws a `DateTimeParseError`; `tryParse(str)` returns
-  `{ success: true, value }` or `{ success: false }`. `toString()` writes ISO 8601. Check the errors
+- `LocalTime` and `LocalDateTime` hold a `nanosecond` from 0 to 999,999,999, the last argument of
+  `LocalTime.of(hour, minute, second = 0, nanosecond = 0)` and `LocalDateTime.ofFields(...)`.
+- `parse(str)` reads ISO 8601, a time as `HH:mm`, `HH:mm:ss` or `HH:mm:ss.f` with one to nine
+  fraction digits (right-padded, never rounded), and throws a `DateTimeParseError`; `tryParse(str)` returns
+  `{ success: true, value }` or `{ success: false }`. `toString()` writes ISO 8601, with a fraction only when the nanosecond is non-zero, as the
+  shortest exact 3, 6 or 9 digits (`.123`, `.123456`, `.123456789`). Check the errors
   with `isInvalidDateTimeError` and `isDateTimeParseError`, never `instanceof`.
 - `plusDays`, `minusDays`, `plusMonths` and `minusMonths` on `LocalDate` and `LocalDateTime`;
   `dayOfWeek` and `lengthOfMonth` on `LocalDate`; `compare` and `equals` on all three.
 - `now(clock?)` — the current civil value, read from a `Clock` (`systemClock` by default). A
-  `Clock` is epoch milliseconds, so a fixed one makes a test deterministic.
+  `Clock` is epoch milliseconds, so a fixed one makes a test deterministic. `now()` floors to the
+  microsecond: a double resolves about 0.24 µs at current epochs and browsers coarsen further, so
+  the nanosecond's last three digits are zero.
 
 **Localized text** — `format(locale?)`, `parseLocalized(str, locale?)` and
 `tryParseLocalized(str, locale?)` write and read a locale's own numeric pattern. Omitting the locale
@@ -225,7 +231,7 @@ LocalDateTime.ofFields(2024, 3, 9, 15, 30).format(us); // "03/09/2024, 03:30 PM"
 ```
 
 A time or date-time is localized to hour and minute only, so parsing one gives second and
-millisecond `0`. The locale's hour cycle is honoured: a 12-hour locale prints a day-period marker
+nanosecond `0`. The locale's hour cycle is honoured: a 12-hour locale prints a day-period marker
 and a 24-hour one never prints hour 24. The pattern is derived from `Intl`, with the Gregorian
 calendar and ASCII digits forced.
 
