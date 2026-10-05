@@ -21,8 +21,29 @@ Run commands from `source/core` (`pnpm build`, `pnpm type-check`, `pnpm test`, `
 - `configure` replaces the sinks rather than appending; a `createProvider` provider shares none
   with the default one. Level table and default provider live in `globalThis` slots (ADR-0005).
 
-## Reporter enrich stage (`src/errors/pipeline.ts`)
+## Shared redaction helpers (`src/redaction.ts`)
+
+- `redactAttributes` and `redactError` are used by the logger's emit path and the reporter's
+  pipeline. Both run unbounded over input already bounded by normalization; a link's `code` goes
+  through the policy under the key `code`, and a synthetic link's JSON `message` is parsed,
+  redacted and rewritten, or replaced whole when it does not parse.
+
+## Reporter pipeline (`src/errors/pipeline.ts`)
 
 - `enrich` merges `snapshot(Scope.current())` beneath the call's own attributes (the call wins on a
   shared key). Each side is normalized separately, and a throw while reading the scope yields no scope
   attributes rather than dropping the event. The Resource is never copied into events.
+- Stages: normalize, enrich, redaction, processors, filters, transport. Redaction applies
+  `builder.redaction(policy | null)` (default `secretKeys`, `null` disables) to the merged
+  `attributes`, `mechanism.data` and every link of the exception chain; never the event `message`,
+  `stack` or `frames`. A throwing policy drops the event silently, as the logger drops a record.
+- `Transport.send(event, resource)`: `eventResource()` reads `Scope.resource()` once per event at
+  delivery inside a guard. A throw yields a Resource with all four keys `undefined` and the event
+  still goes out — asymmetric with the logger, which drops the record, because an event is worth
+  more than its Resource. `send` stays synchronous and non-throwing (ADR-0010).
+- `createTestTransport` records `events` and `resources` as parallel arrays; the console transport
+  does not print the Resource.
+- `./errors` re-exports `Scope` and the `Resource`, `ScopeAttributes`, `ScopeUser` types, not
+  `snapshot`. `Scope.setUser`/`setTag`/`setContext` write flat dotted attribute keys, so an event has
+  no `tags`, `user` or `contexts` field. `secretKeys` splits keys on every non-alphanumeric
+  character, so `session.id` from `Scope.setContext("session", { id })` is masked by default.

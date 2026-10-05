@@ -22,11 +22,20 @@ A sub-path needs both a `tsup.config.ts` `entry` and a `package.json` `exports` 
 ## Scope (`src/scope`, `./scope`)
 
 - `Scope` is the ambient context tree: `current`, `propagate`, `inherit`, `isolated`, `resource`,
-  `useCarrier`. Its root holds the four reserved Resource keys (`service.name`,
-  `service.version`, `deployment.environment.name`, `process.runtime.name`).
+  `setResource`, `setUser`, `setTag`, `setContext`, `useCarrier`. Its root holds the four reserved
+  Resource keys (`service.name`, `service.version`, `deployment.environment.name`,
+  `process.runtime.name`) and never changes except through `setResource`.
 - `Scope.resource()` returns the `Resource` (exported type) read from the realm's one root,
-  whatever scope is current. The logger passes it to every Sink per record; it is a function, not a
-  captured value, because an application may supply the Resource after a Logger was created.
+  whatever scope is current, as a frozen per-call snapshot. The logger passes it to every Sink per
+  record and the reporter to every Transport per event; it is a function, not a captured value,
+  because `Scope.setResource(partial)` can change the root after a Logger or Reporter exists.
+- `setResource` (`root.ts`) swaps the root's frozen attribute bag for a new frozen one on the same
+  node, so every scope and every package copy reads the merged values via the `Symbol.for` slots. A
+  key that is `undefined` or not a string is skipped, an unknown key ignored, and it never throws.
+- `setUser`/`setTag`/`setContext` write flat dotted keys (`user.id`/`user.email`/`user.username`;
+  the plain key; `name.field`, one level deep) to the current scope. `writeAll` validates every key
+  (`assertSettable`) before writing any, so a Resource key throws `ReservedScopeKeyError` with
+  nothing half-written; `setContext`'s `name` must be a non-empty string (`TypeError`).
 - `snapshot(scope)` (framework-internal, exported from `./scope`) flattens a scope and its non-root
   ancestors into one prototype-less record, innermost wins, never the Resource. Only the reporter's
   enrich stage uses it; `Scope` itself exposes no ancestry (ADR-0006).

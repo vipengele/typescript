@@ -84,8 +84,8 @@ them into Error Events and hands them to a Transport.
 
 **Error Event**:
 One captured error after normalization and enrichment: the exception chain with parsed stack
-frames, its mechanism (handled or unhandled, and what caught it), its scope's context and its
-breadcrumbs.
+frames, its mechanism (handled or unhandled, and what caught it), its scope's attributes and the
+tagged-ancestor trail of the Scope it was raised in.
 _Avoid_: exception (that is one link of the chain), issue (a grouping on the backend)
 
 **Frame**:
@@ -109,13 +109,16 @@ _Avoid_: platform, environment
 
 **Scope**:
 The ambient context a Log Record and an Error Event are both enriched from, carried along an async
-call chain. Scopes form a tree: the root holds the environment and never changes; every other
-scope holds its own attributes and sees its ancestors', the innermost value winning, except that no
-scope may `set` a key the root already holds. A scope created to begin a Unit of Work is a child of
-the root, not of whatever scope was current; every other new scope is a child of the current one.
+call chain. Scopes form a tree: the root holds the environment and never changes except through
+`Scope.setResource`; every other scope holds its own attributes and sees its ancestors', the
+innermost value winning, except that no scope may `set` a key the root already holds. A scope
+created to begin a Unit of Work is a child of the root, not of whatever scope was current; every
+other scope is a child of the current one.
 Either kind may carry a tag, its own Breadcrumb.
-_Avoid_: context (OpenTelemetry's word for its own propagation object), MDC, request context (the
-browser has no request)
+`Scope.setUser`, `Scope.setTag` and `Scope.setContext` write attributes to the current scope.
+_Avoid_: context as a name for the Scope tree (OpenTelemetry's word for its own propagation
+object), MDC-style ambient data, request context (the browser has no request). `setContext` is the
+one sanctioned use: the verb that writes a namespaced group of attributes, `name.field` keys.
 
 **Carrier**:
 What actually threads a value across an async call chain on one runtime: `AsyncLocalStorage` on
@@ -127,7 +130,8 @@ _Avoid_: context (see Scope's own _Avoid_ — the same OpenTelemetry collision a
 
 **Resource**:
 The root Scope seen from outside the process: which service, release, environment and runtime is
-emitting. Sent once alongside Log Records and Error Events, never repeated inside each one.
+emitting. Set through `Scope.setResource`, and sent once alongside Log Records and Error Events
+(a Sink's and a Transport's second argument), never repeated inside each one.
 _Avoid_: global tags, global context
 
 **Unit of Work**:

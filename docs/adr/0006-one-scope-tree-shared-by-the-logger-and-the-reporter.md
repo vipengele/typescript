@@ -4,13 +4,17 @@ A Log Record and an Error Event raised in the same Unit of Work carry the same c
 read it from one place: the current `Scope`, a class in `@vipengele/ts-core-common` modelled on
 Java's MDC. Scopes form a tree.
 
-- **The root** holds the environment — release, environment name, runtime — and never changes after
-  it is initialized. No other scope may `set` a key the root already holds; the root's keys are
+- **The root** holds the environment — service name and version, environment name, runtime — and
+  never changes except through `Scope.setResource(partial)`, which merges the four reserved
+  Resource keys into the realm's one root in place, so every scope, Logger and Reporter already
+  built reads the merged values on its next read. A key that is `undefined` or not a string is
+  skipped, never cleared or coerced; an unknown key is ignored; the call never throws.
+  `Scope.resource()` stays a frozen snapshot of the root per call. No other scope may `set` a key the root already holds; the root's keys are
   reserved, never shadowed, so reading one never has to prefer the root over a closer scope that
   was never allowed to hold it in the first place.
 - **The default scope** is a permanent, mutable child of the root, current whenever nothing else
   is: outside any request on Node, and in the browser, where the page is the only Unit of Work.
-  A single-page app's `setUser` after login lands here.
+  A single-page app's `Scope.setUser` after login lands here.
 - **Every other scope** is created as a child, holds its own `Record` of attributes and is mutable
   through `set`. It reads a key by walking up its ancestors at read time, never by copying them when
   it is created, so a value set on a request's scope after a nested child exists still reaches the
@@ -25,6 +29,14 @@ Java's MDC. Scopes form a tree.
   recording a breadcrumb for something is creating a scope for it (`Scope.inherit` or
   `Scope.isolated` with a tag), never a separate call.
 
+`Scope.setUser({ id, email, username })`, `Scope.setTag(key, value)` and
+`Scope.setContext(name, data)` write to the **current** scope, as flat dotted attribute keys:
+`user.id`, `user.email` and `user.username`; the plain `key`; and one `name.field` key per own
+field of `data`, one level deep. They are shorthands for `set`, not a second store, so an Error
+Event gains no `tags`, `user` or `contexts` field. Every key is validated before any is written, so
+a reserved Resource key throws `ReservedScopeKeyError` and leaves nothing half-written;
+`setContext`'s `name` must be a non-empty string, else a `TypeError`.
+
 Mutability is what Sentry's isolation layer exists for: authentication middleware identifies the
 user after the request has started, and an error three calls later must still carry it. In a tree
 this is a `set` on the request's scope, without Sentry's three differently-behaving layers.
@@ -36,6 +48,14 @@ object, not the call chain, and never touch the Scope. A record's attributes mer
 most specific — the Scope chain from root to innermost, then the Logger's bindings, then the
 call's — so the call site always wins. The reporter reads only the Scope; an error logged through
 `log.error(...)` carries the Logger's bindings as record attributes.
+
+## Redaction keys follow the dotted names
+
+The reporter's default redaction (`secretKeys`) splits keys on every non-alphanumeric character, so
+a flat dotted key is read word by word. `Scope.setContext("session", { id })` writes `session.id`,
+which the default masks because it carries the word `session`; likewise `Scope.setTag("sessionId",
+...)` and `Scope.setContext("token", ...)`. A name that must stay readable avoids a secret word in
+its name or its fields, or the Reporter's redaction is replaced (ADR-0007).
 
 ## Propagation, and what the browser guarantees
 
@@ -89,8 +109,9 @@ or relies on `logger.with()`, which is lexical and survives everything.
 A `Scope`'s public surface is only `tag`, `get` and `set` — never `parent`. Walking the tree to read
 a breadcrumb trail is the reporter's own internal concern, not something an application does, so
 nothing about ancestry is exposed outside the framework's own code. The one exception is the
-framework-internal `snapshot(scope)`, which the reporter's enrich stage uses to flatten the
-attributes of a scope and its non-root ancestors into an Error Event; it is not for application use.
+framework-internal `snapshot(scope)`, exported from `@vipengele/ts-core-common/scope` but not
+re-exported by `./errors`, which the reporter's enrich stage uses to flatten the attributes of a
+scope and its non-root ancestors into an Error Event; it is not for application use.
 
 ## Considered options
 

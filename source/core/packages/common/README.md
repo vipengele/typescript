@@ -86,11 +86,32 @@ Scope.isolated("http-request", { requestId: "abc" }, () => {
 - `Scope.isolated(tag, attributes, fn)` — a child of the root, not of whatever scope is current: the
   start of a Unit of Work that reads nothing any other Unit of Work's scopes hold, only the root's
   Resource.
+- `Scope.resource()` — a frozen snapshot of the root's Resource, read per call.
+- `Scope.setResource(partial)` — merges the four Resource keys into the realm's one root, in place,
+  from whichever copy of the package calls it; Loggers and Reporters already built read the merged
+  values. A key that is `undefined` or not a string is skipped, never cleared or coerced; an
+  unknown key is ignored; it never throws.
+- `Scope.setUser({ id, email, username })` — sets `user.id`, `user.email` and `user.username` on the
+  current scope, from the fields that are not `undefined`.
+- `Scope.setTag(key, value)` — sets the plain `key` on the current scope.
+- `Scope.setContext(name, data)` — sets one `name.field` key per own field of `data` on the current
+  scope, one level deep; `name` must be a non-empty string, else a `TypeError`.
 - `Scope.useCarrier(carrier)` — replaces the carrier the current scope rides on, seen by every copy
   of the package in the realm from then on.
 - `snapshot(scope)` — the attributes `scope` and its non-root ancestors hold, flattened into one
   null-prototype record, innermost winning and never the Resource keys. Framework-internal, not for
   application use.
+
+`setUser`, `setTag` and `setContext` write flat dotted keys to the current scope, and validate every
+key before writing any: a Resource key throws `ReservedScopeKeyError` and leaves nothing written.
+
+```ts
+Scope.setResource({ "service.name": "checkout", "deployment.environment.name": "production" });
+
+Scope.setUser({ id: "u-42", email: "ada@example.com" }); // user.id, user.email
+Scope.setTag("region", "eu-west"); // region
+Scope.setContext("cart", { id: "c-9", items: 3 }); // cart.id, cart.items
+```
 
 `isolatedScope(tag)` and `scoped(tag, attributes)` are method decorators wrapping a method's whole
 call in `Scope.isolated`/`Scope.inherit` respectively, usable under either the standard decorator

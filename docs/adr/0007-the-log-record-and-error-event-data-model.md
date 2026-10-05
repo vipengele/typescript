@@ -45,7 +45,7 @@ interface ErrorEvent {
   exception?: ExceptionRecord;    // absent only for a captured message
   mechanism: Mechanism;
   attributes: Attributes;
-  breadcrumbs: Breadcrumb[];      // superseded by ADR-0006: the tagged ancestors of the capturing Scope, not a buffer
+  breadcrumbs: Breadcrumb[];      // superseded by ADR-0006: the tagged ancestors of the capturing Scope, not a buffer; the event has no such field
   fingerprint?: string[];
   trace?: { traceId: string; spanId: string; flags: number };
 }
@@ -128,8 +128,10 @@ exception, and the logger bridge only adds frames rather than translating.
 
 The root Scope (ADR-0006) is the Resource — `service.name`, `service.version`,
 `deployment.environment.name`, `process.runtime.name` — and is not copied into records or events.
-`attributes` is the chain from the default scope inward. Transports attach the Resource once per
-payload, and Sinks receive it alongside each record.
+`attributes` is the chain from the default scope inward. Sinks receive the Resource alongside each
+record, as `write(record, resource)`, and Transports receive it as the second argument of
+`send(event, resource)` (ADR-0010), read once per event at delivery; each attaches it once per
+payload.
 
 ## What an Error Event adds
 
@@ -143,8 +145,15 @@ payload, and Sinks receive it alongside each record.
   design this repo no longer builds. An Error Event's trail is the tagged ancestors of the Scope it
   was raised in, read by walking up from that Scope, not copied at capture.
 - **No separate `tags`, `extra` or `user`**, unlike Sentry: everything is `attributes`, and
-  `Scope.setUser` writes OpenTelemetry's `user.*` keys. Which attributes a backend indexes is the
+  `Scope.setUser` writes OpenTelemetry's `user.*` keys, `Scope.setTag` the plain key and
+  `Scope.setContext` `name.field` keys (ADR-0006). Which attributes a backend indexes is the
   Transport's decision.
+- **Redaction before the Transport.** A stage after enrichment and before the processors redacts the
+  merged `attributes`, `mechanism.data` and every link of the exception chain with the Reporter's
+  policy (`secretKeys` by default, `null` disables), the links as the logger redacts a record's
+  error. The event's `message`, and each link's `stack` and `frames`, are not scanned. A throwing
+  policy drops the event, as it drops a Log Record. A Transport receives an Error Event that is
+  already redacted.
 - **`id`** exists from capture, so deduplication and a report ID shown to a user refer to the same
   event before it is sent.
 
