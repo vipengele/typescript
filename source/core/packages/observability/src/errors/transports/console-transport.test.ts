@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Level } from "@vipengele/ts-core-common";
+import type { Resource } from "@vipengele/ts-core-common/scope";
 import type { ErrorEvent } from "../event";
 import { createConsoleTransport } from "./console-transport";
 import type { ConsoleLike } from "./console-transport";
@@ -13,6 +14,13 @@ function anEvent(level: Level): ErrorEvent {
     attributes: {},
   };
 }
+
+const RESOURCE: Resource = Object.freeze({
+  "service.name": "checkout",
+  "service.version": "1.2.3",
+  "deployment.environment.name": "production",
+  "process.runtime.name": "node",
+});
 
 function aConsole(): ConsoleLike {
   return {
@@ -36,9 +44,9 @@ describe("createConsoleTransport", () => {
     const transport = createConsoleTransport({ console: target });
     const event = anEvent(level);
 
-    transport.send(event);
+    transport.send(event, RESOURCE);
 
-    expect(target[method]).toHaveBeenCalledWith(event);
+    expect(target[method]).toHaveBeenCalledExactlyOnceWith(event);
     for (const other of ["error", "warn", "info", "debug"] as const) {
       if (other !== method) {
         expect(target[other]).not.toHaveBeenCalled();
@@ -50,7 +58,7 @@ describe("createConsoleTransport", () => {
     const spy = vi.spyOn(globalThis.console, "info").mockImplementation(() => undefined);
     const transport = createConsoleTransport();
 
-    transport.send(anEvent("info"));
+    transport.send(anEvent("info"), RESOURCE);
 
     expect(spy).toHaveBeenCalledWith(anEvent("info"));
     spy.mockRestore();
@@ -71,7 +79,7 @@ describe("createConsoleTransport", () => {
     const transport = createConsoleTransport({ console: target });
     await transport.close();
 
-    transport.send(anEvent("error"));
+    transport.send(anEvent("error"), RESOURCE);
 
     expect(target.error).not.toHaveBeenCalled();
   });

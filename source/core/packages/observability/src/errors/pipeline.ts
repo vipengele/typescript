@@ -8,7 +8,7 @@ import {
   type SerializedError,
   serializeError,
 } from "@vipengele/ts-core-common";
-import { Scope, snapshot } from "@vipengele/ts-core-common/scope";
+import { type Resource, Scope, snapshot } from "@vipengele/ts-core-common/scope";
 import type { ErrorEvent, ExceptionRecord, Mechanism } from "./event";
 import { createEventId } from "./event-id";
 import { markInApp } from "./stack/in-app";
@@ -122,6 +122,24 @@ function enrich(payload: NormalizedPayload, input: CaptureInput, mechanism: Mech
 }
 
 /**
+ * The Resource an event is sent with, read from `Scope.resource()` once per event. A throw while
+ * reading it yields a Resource whose four keys are all `undefined`, and the event still goes out:
+ * an event is worth more than its Resource. The logger drops a record on the same throw instead.
+ */
+function eventResource(): Resource {
+  try {
+    return Scope.resource();
+  } catch {
+    return Object.freeze({
+      "service.name": undefined,
+      "service.version": undefined,
+      "deployment.environment.name": undefined,
+      "process.runtime.name": undefined,
+    });
+  }
+}
+
+/**
  * Stages 3 to 5: processors in order, then filters in order, then the transport. Returns without
  * sending once a filter drops the event.
  */
@@ -130,7 +148,7 @@ function deliver(event: ErrorEvent, pipeline: Pipeline): void {
   if (!pipeline.filters.every((filter) => filter(processed))) {
     return;
   }
-  pipeline.transport?.send(processed);
+  pipeline.transport?.send(processed, eventResource());
 }
 
 /**
