@@ -20,3 +20,9 @@ Run commands from `source/core` (`pnpm build`, `pnpm type-check`, `pnpm test`, `
   scanned. The finished record is deeply frozen and shared by all sinks.
 - `configure` replaces the sinks rather than appending; a `createProvider` provider shares none
   with the default one. Level table and default provider live in `globalThis` slots (ADR-0005).
+
+## Reporter enrich stage (`src/errors/pipeline.ts`)
+
+- `enrich` merges `snapshot(Scope.current())` beneath the call's own attributes (the call wins on a
+  shared key). Each side is normalized separately, and a throw while reading the scope yields no scope
+  attributes rather than dropping the event. The Resource is never copied into events.

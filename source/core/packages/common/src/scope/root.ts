@@ -154,6 +154,57 @@ export function createChildScope(parent: Scope, tag: string, attributes: ScopeAt
 }
 
 /**
+ * Flattens the attributes `scope` and each of its non-root ancestors hold into one prototype-less
+ * record, the innermost holder of a key winning. A key set to `undefined` shadows an outer value
+ * exactly as {@link Scope.get} does, so it appears with `undefined` rather than the outer value.
+ *
+ * The root is never copied: its Resource is sent once rather than copied into every event, and a
+ * key the root holds is left out even if a non-root node somehow holds it too. The walk reads the
+ * `Symbol.for`-keyed ancestry and attribute slots, so a scope created by another copy of the
+ * package flattens the same way. It never throws: a value that is not a scope node yields an empty
+ * record, and a node whose slots fail to read ends the walk with what was gathered so far.
+ *
+ * Framework-internal, not for application use.
+ */
+export function snapshot(scope: Scope): ScopeAttributes {
+  const result = Object.create(null) as ScopeAttributes;
+  const chain: ScopeAttributes[] = [];
+  let root: ScopeAttributes | undefined;
+  try {
+    // Every bag read here is either prototype-less (see [ATTRIBUTES] above) or guarded by
+    // `Object.hasOwn`, and `result` is prototype-less, so no key can reach `Object.prototype`.
+    // biome-ignore format: the nosemgrep directive must stay on this line, not wrap to its own
+    for (let node = scope as ScopeNode | undefined; typeof node === "object" && node !== null; node = node[PARENT]) { // nosemgrep: javascript.lang.security.audit.prototype-pollution.prototype-pollution-loop.prototype-pollution-loop
+      const attributes = node[ATTRIBUTES];
+      if (typeof attributes !== "object" || attributes === null) {
+        break;
+      }
+      if (node[PARENT] === undefined) {
+        root = attributes;
+        break;
+      }
+      chain.push(attributes);
+    }
+  } catch {
+    // A slot that throws on read ends the walk; `chain` keeps the nodes read before it.
+  }
+
+  try {
+    for (const attributes of chain) {
+      for (const key of Object.keys(attributes)) {
+        if (Object.hasOwn(result, key) || (root !== undefined && Object.hasOwn(root, key))) {
+          continue;
+        }
+        result[key] = attributes[key];
+      }
+    }
+  } catch {
+    // An attribute that throws on read leaves the record with the keys copied before it.
+  }
+  return result;
+}
+
+/**
  * The realm's scope tree. It lives in a `globalThis` slot keyed by `Symbol.for`, so every copy of
  * the package in the realm hangs its scopes off the same root: the first caller builds the tree,
  * and every later caller — from any copy — gets that one.

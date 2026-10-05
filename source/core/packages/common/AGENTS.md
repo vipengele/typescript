@@ -27,6 +27,9 @@ A sub-path needs both a `tsup.config.ts` `entry` and a `package.json` `exports` 
 - `Scope.resource()` returns the `Resource` (exported type) read from the realm's one root,
   whatever scope is current. The logger passes it to every Sink per record; it is a function, not a
   captured value, because an application may supply the Resource after a Logger was created.
+- `snapshot(scope)` (framework-internal, exported from `./scope`) flattens a scope and its non-root
+  ancestors into one prototype-less record, innermost wins, never the Resource. Only the reporter's
+  enrich stage uses it; `Scope` itself exposes no ancestry (ADR-0006).
 - `@isolatedScope`/`@scoped` support both decorator dialects (`agentic/rules/method-decorator-supports-both-dialects.md` at the repo root).
 
 ## `./types/date-time`

@@ -165,6 +165,40 @@ resolve `true` in that case, since there is nothing to wait on.
 **An unknown level** — a `CaptureContext.level` or `captureMessage` level that is not one of the six
 `Level` values (or is absent) becomes `"error"`.
 
+### Scopes
+
+An Error Event's `attributes` carry the ambient `Scope` chain beneath the call's own attributes: the
+attributes of every Scope between the current one and the root, the innermost winning, then the
+`attributes` passed to the capture call, which win on a shared key. Each side is normalized
+separately and bounded to 100 entries. The Resource (`service.name`, `service.version`,
+`deployment.environment.name`, `process.runtime.name`) is not copied into events; a `Transport`
+that needs it reads `Scope.resource()`.
+
+The reporter only reads the Scope. Per-request isolation, tags and `withScope`-style behaviour come
+from `Scope` in `@vipengele/ts-core-common/scope`:
+
+```ts
+import { Scope } from "@vipengele/ts-core-common/scope";
+
+Scope.isolated("http-request", { requestId: "abc" }, () => {
+  Scope.current().set("userId", 42); // set after the request began, still reaches later events
+
+  Scope.inherit("checkout", { cartId: "c-9" }, () => {
+    reporter.captureException(error, { attributes: { step: "payment" } });
+    // attributes: { requestId: "abc", userId: 42, cartId: "c-9", step: "payment" }
+  });
+});
+```
+
+The reporter does not redact: Scope attributes reach the Transport as set, exactly as the call's own
+attributes do, so a secret placed on a Scope is sent. Keep secrets out of `Scope.current().set`,
+`Scope.inherit` and `Scope.isolated` attributes, or redact the event inside a custom `Transport`'s
+`send` before it leaves the process. A `ReporterBuilder` registers no event processors.
+
+If reading the Scope throws, the event is delivered without its Scope attributes. A Scope's tag is a
+Breadcrumb, and the Breadcrumb trail is not part of an Error Event. In the browser the synchronous-stack
+carrier loses the Scope after an `await` (ADR-0006).
+
 ### Stack frames
 
 Every `ExceptionRecord` — the event's `exception` and each `cause` and `errors` link under it —
