@@ -18,7 +18,7 @@ saw:
 - The time pattern takes only literals and the AM/PM `dayPeriod` text from Intl; the digits are written by `formatTime`, on `h12`
   for a locale whose cycle is `h11`/`h12` and `h23` for `h23`/`h24` (`clockCycle`). Hour 24 therefore cannot be printed, and
   midnight is `00:00` whatever the engine's `h24` behaviour. Localized time is hour and minute only, so `parseLocalized` returns
-  second 0 and millisecond 0 and a round-trip zeroes both.
+  second 0 and nanosecond 0 and a round-trip zeroes both.
 - The date-time layout (what joins the date and the time) is read from `formatToParts`, not `format()`: V8's `format()` turns
   U+202F before `PM` into a regular space and `formatToParts` keeps it. Pattern whitespace matches `\s+` (any whitespace), so a
   person typing a regular space still parses. When the combined output cannot be split into the date run and the time run, the
