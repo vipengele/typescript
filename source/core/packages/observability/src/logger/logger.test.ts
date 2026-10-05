@@ -269,4 +269,33 @@ describe("Logger through a provider", () => {
     expect(written[0]?.resource).toEqual(Scope.resource());
     expect(warnings).toEqual(["A log sink threw while writing a record: TypeError: sink offline"]);
   });
+
+  test("delivers a Resource set through Scope.setResource after the Logger exists", () => {
+    // The realm's root is the default scope's parent; its attribute bag is put back afterwards so
+    // the Resource set here never reaches another test.
+    const defaultScope = Scope.current() as unknown as Record<symbol, unknown>;
+    const root = defaultScope[Symbol.for("vipengele:scope:parent")] as Record<symbol, unknown>;
+    const attributes = Symbol.for("vipengele:scope:attributes");
+    const original = root[attributes];
+    const resources: Resource[] = [];
+    const provider = Logging.createProvider((builder) =>
+      builder.addLevels({ "*": "info" }).addSink({
+        write(_record, resource) {
+          resources.push(resource);
+        },
+      }),
+    );
+    const logger = provider.logger("x");
+
+    try {
+      Scope.setResource({ "service.name": "checkout", "service.version": "1.2.3" });
+      logger.info("after");
+    } finally {
+      root[attributes] = original;
+    }
+
+    expect(resources).toHaveLength(1);
+    expect(resources[0]?.["service.name"]).toBe("checkout");
+    expect(resources[0]?.["service.version"]).toBe("1.2.3");
+  });
 });

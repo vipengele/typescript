@@ -1,5 +1,12 @@
 import type { ContextCarrier } from "../context";
-import { createChildScope, getScopeTree, type Resource, type Scope as ScopeHandle, type ScopeAttributes } from "./root";
+import {
+  createChildScope,
+  getScopeTree,
+  type Resource,
+  type Scope as ScopeHandle,
+  type ScopeAttributes,
+  setResource as setRootResource,
+} from "./root";
 import { getScopeStore } from "./store";
 
 /** A node of the scope tree: its `tag`, and `get`/`set` for the attributes it and its ancestors hold. */
@@ -64,6 +71,17 @@ function resource(): Resource {
 }
 
 /**
+ * Merges `resource` into the Resource the realm's one root holds, from whichever copy of the
+ * package calls it. A key whose value is `undefined` or not a string is skipped — never cleared,
+ * never coerced — and a key outside the four is ignored. Every scope already in flight, and every
+ * Logger and Reporter already built, reads the merged values from then on; a Resource
+ * {@link resource} returned earlier keeps the values it was read with. It never throws.
+ */
+function setResource(resource: Partial<Resource>): void {
+  setRootResource(getScopeTree().root, resource);
+}
+
+/**
  * Replaces the carrier the current scope rides on — a zone.js-backed carrier in an application that
  * already runs under zone.js, say. The replacement is seen immediately by every copy of the package
  * in the realm, and applies to every propagation made from then on.
@@ -83,5 +101,6 @@ export const Scope = {
   inherit,
   isolated,
   resource,
+  setResource,
   useCarrier,
 } as const;
