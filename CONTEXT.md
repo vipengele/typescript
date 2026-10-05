@@ -84,8 +84,7 @@ them into Error Events and hands them to a Transport.
 
 **Error Event**:
 One captured error after normalization and enrichment: the exception chain with parsed stack
-frames, its mechanism (handled or unhandled, and what caught it), its scope's attributes and the
-tagged-ancestor trail of the Scope it was raised in.
+frames, its mechanism (handled or unhandled, and what caught it) and its scope's attributes.
 _Avoid_: exception (that is one link of the chain), issue (a grouping on the backend)
 
 **Frame**:
