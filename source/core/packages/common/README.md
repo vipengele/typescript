@@ -309,6 +309,108 @@ Instant.tryParse("2026-10-01T12:30:00+02:00"); // { success: false }, only a lit
   nanosecond is non-zero, as 3, 6 or 9 digits.
 - `Instant.compare(a, b)` returns `-1`, `0` or `1`; `equals` compares instants.
 
+### `ZonedDateTime`
+
+A date and time of day in a named time zone, with the offset from UTC it reads in there: one
+instant on the timeline, as the zone's wall clock shows it. The offset is in whole seconds and
+carries seconds where the zone's rules do. Instances are frozen.
+
+```ts
+import { Instant, LocalDateTime, ZonedDateTime, ZoneId } from "@vipengele/ts-core-common/types/date-time";
+
+const berlin = ZoneId.of("Europe/Berlin");
+const meeting = LocalDateTime.parse("2026-10-01T14:30").atZone(berlin);
+
+meeting.toString(); // "2026-10-01T14:30+02:00[Europe/Berlin]"
+meeting.offsetSeconds; // 7200
+meeting.toInstant().toString(); // "2026-10-01T12:30:00Z"
+meeting.toLocalDateTime().toString(); // "2026-10-01T14:30"
+ZonedDateTime.parse("2026-10-01T14:30+02:00[Europe/Berlin]").equals(meeting); // true
+```
+
+- `ZonedDateTime.of(localDateTime, zone, options?)` builds one. A time the zone reads once takes
+  that reading's offset; a time it skips or reads twice is settled by `options.disambiguation`.
+- `zone`, `offsetSeconds`, `toLocalDateTime()` and `toInstant()` read it back; `compare(a, b)`
+  orders by instant to the nanosecond whatever the zones, and `equals` is the same instant in the
+  same zone.
+- `toString()` writes `<local date-time><offset>[<zone id>]`, the offset as `±HH:mm` (`±HH:mm:ss`
+  when its seconds are non-zero), and a zero offset as `+00:00`, never `Z`.
+
+**Gaps and overlaps** — a zone's wall clock skips a span when its offset moves forward (a gap) and
+reads one twice when it moves back (an overlap). `disambiguation` is one of four modes, `compatible`
+by default, which is what `java.time` does. A time the zone reads exactly once resolves the same
+under every mode.
+
+| Mode         | Gap (a skipped time)                       | Overlap (a time read twice)  |
+| ------------ | ------------------------------------------ | ---------------------------- |
+| `compatible` | moves forward by the gap's length          | the earlier instant          |
+| `earlier`    | moves back by the gap's length             | the earlier instant          |
+| `later`      | moves forward by the gap's length          | the later instant            |
+| `reject`     | throws a `ZoneResolutionError`             | throws a `ZoneResolutionError` |
+
+```ts
+// Berlin skips 02:00-03:00 on 2026-03-29 and reads 02:00-03:00 twice on 2026-10-25.
+const skipped = LocalDateTime.parse("2026-03-29T02:30");
+const twice = LocalDateTime.parse("2026-10-25T02:30");
+
+skipped.atZone(berlin).toString(); // "2026-03-29T03:30+02:00[Europe/Berlin]"
+skipped.atZone(berlin, { disambiguation: "earlier" }).toString(); // "2026-03-29T01:30+01:00[Europe/Berlin]"
+twice.atZone(berlin).toString(); // "2026-10-25T02:30+02:00[Europe/Berlin]"
+twice.atZone(berlin, { disambiguation: "later" }).toString(); // "2026-10-25T02:30+01:00[Europe/Berlin]"
+skipped.atZone(berlin, { disambiguation: "reject" }); // throws a ZoneResolutionError
+```
+
+The value always holds the wall-clock time its instant reads as in the zone, so one built from a
+skipped time holds the shifted time. A `ZoneResolutionError` is checked with `isZoneResolutionError`,
+never `instanceof`.
+
+**Arithmetic** — days and months move the calendar, hours down to nanoseconds move the instant.
+
+- `plusDays`, `minusDays`, `plusMonths` and `minusMonths` move the local date at the same
+  wall-clock time and re-read the result in the zone, under the same `options` argument as `of`.
+  A day across a transition is not 24 hours: a spring-forward day is 23 and a fall-back day is 25.
+  Months clamp the day as `LocalDateTime` does.
+- `plusHours`, `plusMinutes`, `plusSeconds`, `plusNanos` and their `minus` counterparts move the
+  instant by exactly that much elapsed time, so the wall clock jumps by the transition's length
+  across one. They take no options: an instant names one reading.
+
+```ts
+const saturday = LocalDateTime.parse("2026-03-28T12:00").atZone(berlin);
+
+saturday.plusDays(1).toString(); // "2026-03-29T12:00+02:00[Europe/Berlin]", 23 hours later
+saturday.plusHours(24).toString(); // "2026-03-29T13:00+02:00[Europe/Berlin]"
+```
+
+**ISO form** — `parse(str)` and `tryParse(str)` read exactly the form `toString` writes, with the
+offset and the bracketed zone name both required: no `Z`, no surrounding space, nothing after the
+bracket. The offset must be one the zone reads that local date-time in, so it never moves the value;
+in an overlap it picks which reading is meant, which makes `toString` and `parse` a lossless round
+trip for either one. A time in a gap has no offset that agrees. A string that fails any of this
+throws a `DateTimeParseError` (`tryParse` returns `{ success: false }`).
+
+```ts
+ZonedDateTime.parse("2026-10-25T02:30+01:00[Europe/Berlin]").toInstant().toString(); // "2026-10-25T01:30:00Z"
+ZonedDateTime.tryParse("2026-10-01T14:30+05:00[Europe/Berlin]"); // { success: false }, Berlin is +02:00 then
+```
+
+**Conversions** — each takes the same `options` and builds the value as `of` does.
+
+- `LocalDateTime#atZone(zone, options?)` is `ZonedDateTime.of(this, zone, options)`.
+- `LocalDate#atStartOfDay(zone, options?)` is the first instant of the date in the zone. A midnight
+  the zone skips moves forward to the time the gap ends; when the gap spans the whole date, as
+  Samoa's 2011-12-30 in `Pacific/Apia` does, that is midnight of the next date the zone reads. The
+  disambiguation passes straight through, so `earlier` moves a skipped midnight back by the gap's
+  length, into the previous date.
+- `Instant#atZone(zone)` is the wall-clock reading of the instant, with the offset the zone has
+  then. An instant names one reading, so there is nothing to disambiguate.
+
+```ts
+LocalDate.of(2011, 12, 30).atStartOfDay(ZoneId.of("Pacific/Apia")).toString(); // "2011-12-31T00:00+14:00[Pacific/Apia]"
+Instant.parse("2026-10-25T01:30:00Z").atZone(berlin).toString(); // "2026-10-25T02:30+01:00[Europe/Berlin]"
+```
+
+`ZonedDateTimeOptions` and `Disambiguation` are exported alongside the values.
+
 ## `./runtime`
 
 `detectRuntime` names the runtime family code is executing in, and `detectCapability` says whether

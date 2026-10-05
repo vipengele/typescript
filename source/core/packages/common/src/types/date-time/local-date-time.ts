@@ -6,6 +6,8 @@ import { LocalDate } from "./local-date";
 import { LocalTime } from "./local-time";
 import { formatDateTime, parseDateTime } from "./locale-format";
 import { civilNow } from "./now";
+import type { ZoneId } from "./zone-id";
+import { ZonedDateTime, type ZonedDateTimeOptions } from "./zoned-date-time";
 
 /** The date-time `str` spells in ISO 8601 `<date>T<time>` form, or `undefined` when it spells none. */
 function parseValue(str: string): LocalDateTime | undefined {
@@ -44,6 +46,10 @@ function parseLocalizedValue(str: string, locale: Locale): LocalDateTime | undef
  *
  * Both components are validated by their own types, so every instance names a real moment on the
  * civil calendar. Instances are frozen; every operation returns a new one.
+ *
+ * This module touches {@link ZonedDateTime} only when a method runs, never while it evaluates:
+ * it imports this module back, and a binding read during evaluation of the import cycle is not
+ * yet initialised.
  */
 export class LocalDateTime {
   /** The calendar date. */
@@ -180,6 +186,18 @@ export class LocalDateTime {
   /** The date-time `months` months earlier at the same time of day, clamping the day as {@link LocalDate.minusMonths} does, with its errors. */
   minusMonths(months: number): LocalDateTime {
     return new LocalDateTime(this.date.minusMonths(months), this.time);
+  }
+
+  /**
+   * This date and time of day in `zone`, as {@link ZonedDateTime.of} builds it: a time the zone
+   * skips or reads twice is settled by `options.disambiguation`, `compatible` by default.
+   *
+   * @throws {ZoneResolutionError} when the disambiguation is `reject` and the time falls in a gap
+   *   or an overlap.
+   * @throws {InvalidDateTimeError} when moving a time in a gap carries it outside 0001-01-01 to 9999-12-31.
+   */
+  atZone(zone: ZoneId, options?: ZonedDateTimeOptions): ZonedDateTime {
+    return ZonedDateTime.of(this, zone, options);
   }
 
   /**

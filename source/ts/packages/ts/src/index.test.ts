@@ -7,10 +7,13 @@ import {
   LocalDateTime as CoreLocalDateTime,
   LocalTime as CoreLocalTime,
   UnknownZoneError as CoreUnknownZoneError,
+  ZonedDateTime as CoreZonedDateTime,
   ZoneId as CoreZoneId,
+  ZoneResolutionError as CoreZoneResolutionError,
   isDateTimeParseError as coreIsDateTimeParseError,
   isInvalidDateTimeError as coreIsInvalidDateTimeError,
   isUnknownZoneError as coreIsUnknownZoneError,
+  isZoneResolutionError as coreIsZoneResolutionError,
 } from "@vipengele/ts-core-common/types/date-time";
 import { expect, test } from "vitest";
 import type {
@@ -21,12 +24,14 @@ import type {
   DateSegmentType,
   DateTimeTryParseResult,
   Detector,
+  Disambiguation,
   HourCycle,
   IsoDayOfWeek,
   IsoWeekday,
   NameStyle,
   NormalizeAttributesOptions,
   RedactStringOptions,
+  ZonedDateTimeOptions,
 } from "./index";
 import {
   awsAccessKey,
@@ -41,6 +46,7 @@ import {
   isDateTimeParseError,
   isInvalidDateTimeError,
   isUnknownZoneError,
+  isZoneResolutionError,
   jwt,
   LocalDate,
   LocalDateTime,
@@ -58,7 +64,9 @@ import {
   UnknownZoneError,
   VipengeleError,
   valueDetectors,
+  ZonedDateTime,
   ZoneId,
+  ZoneResolutionError,
 } from "./index";
 
 test("Numeric resolves from @vipengele/ts-core-common and round-trips a number", () => {
@@ -91,6 +99,19 @@ test("the date-time values are the @vipengele/ts-core-common/types/date-time exp
   expect(Instant).toBe(CoreInstant);
   expect(UnknownZoneError).toBe(CoreUnknownZoneError);
   expect(isUnknownZoneError).toBe(coreIsUnknownZoneError);
+  expect(ZonedDateTime).toBe(CoreZonedDateTime);
+  expect(ZoneResolutionError).toBe(CoreZoneResolutionError);
+  expect(isZoneResolutionError).toBe(coreIsZoneResolutionError);
+});
+
+test("ZonedDateTime resolves a skipped time under a disambiguation and reports it through the umbrella guard", () => {
+  const berlin = ZoneId.of("Europe/Berlin");
+  const skipped = LocalDateTime.parse("2026-03-29T02:30");
+  const options: ZonedDateTimeOptions = { disambiguation: "earlier" satisfies Disambiguation };
+
+  expect(skipped.atZone(berlin).toString()).toBe("2026-03-29T03:30+02:00[Europe/Berlin]");
+  expect(ZonedDateTime.of(skipped, berlin, options).toString()).toBe("2026-03-29T01:30+01:00[Europe/Berlin]");
+  expect(isZoneResolutionError(captured(() => skipped.atZone(berlin, { disambiguation: "reject" })))).toBe(true);
 });
 
 test("LocalDate formats and segments a date in a locale", () => {

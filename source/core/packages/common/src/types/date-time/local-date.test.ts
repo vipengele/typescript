@@ -1,7 +1,9 @@
 import { describe, expect, test, vi } from "vitest";
 import { Locale } from "../../locale";
-import { DateTimeParseError, InvalidDateTimeError, isDateTimeParseError, isInvalidDateTimeError } from "./errors";
+import { DateTimeParseError, InvalidDateTimeError, isDateTimeParseError, isInvalidDateTimeError, isZoneResolutionError } from "./errors";
 import { LocalDate } from "./local-date";
+import { ZoneId } from "./zone-id";
+import type { ZonedDateTime } from "./zoned-date-time";
 
 const date = (str: string): LocalDate => LocalDate.parse(str);
 
@@ -459,5 +461,85 @@ describe("LocalDate.parseLocalized and tryParseLocalized", () => {
   test("leaves parse and tryParse reading ISO 8601 only", () => {
     expect(LocalDate.tryParse("02/03/2026")).toEqual({ success: false });
     expect(LocalDate.parse("2026-02-03").equals(LocalDate.of(2026, 2, 3))).toBe(true);
+  });
+});
+
+describe("The start of a LocalDate in a time zone", () => {
+  /** A value's local date-time, offset and instant as plain strings and numbers, for one `toEqual`. */
+  function zonedParts(value: ZonedDateTime): { local: string; offsetSeconds: number; instant: string } {
+    return { local: value.toLocalDateTime().toString(), offsetSeconds: value.offsetSeconds, instant: value.toInstant().toString() };
+  }
+
+  /** The error `fn` throws, or `undefined` when it returns. */
+  function thrown(fn: () => unknown): unknown {
+    try {
+      fn();
+    } catch (error) {
+      return error;
+    }
+    return undefined;
+  }
+
+  test("is midnight in a zone that reads it once, in the zone given", () => {
+    const zone = ZoneId.of("Europe/Berlin");
+    const value = date("2026-07-15").atStartOfDay(zone);
+
+    expect(value.zone).toBe(zone);
+    expect(zonedParts(value)).toEqual({ local: "2026-07-15T00:00", offsetSeconds: 7200, instant: "2026-07-14T22:00:00Z" });
+  });
+
+  test("is midnight under reject when the zone reads it once", () => {
+    expect(zonedParts(date("2026-01-15").atStartOfDay(ZoneId.of("America/New_York"), { disambiguation: "reject" }))).toEqual({
+      local: "2026-01-15T00:00",
+      offsetSeconds: -18_000,
+      instant: "2026-01-15T05:00:00Z",
+    });
+  });
+
+  test("is the end of the gap when the zone skips midnight", () => {
+    expect(zonedParts(date("2018-11-04").atStartOfDay(ZoneId.of("America/Sao_Paulo")))).toEqual({
+      local: "2018-11-04T01:00",
+      offsetSeconds: -7200,
+      instant: "2018-11-04T03:00:00Z",
+    });
+  });
+
+  test("is midnight of the next date the zone reads when the gap spans the whole date", () => {
+    expect(zonedParts(date("2011-12-30").atStartOfDay(ZoneId.of("Pacific/Apia")))).toEqual({
+      local: "2011-12-31T00:00",
+      offsetSeconds: 50_400,
+      instant: "2011-12-30T10:00:00Z",
+    });
+  });
+
+  test("moves a skipped midnight back into the previous date under earlier", () => {
+    expect(zonedParts(date("2018-11-04").atStartOfDay(ZoneId.of("America/Sao_Paulo"), { disambiguation: "earlier" }))).toEqual({
+      local: "2018-11-03T23:00",
+      offsetSeconds: -10_800,
+      instant: "2018-11-04T02:00:00Z",
+    });
+  });
+
+  test("is the earlier instant when the zone reads midnight twice", () => {
+    expect(zonedParts(date("2015-11-01").atStartOfDay(ZoneId.of("America/Havana")))).toEqual({
+      local: "2015-11-01T00:00",
+      offsetSeconds: -14_400,
+      instant: "2015-11-01T04:00:00Z",
+    });
+  });
+
+  test("is the later instant of a midnight read twice under later", () => {
+    expect(zonedParts(date("2015-11-01").atStartOfDay(ZoneId.of("America/Havana"), { disambiguation: "later" }))).toEqual({
+      local: "2015-11-01T00:00",
+      offsetSeconds: -18_000,
+      instant: "2015-11-01T05:00:00Z",
+    });
+  });
+
+  test.for([
+    ["2018-11-04", "America/Sao_Paulo"],
+    ["2015-11-01", "America/Havana"],
+  ] as const)("throws ZoneResolutionError under reject when %s's midnight in %s is skipped or read twice", ([day, zone]) => {
+    expect(isZoneResolutionError(thrown(() => date(day).atStartOfDay(ZoneId.of(zone), { disambiguation: "reject" })))).toBe(true);
   });
 });

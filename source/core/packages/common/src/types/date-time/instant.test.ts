@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { DateTimeParseError, isDateTimeParseError } from "./errors";
+import { DateTimeParseError, isDateTimeParseError, isInvalidDateTimeError } from "./errors";
 import { Instant } from "./instant";
+import { ZoneId } from "./zone-id";
+import type { ZonedDateTime } from "./zoned-date-time";
 
 /** The largest distance from the epoch, in seconds, an instant spans. */
 const MAX_SECOND = 8_640_000_000_000;
@@ -419,5 +421,85 @@ describe("properties", () => {
     for (let index = 1; index < INSTANTS.length; index++) {
       expect(Instant.compare(INSTANTS[index - 1] as Instant, INSTANTS[index] as Instant)).toBe(-1);
     }
+  });
+});
+
+describe("Instant#atZone", () => {
+  /** A value's local date-time, offset and instant as plain strings and numbers, for one `toEqual`. */
+  function zonedParts(value: ZonedDateTime): { local: string; offsetSeconds: number; instant: string } {
+    return { local: value.toLocalDateTime().toString(), offsetSeconds: value.offsetSeconds, instant: value.toInstant().toString() };
+  }
+
+  /** `Instant.parse(instant).atZone(ZoneId.of(zone))` as {@link zonedParts}. */
+  function atZone(instant: string, zone: string): { local: string; offsetSeconds: number; instant: string } {
+    return zonedParts(Instant.parse(instant).atZone(ZoneId.of(zone)));
+  }
+
+  test("reads the wall-clock time and offset the zone shows, keeping the nanosecond", () => {
+    expect(atZone("2026-07-15T11:45:30.123456789Z", "Europe/Berlin")).toEqual({
+      local: "2026-07-15T13:45:30.123456789",
+      offsetSeconds: 7200,
+      instant: "2026-07-15T11:45:30.123456789Z",
+    });
+  });
+
+  test("holds the zone it was given", () => {
+    const zone = ZoneId.of("Europe/Berlin");
+
+    expect(Instant.parse("2026-07-15T11:45:30Z").atZone(zone).zone).toBe(zone);
+  });
+
+  test("floors an instant before the epoch onto the previous day's last second", () => {
+    expect(atZone("1969-12-31T23:59:59.000000005Z", "UTC")).toEqual({
+      local: "1969-12-31T23:59:59.000000005",
+      offsetSeconds: 0,
+      instant: "1969-12-31T23:59:59.000000005Z",
+    });
+  });
+
+  test.for([
+    ["Europe/Berlin", "2026-03-29T00:59:59.999999999Z", "2026-03-29T01:59:59.999999999", 3600],
+    ["Europe/Berlin", "2026-03-29T01:00:00Z", "2026-03-29T03:00", 7200],
+    ["America/New_York", "2026-03-08T06:59:59.999999999Z", "2026-03-08T01:59:59.999999999", -18_000],
+    ["America/New_York", "2026-03-08T07:00:00Z", "2026-03-08T03:00", -14_400],
+  ] as const)("in %s reads %s on its side of the spring-forward gap", ([zone, instant, local, offsetSeconds]) => {
+    expect(atZone(instant, zone)).toEqual({ local, offsetSeconds, instant });
+  });
+
+  test.for([
+    ["Europe/Berlin", "2026-10-25T00:30:00.500Z", "2026-10-25T02:30:00.500", 7200],
+    ["Europe/Berlin", "2026-10-25T01:30:00.500Z", "2026-10-25T02:30:00.500", 3600],
+    ["America/New_York", "2026-11-01T05:30:00.500Z", "2026-11-01T01:30:00.500", -14_400],
+    ["America/New_York", "2026-11-01T06:30:00.500Z", "2026-11-01T01:30:00.500", -18_000],
+  ] as const)(
+    "in %s keeps %s's own offset on a wall-clock time the fall-back overlap reads twice",
+    ([zone, instant, local, offsetSeconds]) => {
+      expect(atZone(instant, zone)).toEqual({ local, offsetSeconds, instant });
+    },
+  );
+
+  test("carries a local mean time offset's seconds into the wall-clock time", () => {
+    expect(atZone("1880-06-01T11:06:32Z", "Europe/Berlin")).toEqual({
+      local: "1880-06-01T12:00",
+      offsetSeconds: 3208,
+      instant: "1880-06-01T11:06:32Z",
+    });
+  });
+
+  test("reads the last nanosecond of 9999-12-31 in the zone", () => {
+    expect(atZone("9999-12-31T22:59:59.999999999Z", "Europe/Berlin").local).toBe("9999-12-31T23:59:59.999999999");
+  });
+
+  test.for([
+    ["9999-12-31T23:00:00Z", "Europe/Berlin"],
+    ["0001-01-01T00:00:00Z", "America/New_York"],
+  ] as const)("throws InvalidDateTimeError when %s in %s falls outside years 1 to 9999", ([instant, zone]) => {
+    let error: unknown;
+    try {
+      Instant.parse(instant).atZone(ZoneId.of(zone));
+    } catch (caught) {
+      error = caught;
+    }
+    expect(isInvalidDateTimeError(error)).toBe(true);
   });
 });

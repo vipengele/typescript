@@ -1,9 +1,11 @@
 import { describe, expect, test, vi } from "vitest";
 import { Locale } from "../../locale";
-import { DateTimeParseError, isDateTimeParseError, isInvalidDateTimeError } from "./errors";
+import { DateTimeParseError, isDateTimeParseError, isInvalidDateTimeError, isZoneResolutionError } from "./errors";
 import { LocalDate } from "./local-date";
 import { LocalDateTime } from "./local-date-time";
 import { LocalTime } from "./local-time";
+import { ZoneId } from "./zone-id";
+import { ZonedDateTime } from "./zoned-date-time";
 
 test("of combines a date and a time", () => {
   const date = LocalDate.of(2026, 10, 1);
@@ -326,5 +328,59 @@ describe("LocalDateTime.parseLocalized and tryParseLocalized", () => {
   test("leaves parse and tryParse reading ISO 8601 only", () => {
     expect(LocalDateTime.tryParse("02/03/2026, 01:30 PM")).toEqual({ success: false });
     expect(LocalDateTime.parse("2026-02-03T13:30").equals(LocalDateTime.ofFields(2026, 2, 3, 13, 30))).toBe(true);
+  });
+});
+
+describe("LocalDateTime#atZone in a time zone", () => {
+  /** A value's local date-time, offset and instant as plain strings and numbers, for one `toEqual`. */
+  function zonedParts(value: ZonedDateTime): { local: string; offsetSeconds: number; instant: string } {
+    return { local: value.toLocalDateTime().toString(), offsetSeconds: value.offsetSeconds, instant: value.toInstant().toString() };
+  }
+
+  test("keeps a time the zone reads once as the value's toLocalDateTime, in the zone given", () => {
+    const local = LocalDateTime.parse("2026-07-15T13:45:30.123456789");
+    const zone = ZoneId.of("Europe/Berlin");
+    const value = local.atZone(zone);
+
+    expect(value.toLocalDateTime()).toBe(local);
+    expect(value.zone).toBe(zone);
+    expect(zonedParts(value)).toEqual({
+      local: "2026-07-15T13:45:30.123456789",
+      offsetSeconds: 7200,
+      instant: "2026-07-15T11:45:30.123456789Z",
+    });
+  });
+
+  test("settles a time in a gap as ZonedDateTime.of does, compatible by default", () => {
+    const local = LocalDateTime.parse("2026-03-29T02:30");
+    const zone = ZoneId.of("Europe/Berlin");
+
+    expect(zonedParts(local.atZone(zone))).toEqual({ local: "2026-03-29T03:30", offsetSeconds: 7200, instant: "2026-03-29T01:30:00Z" });
+    expect(local.atZone(zone).equals(ZonedDateTime.of(local, zone))).toBe(true);
+  });
+
+  test("passes the disambiguation through", () => {
+    const zone = ZoneId.of("Europe/Berlin");
+
+    expect(zonedParts(LocalDateTime.parse("2026-03-29T02:30").atZone(zone, { disambiguation: "earlier" }))).toEqual({
+      local: "2026-03-29T01:30",
+      offsetSeconds: 3600,
+      instant: "2026-03-29T00:30:00Z",
+    });
+    expect(zonedParts(LocalDateTime.parse("2026-10-25T02:30").atZone(zone, { disambiguation: "later" }))).toEqual({
+      local: "2026-10-25T02:30",
+      offsetSeconds: 3600,
+      instant: "2026-10-25T01:30:00Z",
+    });
+  });
+
+  test("throws ZoneResolutionError under reject for a time in a gap", () => {
+    let error: unknown;
+    try {
+      LocalDateTime.parse("2026-03-29T02:30").atZone(ZoneId.of("Europe/Berlin"), { disambiguation: "reject" });
+    } catch (caught) {
+      error = caught;
+    }
+    expect(isZoneResolutionError(error)).toBe(true);
   });
 });
