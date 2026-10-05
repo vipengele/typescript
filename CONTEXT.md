@@ -156,7 +156,23 @@ A date, a time or a date and time with no time zone: `LocalDate`, `LocalTime`, `
 It names a point on a calendar or a clock face, not an instant. The zone is consulted only to
 read the current moment (`now()`), never to build, compare or format one. Owned by
 `@vipengele/ts-core-common`.
-_Avoid_: timestamp, instant (those name a point on the timeline), `Date` (carries an implicit zone)
+_Avoid_: timestamp, instant (an Instant is the term for a point on the timeline), `Date` (carries
+an implicit zone)
+
+**Instant**:
+A point on the UTC timeline, to the nanosecond, independent of any calendar or zone. It becomes a
+Local Value only by being read in a Zone. Owned by `@vipengele/ts-core-common`.
+_Avoid_: timestamp, `Date` (millisecond-only, and carries an implicit zone)
+
+**Zone**:
+A named IANA time zone, such as `Europe/Berlin`, whose rules fix the UTC offset at each Instant. A
+UTC offset like `+05:30` is not a Zone: it has no rules of its own. Represented by `ZoneId`.
+_Avoid_: timezone (write "time zone" in prose; `ZoneId` is the type), offset
+
+**Zoned value**:
+A Local Value of date and time paired with a Zone, which together fix exactly one Instant. Where
+the zone's rules make a local time ambiguous or nonexistent, the pairing is what resolves it.
+_Avoid_: datetime with offset, timestamp
 
 **Integration**:
 A piece a Reporter installs when it is created and removes when it is closed, such as a listener on

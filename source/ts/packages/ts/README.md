@@ -5,9 +5,10 @@ public surface of the `@vipengele/ts-core-*` packages from one entry point, so a
 depends on a single package. It re-exports:
 
 - `Numeric`, `Locale` (with `HourCycle`, `IsoWeekday`, `NameStyle`) and the date-time values
-  `LocalDate`, `LocalTime`, `LocalDateTime` (with `DateTimeParseError`, `InvalidDateTimeError`,
-  `isDateTimeParseError`, `isInvalidDateTimeError` and the `DateSegment`, `DateSegmentType`,
-  `DateTimeTryParseResult` and `IsoDayOfWeek` types);
+  `LocalDate`, `LocalTime`, `LocalDateTime`, `Instant` and `ZoneId` (with `DateTimeParseError`,
+  `InvalidDateTimeError`, `UnknownZoneError`, `isDateTimeParseError`, `isInvalidDateTimeError`,
+  `isUnknownZoneError` and the `DateSegment`, `DateSegmentType`, `DateTimeTryParseResult` and
+  `IsoDayOfWeek` types);
 - `Scope`, `normalizeAttributes` (with its types) and `VipengeleError`;
 - from redaction, `redact`, `secretKeys`, `composePolicies`, `redactUrl`, `redactQueryString` and
   `redactHeaders` (with `RedactionPolicy`, `KeyMatcher`, `RedactOptions`, `RedactStringOptions`,
@@ -84,3 +85,16 @@ LocalTime.of(15, 30).format(new Locale("en-US")); // "03:30 PM"
 
 Invalid fields throw an `InvalidDateTimeError` and unparseable text a `DateTimeParseError`; check
 them with `isInvalidDateTimeError` and `isDateTimeParseError`.
+
+`Instant` is a point on the UTC timeline to the nanosecond, and `ZoneId` a named IANA time zone that
+reports its UTC offset at an `Instant`. `ZoneId.of` throws an `UnknownZoneError` for an unknown name
+or a UTC-offset id; check it with `isUnknownZoneError`.
+
+```ts
+import { Instant, ZoneId } from "@vipengele/ts";
+
+const instant = Instant.parse("2024-07-01T00:00:00Z");
+
+instant.toEpochMilli(); // 1719792000000
+ZoneId.of("Europe/Berlin").offsetSecondsAt(instant); // 7200
+```
