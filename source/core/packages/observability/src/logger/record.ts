@@ -1,6 +1,6 @@
 import type { Attributes, Clock, Level, SerializedError } from "@vipengele/ts-core-common";
 import type { Resource } from "@vipengele/ts-core-common/scope";
-import type { RedactionPolicy } from "@vipengele/ts-core-redaction";
+import type { RedactionSetting } from "../redaction";
 
 /**
  * One emitted log entry, the shape every {@link Sink} receives (ADR-0007). It carries the
@@ -34,23 +34,7 @@ export interface Sink {
   write(record: LogRecord, resource: Resource): void;
 }
 
-/**
- * How records are redacted: a `RedactionPolicy` from `@vipengele/ts-core-redaction` (the
- * `secretKeys` preset, a `composePolicies` result, or a policy of the caller's own), or `null`
- * for no redaction. The setting holds the policy only; the package never reads the preset itself
- * at module scope, so a consumer that disables redaction pays nothing for it (ADR-0011).
- *
- * A policy is applied to `attributes` and to every link of the serialized error chain (`error`,
- * and each `cause` and `errors` entry beneath it), when the record is created and before any sink
- * sees it: to the `data` and `code` of a link for an `Error`, `code` read under the key `code`,
- * and to the fields of a structured thrown value that is not an `Error`, carried as JSON text in
- * its synthetic link's `message`; a thrown string is read the same way when it opens with `{` or
- * `[` after any leading whitespace and byte order mark. That text is replaced whole when it does
- * not parse, as when it was cut at the serialization length bound.
- * The record's `message`, and the `message` and `stack` of an `Error`, are not scanned: a secret
- * interpolated into a message is the caller's to keep out.
- */
-export type RedactionSetting = RedactionPolicy | null;
+export type { RedactionSetting };
 
 /**
  * Everything a Logger needs to turn a call into a record and deliver it. A Logger reads these on

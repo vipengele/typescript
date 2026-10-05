@@ -1,4 +1,6 @@
 import { type Clock, systemClock } from "@vipengele/ts-core-common";
+import { secretKeys } from "@vipengele/ts-core-redaction";
+import type { RedactionSetting } from "../redaction";
 import type { Integration } from "./integration";
 import type { Transport } from "./transport";
 
@@ -11,16 +13,24 @@ export interface ReporterSettings {
   readonly projectRoot?: string;
   /** Installed in this order when the Reporter is created, and removed when it is closed. */
   readonly integrations: readonly Integration[];
+  /**
+   * Applied to every event after enrichment and before any processor: to its `attributes`, to
+   * `mechanism.data`, and to every link of its exception chain as the logger applies it to a
+   * record's error. `null` disables it.
+   */
+  readonly redaction: RedactionSetting;
 }
 
 /**
  * Composes a Reporter's settings, starting from the defaults: no transport, the high-resolution
- * epoch clock, and no integrations. Every method returns the builder, so calls chain.
+ * epoch clock, no integrations, and the `secretKeys` redaction preset. Every method returns the
+ * builder, so calls chain.
  */
 export class ReporterBuilder {
   #transport: Transport | undefined;
   #clock: Clock = systemClock;
   #projectRoot: string | undefined;
+  #redaction: RedactionSetting | undefined;
   readonly #integrations = new Map<string, Integration>();
 
   /** Where captured events go. A later call replaces the transport an earlier one set. */
@@ -46,6 +56,15 @@ export class ReporterBuilder {
   }
 
   /**
+   * The redaction applied to every event: a `RedactionPolicy`, or `null` to disable redaction. The
+   * `secretKeys` preset applies unless set. A later call replaces the setting an earlier one made.
+   */
+  redaction(policy: RedactionSetting): this {
+    this.#redaction = policy;
+    return this;
+  }
+
+  /**
    * An integration the Reporter installs when it is created. A later call with an integration of
    * the same `name` replaces the earlier one, in the earlier one's place.
    */
@@ -61,6 +80,8 @@ export class ReporterBuilder {
       clock: this.#clock,
       projectRoot: this.#projectRoot,
       integrations: [...this.#integrations.values()],
+      // The preset is read when a build is made, never at module scope (ADR-0011).
+      redaction: this.#redaction === undefined ? secretKeys : this.#redaction,
     };
   }
 }

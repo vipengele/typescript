@@ -1,4 +1,5 @@
 import { systemClock } from "@vipengele/ts-core-common";
+import { secretKeys } from "@vipengele/ts-core-redaction";
 import { describe, expect, it } from "vitest";
 import { ReporterBuilder } from "./builder";
 import type { Integration } from "./integration";
@@ -8,8 +9,17 @@ function anIntegration(name: string): Integration {
 }
 
 describe("ReporterBuilder", () => {
-  it("starts with no transport, the system clock and no integrations", () => {
-    expect(new ReporterBuilder().build()).toEqual({ transport: undefined, clock: systemClock, integrations: [] });
+  it("starts with no transport, the system clock, no integrations and the secretKeys redaction", () => {
+    expect(new ReporterBuilder().build()).toEqual({ transport: undefined, clock: systemClock, integrations: [], redaction: secretKeys });
+  });
+
+  it("keeps the redaction set last, null included", () => {
+    const builder = new ReporterBuilder();
+    const policy = { keys: ["region"] };
+
+    expect(builder.redaction(policy)).toBe(builder);
+    expect(builder.build().redaction).toBe(policy);
+    expect(builder.redaction(null).build().redaction).toBeNull();
   });
 
   it("keeps integrations in the order they were added", () => {
