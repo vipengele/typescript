@@ -6,7 +6,9 @@ import {
   isDateTimeParseError,
   isInvalidDateTimeError,
   isUnknownZoneError,
+  isZoneResolutionError,
   UnknownZoneError,
+  ZoneResolutionError,
 } from "./errors";
 
 /** Stands in for a second resolved copy of this package: same code, unrelated class identity. */
@@ -22,6 +24,11 @@ class ForeignParse extends Error {
 /** Stands in for a second resolved copy of this package: same code, unrelated class identity. */
 class ForeignUnknownZone extends Error {
   readonly code = "common.date-time.unknown-zone";
+}
+
+/** Stands in for a second resolved copy of this package: same code, unrelated class identity. */
+class ForeignZoneResolution extends Error {
+  readonly code = "common.date-time.zone-resolution";
 }
 
 describe.for([
@@ -48,6 +55,14 @@ describe.for([
     guard: isUnknownZoneError,
     Foreign: ForeignUnknownZone,
     other: new DateTimeParseError("nope"),
+  },
+  {
+    name: "ZoneResolutionError",
+    Error: ZoneResolutionError,
+    code: "common.date-time.zone-resolution",
+    guard: isZoneResolutionError,
+    Foreign: ForeignZoneResolution,
+    other: new UnknownZoneError("nope"),
   },
 ])("$name", ({ Error: ErrorClass, code, guard, Foreign, other }) => {
   test("extends Error and VipengeleError", () => {

@@ -35,6 +35,8 @@ test("exports the errors and the guards", () => {
   expect(dateTime.isDateTimeParseError).toBe(errors.isDateTimeParseError);
   expect(dateTime.UnknownZoneError).toBe(errors.UnknownZoneError);
   expect(dateTime.isUnknownZoneError).toBe(errors.isUnknownZoneError);
+  expect(dateTime.ZoneResolutionError).toBe(errors.ZoneResolutionError);
+  expect(dateTime.isZoneResolutionError).toBe(errors.isZoneResolutionError);
 });
 
 test("exports nothing else, keeping the civil arithmetic internal", () => {

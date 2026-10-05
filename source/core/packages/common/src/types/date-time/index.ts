@@ -6,7 +6,9 @@ export {
   isDateTimeParseError,
   isInvalidDateTimeError,
   isUnknownZoneError,
+  isZoneResolutionError,
   UnknownZoneError,
+  ZoneResolutionError,
 } from "./errors";
 export { Instant } from "./instant";
 export type { DateSegment, DateSegmentType } from "./local-date";
