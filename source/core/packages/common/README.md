@@ -249,6 +249,66 @@ date.segments(us);
 `DateSegment`, `DateSegmentType`, `DateTimeTryParseResult` and `IsoDayOfWeek` are exported
 alongside the values.
 
+### `ZoneId`
+
+A named IANA time zone as the runtime's `Intl` knows it. Instances are frozen.
+
+```ts
+import { Instant, ZoneId } from "@vipengele/ts-core-common/types/date-time";
+
+const berlin = ZoneId.of("Europe/Berlin");
+
+berlin.id; // "Europe/Berlin"
+berlin.offsetSecondsAt(Instant.parse("2024-07-01T00:00:00Z")); // 7200
+ZoneId.of("europe/berlin").equals(berlin); // true
+ZoneId.of("+05:30"); // throws an UnknownZoneError
+```
+
+- `ZoneId.of(id)` matches case-insensitively and accepts any name `Intl` does, legacy aliases such
+  as `UTC`, `GMT` and `EST` included. It throws an `UnknownZoneError` (check it with
+  `isUnknownZoneError`) for an empty string, an unknown name, or a UTC-offset id such as `+05:30` or
+  `Z`: an offset is not a zone.
+- `id` is `Intl`'s canonical spelling, so `america/new_york` and `America/New_York` are equal zones.
+  The canonical spelling is the runtime's own and depends on its ICU version: `EST` resolves to
+  `America/Panama` on Node 22, and `Etc/UTC` may read as `UTC` or `Etc/UTC`.
+- `ZoneId.systemDefault()` reads the runtime's zone on every call.
+- `offsetSecondsAt(instant)` is the offset from UTC at that instant in whole seconds, positive east
+  of Greenwich. An instant before the zone's first transition reads in local mean time, which
+  carries seconds: Berlin in 1880 is `3208` (+00:53:28).
+- `equals(other)` compares canonical ids; `toString()` is the `id`.
+
+### `Instant`
+
+A point on the UTC timeline to the nanosecond, held as epoch seconds and a nanosecond of that
+second. The range is `Date`'s, ±8.64e15 milliseconds of the epoch (`-271821-04-20T00:00:00Z` to
+`+275760-09-13T00:00:00Z`); a value or result outside it is a `RangeError`. Every operation is exact
+integer arithmetic and returns a new frozen instance.
+
+```ts
+const instant = Instant.ofEpochMilli(1_700_000_000_123);
+
+instant.toString(); // "2023-11-14T22:13:20.123Z"
+instant.toEpochSecond(); // 1700000000
+instant.nanosecond; // 123000000
+instant.plusSeconds(60).toString(); // "2023-11-14T22:14:20.123Z"
+instant.minusNanos(1).toString(); // "2023-11-14T22:13:20.122999999Z"
+Instant.ofEpochSecond(-1, 999_999_999).toString(); // "1969-12-31T23:59:59.999999999Z"
+Instant.parse("2026-10-01T12:30:00Z").equals(instant); // false
+Instant.tryParse("2026-10-01T12:30:00+02:00"); // { success: false }, only a literal Z is read
+```
+
+- `ofEpochSecond(second, nano = 0)`, `ofEpochMilli(milli)` and `now(clock?)` construct one. The nano
+  is the nanosecond of its second, never carried into it, so an instant before the epoch has a
+  negative second and a positive nano. `now()` floors to the microsecond.
+- `toEpochSecond()`, `nanosecond` and `toEpochMilli()` read it back, flooring.
+- `plusSeconds`, `plusMillis` and `plusNanos`, and their `minus` counterparts, take a safe integer.
+- `parse(str)` reads ISO 8601 in UTC, `YYYY-MM-DDTHH:mm:ss` with an optional one-to-nine digit
+  fraction and a literal `Z`, and throws a `DateTimeParseError`; `tryParse(str)` returns a
+  `DateTimeTryParseResult`. A year outside 0000 to 9999 is written and read as a sign and six
+  digits (`+275760-09-13T00:00:00Z`). `toString()` writes the same, with a fraction only when the
+  nanosecond is non-zero, as 3, 6 or 9 digits.
+- `Instant.compare(a, b)` returns `-1`, `0` or `1`; `equals` compares instants.
+
 ## `./runtime`
 
 `detectRuntime` names the runtime family code is executing in, and `detectCapability` says whether

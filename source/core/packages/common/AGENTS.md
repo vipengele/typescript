@@ -55,3 +55,14 @@ A sub-path needs both a `tsup.config.ts` `entry` and a `package.json` `exports` 
   The year is exactly four digits; month and day accept one or two.
 - `src/types/date-time/civil.ts` holds the shared civil-calendar arithmetic; `now.ts` reads the
   wall clock in the current time zone through `Intl.DateTimeFormat` and the `Clock` from `src/time/clock`.
+- `src/types/date-time/civil-fields.ts` is the one place an epoch time is turned into civil fields in
+  a named zone: it owns the per-zone `Intl.DateTimeFormat` cache, the BC-era year fix-up and the
+  microsecond-floored fraction. `now.ts`'s `civilNow` and `ZoneId#offsetSecondsAt` both call it.
+- `Instant` is a point on the UTC timeline, held as epoch seconds and a nanosecond of that second,
+  within `Date`'s ±8.64e15 ms. Its arithmetic is exact integer arithmetic and never reads a `Date`;
+  `parse` takes ISO 8601 with a literal `Z` only, and a year outside 0000-9999 is a sign and six
+  digits. An out-of-range value is a `RangeError`.
+- `ZoneId` is a named IANA zone whose `id` is `Intl`'s canonical spelling, so equality is by `id`
+  and the spelling depends on the runtime's ICU version. `ZoneId.of` throws `UnknownZoneError` for
+  an unknown name or a UTC-offset id (`+05:30`, `Z`); it is checked with `isUnknownZoneError`, never
+  `instanceof`. `offsetSecondsAt(instant)` returns whole seconds, local-mean-time seconds included.
