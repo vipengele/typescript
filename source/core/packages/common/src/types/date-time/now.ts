@@ -57,15 +57,17 @@ function resolveFormatter(timeZone: string): Intl.DateTimeFormat {
  * the second comes from the instant itself, which `Intl` does not format.
  *
  * The clock reading is floored to the microsecond, never rounded, so the nanosecond's last three
- * digits are zero and an instant just before the epoch is in 1969, not 1970. The flooring is
- * exact while the reading in microseconds is a safe integer, from 1684 to 2255.
+ * digits are zero and an instant just before the epoch is in 1969, not 1970. The whole millisecond
+ * is taken from the reading directly, so it is exact across the whole time value range; only the
+ * sub-millisecond remainder is scaled, and it is floored to the microsecond within the resolution
+ * the double reading itself carries.
  *
  * @throws {RangeError} when the clock returns a value that is not a finite time within
  *   ±8.64e15 milliseconds of the epoch.
  */
 export function civilNow(clock: Clock = systemClock): CivilDateTimeFields {
-  const epochMicroseconds = Math.floor(clock() * 1000);
-  const epochMilliseconds = Math.floor(epochMicroseconds / 1000);
+  const reading = clock();
+  const epochMilliseconds = Math.floor(reading);
   if (!(Math.abs(epochMilliseconds) <= MAX_EPOCH_MILLISECONDS)) {
     throw new RangeError(`The clock must return epoch milliseconds within ±${MAX_EPOCH_MILLISECONDS}, got ${epochMilliseconds}.`);
   }
@@ -81,6 +83,10 @@ export function civilNow(clock: Clock = systemClock): CivilDateTimeFields {
   }
   // The Gregorian year is formatted as a year of its era: 1 BC is year 1 of the BC era.
   const eraYear = fields.year as number;
+  // The remainder is exact, but a reading a hair below a whole millisecond leaves one that rounds
+  // to 1, which scales to 1000 µs; flooring puts such a reading in the millisecond's last microsecond.
+  const microsecond = Math.min(Math.floor((reading - epochMilliseconds) * 1000), 999);
+  const millisecondOfSecond = ((epochMilliseconds % 1000) + 1000) % 1000;
   return {
     year: beforeCommonEra ? 1 - eraYear : eraYear,
     month: fields.month as number,
@@ -88,6 +94,6 @@ export function civilNow(clock: Clock = systemClock): CivilDateTimeFields {
     hour: fields.hour as number,
     minute: fields.minute as number,
     second: fields.second as number,
-    nanosecond: (((epochMicroseconds % 1_000_000) + 1_000_000) % 1_000_000) * 1000,
+    nanosecond: millisecondOfSecond * 1_000_000 + microsecond * 1000,
   };
 }

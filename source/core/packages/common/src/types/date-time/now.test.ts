@@ -132,6 +132,48 @@ describe("civilNow", () => {
     });
   });
 
+  test("puts a reading a hair below a whole millisecond in the millisecond's last microsecond", () => {
+    useZone("UTC");
+
+    // -1e-20 ms floors to -1 ms, and the remainder 1 - 1e-20 rounds to exactly 1 in a double:
+    // scaled, that is 1000 µs, one past the last microsecond of the millisecond.
+    expect(civilNow(() => -1e-20)).toEqual({
+      year: 1969,
+      month: 12,
+      day: 31,
+      hour: 23,
+      minute: 59,
+      second: 59,
+      nanosecond: 999_999_000,
+    });
+  });
+
+  test("reads a whole-millisecond instant far from the epoch to the exact millisecond", () => {
+    useZone("UTC");
+
+    // Each reading is a whole number of milliseconds, a safe integer and so exact in a double,
+    // while the same reading in microseconds is past 2^53 and is not.
+    expect(civilNow(clockAt("9999-12-31T23:59:59.005Z"))).toEqual({
+      year: 9999,
+      month: 12,
+      day: 31,
+      hour: 23,
+      minute: 59,
+      second: 59,
+      nanosecond: 5_000_000,
+    });
+    expect(civilNow(clockAt("9999-12-31T23:59:59.999Z"))).toMatchObject({ second: 59, nanosecond: 999_000_000 });
+    expect(civilNow(clockAt("5000-06-15T12:00:00.005Z"))).toEqual({
+      year: 5000,
+      month: 6,
+      day: 15,
+      hour: 12,
+      minute: 0,
+      second: 0,
+      nanosecond: 5_000_000,
+    });
+  });
+
   test("rolls into the next year ahead of UTC", () => {
     useZone("Pacific/Auckland");
 
