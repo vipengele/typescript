@@ -66,3 +66,23 @@ A sub-path needs both a `tsup.config.ts` `entry` and a `package.json` `exports` 
   and the spelling depends on the runtime's ICU version. `ZoneId.of` throws `UnknownZoneError` for
   an unknown name or a UTC-offset id (`+05:30`, `Z`); it is checked with `isUnknownZoneError`, never
   `instanceof`. `offsetSecondsAt(instant)` returns whole seconds, local-mean-time seconds included.
+- `ZonedDateTime` is a date and time of day in a `ZoneId` with the offset it reads in there (`of`,
+  `parse`, `tryParse`, `toLocalDateTime`, `toInstant`, `compare`, `equals`, `toString`). It is built by
+  `ZonedDateTime.of`, `LocalDateTime#atZone`, `LocalDate#atStartOfDay` and `Instant#atZone`.
+  `ZonedDateTimeOptions { disambiguation? }` and the `Disambiguation` type are exported; a gap or an
+  overlap is settled by `compatible` (default, `java.time`'s), `earlier`, `later` or `reject`, and
+  `reject` throws `ZoneResolutionError`, checked with `isZoneResolutionError`, never `instanceof`.
+  Every place a local value is resolved in a zone takes the same option.
+- `src/types/date-time/zone-resolve.ts` is internal and not exported from `index.ts`: `resolveLocal`
+  classifies a local date-time in a zone as unique, gap or overlap by testing the zone's offsets a day
+  before and after it, and `disambiguate` applies the mode.
+- `plusDays`/`minusDays`/`plusMonths`/`minusMonths` move the local date and re-resolve it with the
+  options; `plusHours`..`plusNanos` and their `minus` forms move the instant exactly, so a day across a
+  spring-forward is 23 hours.
+- `parse` is strict ISO: `<local date-time>±HH:mm[<zone>]`, the offset required and one the zone reads
+  that time in (it picks the reading in an overlap), never `Z`.
+- Import cycle: `LocalDateTime`, `LocalDate` and `Instant` import `ZonedDateTime`, which imports them
+  back. `ZonedDateTime` and `zone-resolve.ts` touch those classes only when a method runs, never while
+  the module evaluates, so whichever module loads first sees every binding initialised.
+  `import-order.test.ts` loads each entry first in a fresh module graph to pin this; a top-level use
+  of an imported class breaks it. Biome has no import-cycle rule to catch it (ADR-0015).

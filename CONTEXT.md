@@ -172,7 +172,24 @@ _Avoid_: timezone (write "time zone" in prose; `ZoneId` is the type), offset
 **Zoned value**:
 A Local Value of date and time paired with a Zone, which together fix exactly one Instant. Where
 the zone's rules make a local time ambiguous or nonexistent, the pairing is what resolves it.
+Represented by `ZonedDateTime`, which also holds the offset the date and time read in.
 _Avoid_: datetime with offset, timestamp
+
+**Disambiguation**:
+The mode that settles a Gap or an Overlap when a local value is resolved in a Zone: `compatible`
+(the default, as in `java.time`), `earlier`, `later` or `reject`. Passed as the `disambiguation`
+option wherever a local value meets a zone.
+_Avoid_: resolver, strategy, policy (a Redaction policy is unrelated)
+
+**Gap**:
+A span of local time a Zone skips when its offset moves forward, such as 02:00 to 03:00 on a
+spring-forward night. A local value in it names no Instant.
+_Avoid_: DST hole, nonexistent time
+
+**Overlap**:
+A span of local time a Zone reads twice when its offset moves back, such as 02:00 to 03:00 on a
+fall-back night. A local value in it names two Instants.
+_Avoid_: ambiguous time, repeated hour
 
 **Integration**:
 A piece a Reporter installs when it is created and removes when it is closed, such as a listener on
