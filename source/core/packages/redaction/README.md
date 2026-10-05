@@ -1,9 +1,9 @@
 # @vipengele/ts-core-redaction
 
 Removes secrets and personal data from structured values before they are logged, reported or sent
-anywhere, by matching keys against a policy, bounding how deep, wide and long the walk goes.
-Value-pattern matching is outside this package's scope. Usable on its own, and the redaction layer of
-`@vipengele/ts-core-observability`.
+anywhere, by matching keys against a policy, bounding how deep, wide and long the walk goes. Keys
+are the default; opt-in value detectors also replace secret-shaped spans inside string values.
+Usable on its own, and the redaction layer of `@vipengele/ts-core-observability`.
 
 ```sh
 pnpm add @vipengele/ts-core-redaction
@@ -27,7 +27,8 @@ function redact(value: unknown, policy: RedactionPolicy, options?: RedactOptions
 ```
 
 Returns a redacted copy of `value`. Every value found under a key the policy matches is replaced
-whole and never descended into; everything else is walked recursively. Plain objects, arrays,
+whole and never descended into; everything else is walked recursively, and the strings in it are
+scanned by the policy's `detectors`, if it has any. Plain objects, arrays,
 `Map`s, `Set`s, `Error`s and other class instances come back as copies; `Date`s, `RegExp`s, boxed
 primitives, `ArrayBuffer`s and their views, functions and primitives are returned as-is. The input
 is never mutated.
@@ -41,6 +42,7 @@ below. It defaults to the string `"[REDACTED]"`.
 interface RedactionPolicy {
   keys: readonly KeyMatcher[];
   except?: readonly KeyMatcher[];
+  detectors?: readonly Detector[];
 }
 
 type KeyMatcher =
@@ -53,6 +55,8 @@ type KeyMatcher =
 A policy is a list of `KeyMatcher`s, each naming keys whose values are sensitive. A key is
 redacted if and only if a matcher in `keys` matches it and no matcher in `except` does. `except`
 is optional and carves exemptions out of a broad rule; it takes the same `KeyMatcher`s as `keys`.
+`detectors` is optional and off by default; see `Detector` below. A policy without it behaves as a
+key-only policy.
 
 - A bare `string` matches a key exactly and case-sensitively.
 - A bare `RegExp` is tested against the key with its own flags.
@@ -130,8 +134,9 @@ redact({ user: "ana", "x-api-key": "k-123" }, secretKeys);
 function composePolicies(...parts: RedactionPolicy[]): RedactionPolicy;
 ```
 
-Returns a new frozen policy whose `keys` are every part's `keys` and whose `except` is every
-part's `except`, each in order. The parts are never mutated. `except` is policy-wide after
+Returns a new frozen policy whose `keys` are every part's `keys`, whose `except` is every
+part's `except` and whose `detectors` are every part's `detectors`, each in order. The `detectors`
+field is omitted when no part has any. The parts are never mutated. `except` is policy-wide after
 composition: an exemption from one part also exempts a key another part matches.
 
 ```ts
@@ -147,6 +152,99 @@ Compose once at startup and reuse the result. A policy is normalized once per ob
 `composePolicies` returns a new object on every call, so composing per call re-normalizes every
 matcher every time.
 
+## `Detector` and value detectors
+
+```ts
+interface Detector {
+  pattern: RegExp;
+  validate?: (match: string) => boolean;
+}
+```
+
+Key rules cannot see a secret that sits inside a string under an innocent key, such as a token in a
+log line or an email in a `note` field. A policy's `detectors` find those by value. Detectors are
+off by default: a policy without `detectors` behaves exactly as a key-only policy.
+
+```ts
+import { composePolicies, redact, secretKeys, valueDetectors } from "@vipengele/ts-core-redaction";
+
+const policy = composePolicies(secretKeys, { keys: [], detectors: valueDetectors });
+
+redact({ note: "retry with Bearer abc.def-123 failed", password: "hunter2" }, policy);
+// => { note: "retry with [REDACTED] failed", password: "[REDACTED]" }
+```
+
+A custom detector is a `pattern` plus an optional `validate`, run on each raw match to reject
+false positives:
+
+```ts
+import { composePolicies, redact, secretKeys, type Detector } from "@vipengele/ts-core-redaction";
+
+const orderId: Detector = {
+  pattern: /\bORD-\d{8}\b/,
+  validate: (match) => !match.endsWith("00000000"),
+};
+
+redact("shipped ORD-12345678", composePolicies(secretKeys, { keys: [], detectors: [orderId] }));
+// => "shipped [REDACTED]"
+```
+
+### Built-in detectors
+
+Each is exported from the package root.
+
+| Detector       | Matches                                                                                                                        |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `jwt`          | A JSON Web Token, to the end of its signature however long its segments are.                                                   |
+| `bearerToken`  | A `Bearer` token, to the end of the token however long; the span includes the `Bearer` scheme.                                 |
+| `creditCard`   | 13 to 19 contiguous digits, or 4-4-4-N, Diners 4-6-4 or Amex 4-6-5 groups with one space or hyphen separator, validated with the Luhn check. |
+| `email`        | An email address.                                                                                                              |
+| `awsAccessKey` | An AWS access key ID.                                                                                                          |
+| `githubToken`  | A GitHub token.                                                                                                                |
+| `stripeKey`    | A Stripe secret or restricted key; publishable keys are not matched.                                                           |
+
+`valueDetectors` is a frozen array bundling all seven. Each built-in pattern costs time linear in
+the string's length: an unbounded quantifier repeats one character class behind a leading anchor
+that rejects a start position inside the run at once, and every other quantifier is length-bounded.
+
+`creditCard` leaves a CVV or an expiry date written after the number (`4111 1111 1111 1111 123`)
+out of the candidate, so the card number is still checked and redacted on its own. A longer grouped
+number is read by its leading groups instead: when its first 13 to 19 digits happen to pass the
+Luhn check, that prefix is redacted and the rest kept; when they fail it, the number is retried
+from each later group, so a card number written after a reference or another number is still
+found. A 19-digit number is matched whole when written
+contiguously; written in 4-4-4-4-3 groups it is redacted only when its leading 16 digits pass Luhn
+or its trailing 15 do, since trying that grouping first would leave a card number written next to
+its CVV unredacted.
+
+### What is scanned
+
+`redact` scans every string it visits: object field values, array items, `Set` members, `Map`
+values, an `Error`'s `name`, `message`, `stack` and `cause` strings, and a root string. Object and
+`Map` keys are never scanned. A value under a key the policy already redacts is replaced whole by
+the key rule and not scanned.
+
+- **Only the matched span is replaced.** The text around it is kept. Overlapping or touching spans,
+  from one detector or several, merge into one replacement. `validate` runs on each detector's raw
+  match before merging.
+- **A rejected match is rescanned from its next character.** An accepted match resumes the scan at
+  its end; a match `validate` rejects resumes it one character (one code point under `u` or `v`)
+  past its start, so a secret starting inside the rejected text is still found.
+- **A function `Replacement` receives the span as `value`** and the nearest enclosing string key as
+  `key`: `""` for a root string and for items under no string key. A non-string return is
+  converted with `String()`.
+- **A detector's regex is copied, never run as given.** The copy gets the `g` flag, loses `y`, and
+  keeps `u` and `v`; the caller's `lastIndex` is untouched. Detectors are normalized once per
+  `detectors` array, so mutating the array after use has no effect. Compose a new policy instead.
+- **The scan reads the original string, and `maxStringLength` truncates the result.** A secret
+  that straddles the cutoff is replaced before the cut, so no prefix of it survives.
+- **`redactUrl`, `redactQueryString` and `redactHeaders` ignore `detectors`.** They replace whole
+  parameter and header values by name.
+
+Value patterns complement key rules and do not replace them. A pattern can match benign text, such
+as an email address in prose or a run of digits that happens to pass the Luhn check, and it cannot
+see a secret in a shape it does not know.
+
 ## `Replacement`
 
 ```ts
@@ -157,6 +255,7 @@ What a matched value is replaced with, either:
 
 - a fixed `string`, used as-is for every match, or
 - a function, called for every matched value with `(value, key)`, whose return value replaces it.
+  For a detector match, `value` is the matched span.
 
 There is no third mode where a function is called once to produce a single, shared replacement —
 a function `Replacement` runs per match, every time.
@@ -321,7 +420,7 @@ never throws.
 | ----------------- | ------- | ----------------------------------------------------------------------------------------------- |
 | `maxDepth`        | `6`     | Levels of nesting kept, the input itself counting as the first. Only containers count.          |
 | `maxBreadth`      | `100`   | Fields per object, items per array, entries per `Map`, members per `Set`, own fields per `Error`. |
-| `maxStringLength` | `8192`  | UTF-16 code units per string value. Keys are never cut.                                         |
+| `maxStringLength` | `8192`  | UTF-16 code units per string value, cut after detectors have scanned it. Keys are never cut.    |
 
 The markers:
 
@@ -360,10 +459,13 @@ redact(payload, policy, { maxBreadth: Infinity, maxDepth: Infinity, maxStringLen
 
 ## Cost model
 
-Work is linear in the bounded tree: the containers kept, the entries kept in them and the
-characters kept in their strings. A reference shared between branches, without being a cycle, is
-walked once per path that reaches it, so an adversarially shared acyclic graph costs up to about
-100^6 = 10^12 node visits at the defaults. Lower `maxBreadth` or `maxDepth` for input that is not
+Without detectors, work is linear in the bounded tree: the containers kept, the entries kept in
+them and the characters kept in their strings. With detectors, work is no longer bounded by the
+characters kept: every visited string is scanned in full, however long, before it is cut to
+`maxStringLength`, so a huge string costs its whole length times the number of detectors. A
+reference shared between branches, without being a cycle, is walked once per path that reaches it,
+so an adversarially shared acyclic graph costs up to about 100^6 = 10^12 node visits at the
+defaults. Lower `maxBreadth` or `maxDepth` for input that is not
 trusted to be a tree.
 
 The output of a function `Replacement` is neither walked nor bounded. With `maxDepth: Infinity`,
@@ -375,7 +477,7 @@ stack depth grows with the input's depth.
   in internal slots, not own enumerable keys, so the walk finds nothing to copy. Redact them with
   `redactHeaders`, `redactUrl` (on `url.href`) and `redactQueryString` (on `params.toString()`).
 - **A policy's matchers are normalized once, on first use, and cached by policy object identity.**
-  Mutating a policy's `keys` or `except` array after it has already been passed to `redact()` has
+  Mutating a policy's `keys`, `except` or `detectors` array after it has already been passed to `redact()` has
   no effect on later calls with that same policy object. Build a new `RedactionPolicy` object
   instead of mutating an existing one.
 - **`tokenCount` matches `{ segments: "token" }`, so `secretKeys` redacts it.** Segment matching
@@ -401,11 +503,15 @@ stack depth grows with the input's depth.
   substring/pattern match against the key, not a full match: `/token/` matches a key like
   `"my_token_field"`, not only a key that equals `"token"` exactly. Anchor the pattern (`/^token$/`)
   if an exact match is required.
-- **A `RedactionPolicy`'s regex matchers are a trust boundary, not sanitized input.** `matchKey()`
-  tests each one against a short key string, never against attacker-controlled data — but the
-  pattern itself is never validated for catastrophic backtracking. Build a policy from patterns
-  you wrote or reviewed, the same way you would trust any other regular expression compiled into
-  your program; do not construct one from a pattern string an untrusted caller supplied.
+- **A `RedactionPolicy`'s regex matchers and detectors are a trust boundary, not sanitized input.**
+  `matchKey()` tests each key matcher against a short key string, but a detector's `pattern` and
+  `validate` run against string values, which are attacker-controlled data of any length. Neither is
+  validated for catastrophic backtracking or cost, and detectors scan a string in full before it is
+  cut. Build a policy from patterns and functions you wrote or reviewed, the same way you would
+  trust any other code compiled into your program; do not construct one from a pattern string an
+  untrusted caller supplied. A match `validate` rejects is rescanned from its next character, so a
+  detector's pattern and `validate` run once per start position inside a rejected match, and bounding
+  that cost is the caller's too. The built-in detectors cost time linear in the string's length.
 - **`Map` key-matching only applies to string keys.** A `Map` entry whose key is not a string is
   never tested against the policy, and the key itself is carried into the output by reference,
   unredacted — its value is still walked and redacted recursively, but sensitive data held on an

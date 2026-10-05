@@ -21,13 +21,24 @@ export type KeyMatcher =
   | { segments: string; pattern?: never; caseInsensitive?: never };
 
 /**
+ * A value-shape rule: `pattern` finds candidate substrings in a string value, and the optional
+ * `validate` accepts or rejects each candidate (a checksum, say) before it counts as a match.
+ */
+export type Detector = {
+  readonly pattern: RegExp;
+  readonly validate?: (match: string) => boolean;
+};
+
+/**
  * The keys a redaction pass treats as sensitive. A key is redacted when any `keys` matcher
  * matches it and no `except` matcher does, so `except` carves exemptions out of a broad rule —
- * `{ keys: [{ segments: "token" }], except: ["tokenCount"] }`.
+ * `{ keys: [{ segments: "token" }], except: ["tokenCount"] }`. `detectors` names value shapes
+ * that are sensitive wherever they appear, whatever their key.
  */
 export interface RedactionPolicy {
   keys: readonly KeyMatcher[];
   except?: readonly KeyMatcher[];
+  detectors?: readonly Detector[];
 }
 
 /**

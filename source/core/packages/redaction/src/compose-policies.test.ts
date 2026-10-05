@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { composePolicies } from "./compose-policies";
-import type { RedactionPolicy } from "./key-matcher";
+import type { Detector, RedactionPolicy } from "./key-matcher";
 import { matchKey } from "./key-matcher";
 import { redact } from "./redact";
 import { secretKeys } from "./secret-keys";
@@ -66,6 +66,40 @@ describe("composePolicies", () => {
     expect(() => {
       (policy.keys as unknown[]).push("z");
     }).toThrow(TypeError);
+  });
+
+  test("concatenates detectors across parts in order", () => {
+    const first: Detector = { pattern: /a/ };
+    const second: Detector = { pattern: /b/, validate: () => true };
+    const third: Detector = { pattern: /c/ };
+    const policy = composePolicies({ keys: [], detectors: [first, second] }, { keys: [] }, { keys: [], detectors: [third] });
+
+    expect(policy.detectors).toEqual([first, second, third]);
+    expect(policy.detectors?.[1]).toBe(second);
+  });
+
+  test("the detectors array is frozen", () => {
+    const policy = composePolicies({ keys: [], detectors: [{ pattern: /a/ }] });
+
+    expect(Object.isFrozen(policy)).toBe(true);
+    expect(Object.isFrozen(policy.detectors)).toBe(true);
+    expect(() => {
+      (policy.detectors as unknown[]).push({ pattern: /z/ });
+    }).toThrow(TypeError);
+  });
+
+  test("omits detectors when no part has any", () => {
+    const policy = composePolicies({ keys: ["a"] }, { keys: ["b"], detectors: [] });
+
+    expect("detectors" in policy).toBe(false);
+    expect("detectors" in composePolicies()).toBe(false);
+  });
+
+  test("keeps detectors when only one part has them", () => {
+    const detector: Detector = { pattern: /a/ };
+    const policy = composePolicies({ keys: ["a"] }, { keys: ["b"], detectors: [detector] });
+
+    expect(policy.detectors).toEqual([detector]);
   });
 
   test("mutating an input array afterwards does not affect the result", () => {

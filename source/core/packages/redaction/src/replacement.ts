@@ -1,6 +1,8 @@
 /**
  * What a redaction replaces a matched value with: a fixed string, or a function computing the
- * replacement from the original `value` and the key it was found under. Narrowed to
+ * replacement from the original `value` and the key it was found under. For a span a policy
+ * detector matches inside a string, `value` is the matched text and `key` the nearest string key
+ * the string sits under (`""` when there is none). Narrowed to
  * `string | (...)` rather than `unknown | (...)` — the latter collapses to `unknown` in TS and
  * documents nothing about the string case.
  */

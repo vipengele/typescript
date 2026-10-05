@@ -2,23 +2,44 @@
 import {
   DateTimeParseError as CoreDateTimeParseError,
   InvalidDateTimeError as CoreInvalidDateTimeError,
-  isDateTimeParseError as coreIsDateTimeParseError,
-  isInvalidDateTimeError as coreIsInvalidDateTimeError,
   LocalDate as CoreLocalDate,
   LocalDateTime as CoreLocalDateTime,
   LocalTime as CoreLocalTime,
+  isDateTimeParseError as coreIsDateTimeParseError,
+  isInvalidDateTimeError as coreIsInvalidDateTimeError,
 } from "@vipengele/ts-core-common/types/date-time";
 import { expect, test } from "vitest";
+import type {
+  Attributes,
+  AttributesInput,
+  AttributeValue,
+  DateSegment,
+  DateSegmentType,
+  DateTimeTryParseResult,
+  Detector,
+  HourCycle,
+  IsoDayOfWeek,
+  IsoWeekday,
+  NameStyle,
+  NormalizeAttributesOptions,
+  RedactStringOptions,
+} from "./index";
 import {
+  awsAccessKey,
+  bearerToken,
   composePolicies,
+  creditCard,
   DateTimeParseError,
+  email,
+  githubToken,
   InvalidDateTimeError,
   isDateTimeParseError,
   isInvalidDateTimeError,
+  jwt,
   LocalDate,
   LocalDateTime,
-  LocalTime,
   Locale,
+  LocalTime,
   Numeric,
   normalizeAttributes,
   redact,
@@ -27,21 +48,9 @@ import {
   redactUrl,
   Scope,
   secretKeys,
+  stripeKey,
   VipengeleError,
-} from "./index";
-import type {
-  AttributeValue,
-  Attributes,
-  AttributesInput,
-  DateSegment,
-  DateSegmentType,
-  DateTimeTryParseResult,
-  HourCycle,
-  IsoDayOfWeek,
-  IsoWeekday,
-  NameStyle,
-  NormalizeAttributesOptions,
-  RedactStringOptions,
+  valueDetectors,
 } from "./index";
 
 test("Numeric resolves from @vipengele/ts-core-common and round-trips a number", () => {
@@ -131,6 +140,43 @@ test("composePolicies resolves from @vipengele/ts-core-redaction and composes po
     ssn: "[REDACTED]",
     tokenCount: 3,
   });
+});
+
+test("valueDetectors resolves from @vipengele/ts-core-redaction and redacts a value inside a string", () => {
+  const policy = composePolicies(secretKeys, { keys: [], detectors: valueDetectors });
+
+  expect(redact({ message: "contact alice@example.com today" }, policy)).toEqual({ message: "contact [REDACTED] today" });
+});
+
+test("jwt resolves from @vipengele/ts-core-redaction as a detector", () => {
+  const detector: Detector = jwt;
+
+  expect(detector.pattern.test(["eyJhbGciOiJIUzI1NiJ9", "eyJzdWIiOiIxIn0", "c2ln"].join("."))).toBe(true);
+});
+
+test("bearerToken resolves from @vipengele/ts-core-redaction as a detector", () => {
+  expect(bearerToken.pattern.test("Bearer abc.def")).toBe(true);
+});
+
+test("creditCard resolves from @vipengele/ts-core-redaction as a detector with a validator", () => {
+  expect(creditCard.pattern.test("4242 4242 4242 4242")).toBe(true);
+  expect(creditCard.validate?.("4242 4242 4242 4242")).toBe(true);
+});
+
+test("email resolves from @vipengele/ts-core-redaction as a detector", () => {
+  expect(email.pattern.test("alice@example.com")).toBe(true);
+});
+
+test("awsAccessKey resolves from @vipengele/ts-core-redaction as a detector", () => {
+  expect(awsAccessKey.pattern.test(["AKIA", "IOSFODNN7EXAMPLE"].join(""))).toBe(true);
+});
+
+test("githubToken resolves from @vipengele/ts-core-redaction as a detector", () => {
+  expect(githubToken.pattern.test(`ghp_${"a".repeat(36)}`)).toBe(true);
+});
+
+test("stripeKey resolves from @vipengele/ts-core-redaction as a detector", () => {
+  expect(stripeKey.pattern.test(`sk_live_${"a".repeat(24)}`)).toBe(true);
 });
 
 test("VipengeleError resolves from @vipengele/ts-core-common", () => {

@@ -1,7 +1,10 @@
 import { describe, expect, test, vi } from "vitest";
-import type { RedactionPolicy } from "./key-matcher";
+import { composePolicies } from "./compose-policies";
+import type { Detector, RedactionPolicy } from "./key-matcher";
 import { STRING_TRUNCATION_SUFFIX } from "./limits";
 import { redact } from "./redact";
+import { secretKeys } from "./secret-keys";
+import { valueDetectors } from "./value-detectors";
 
 const policy: RedactionPolicy = { keys: ["password", "token", "secret"] };
 
@@ -733,5 +736,157 @@ describe("string length limit", () => {
 
   test("a matched key's replacement is not cut", () => {
     expect(redact({ password: "x" }, policy, { ...limited, replacement: "[REDACTED]" })).toEqual({ password: "[REDACTED]" });
+  });
+});
+
+describe("detectors", () => {
+  const pin: Detector = { pattern: /PIN-\d+/ };
+  const detecting: RedactionPolicy = { keys: ["password"], detectors: [pin] };
+
+  test("a match is replaced in a root string, and the text around it is kept", () => {
+    expect(redact("use PIN-1234 today", detecting)).toBe("use [REDACTED] today");
+  });
+
+  test("every match in one string is replaced", () => {
+    expect(redact("PIN-1 and PIN-22, then PIN-333", detecting)).toBe("[REDACTED] and [REDACTED], then [REDACTED]");
+  });
+
+  test("a string with no match is returned as is", () => {
+    expect(redact({ note: "nothing here" }, detecting)).toEqual({ note: "nothing here" });
+  });
+
+  test("object fields, array items, Set members and Map values are all scanned", () => {
+    const input = {
+      field: "a PIN-1",
+      items: ["b PIN-2"],
+      members: new Set(["c PIN-3"]),
+      map: new Map<unknown, unknown>([
+        ["k", "d PIN-4"],
+        [7, "e PIN-5"],
+      ]),
+    };
+
+    expect(redact(input, detecting)).toEqual({
+      field: "a [REDACTED]",
+      items: ["b [REDACTED]"],
+      members: new Set(["c [REDACTED]"]),
+      map: new Map<unknown, unknown>([
+        ["k", "d [REDACTED]"],
+        [7, "e [REDACTED]"],
+      ]),
+    });
+  });
+
+  test("an Error's message, stack and string cause are scanned, and an Error cause is walked", () => {
+    const inner = new Error("inner PIN-2");
+    const outer = new Error("outer PIN-1", { cause: inner });
+    const withStringCause = new Error("plain", { cause: "cause PIN-3" });
+
+    const result = redact(outer, detecting) as Record<string, unknown>;
+    const cause = result.cause as Record<string, unknown>;
+
+    expect(result.message).toBe("outer [REDACTED]");
+    expect(result.stack).not.toContain("PIN-1");
+    expect(result.stack).toContain("[REDACTED]");
+    expect(cause.message).toBe("inner [REDACTED]");
+    expect(cause.stack).not.toContain("PIN-2");
+    expect((redact(withStringCause, detecting) as Record<string, unknown>).cause).toBe("cause [REDACTED]");
+  });
+
+  test("a function replacement receives the matched span and the nearest string key", () => {
+    const replacement = vi.fn((value: unknown, key: string) => `<${key}:${String(value)}>`);
+    const input = {
+      tags: ["PIN-1", new Set(["PIN-2"])],
+      map: new Map<unknown, unknown>([
+        ["entry", "PIN-3"],
+        [1, "PIN-4"],
+      ]),
+      error: new Error("PIN-5"),
+    };
+
+    const result = redact(input, detecting, { replacement }) as Record<string, unknown>;
+
+    expect(result.tags).toEqual(["<tags:PIN-1>", new Set(["<tags:PIN-2>"])]);
+    expect(result.map).toEqual(
+      new Map<unknown, unknown>([
+        ["entry", "<entry:PIN-3>"],
+        [1, "<map:PIN-4>"],
+      ]),
+    );
+    expect((result.error as Record<string, unknown>).message).toBe("<message:PIN-5>");
+    expect(replacement).toHaveBeenCalledWith("PIN-5", "stack");
+  });
+
+  test("a string with no string key above it is replaced under the empty key", () => {
+    const replacement = vi.fn((value: unknown, key: string) => `<${key}:${String(value)}>`);
+
+    expect(redact("x PIN-1", detecting, { replacement })).toBe("x <:PIN-1>");
+    expect(redact(["PIN-2", new Set(["PIN-3"])], detecting, { replacement })).toEqual(["<:PIN-2>", new Set(["<:PIN-3>"])]);
+  });
+
+  test("a non-string replacement is converted with String()", () => {
+    const replacement = (value: unknown) => (value === "PIN-1" ? 42 : null);
+
+    expect(redact(["a PIN-1", "b PIN-2"], detecting, { replacement })).toEqual(["a 42", "b null"]);
+  });
+
+  test("a string replacement is used for each span", () => {
+    expect(redact({ note: "PIN-1/PIN-2" }, detecting, { replacement: "*" })).toEqual({ note: "*/*" });
+  });
+
+  test("the whole string is scanned before it is cut, so a match straddling the cutoff leaves no prefix", () => {
+    const result = redact("ab PIN-123456 cd", detecting, { replacement: "*", maxStringLength: 5 });
+
+    expect(result).toBe(`ab * ${STRING_TRUNCATION_SUFFIX}`);
+    expect(result).not.toContain("PIN");
+  });
+
+  test("a value under a matched key is replaced whole and never scanned", () => {
+    const validate = vi.fn(() => true);
+    const checked: RedactionPolicy = { keys: ["password"], detectors: [{ pattern: /PIN-\d+/, validate }] };
+
+    const result = redact({ password: "PIN-1", nested: { password: ["PIN-2", { deep: "PIN-3" }] } }, checked);
+
+    expect(result).toEqual({ password: "[REDACTED]", nested: { password: "[REDACTED]" } });
+    expect(validate).not.toHaveBeenCalled();
+  });
+
+  test("object keys and Map keys are never scanned", () => {
+    expect(redact({ "PIN-1": "x" }, detecting)).toEqual({ "PIN-1": "x" });
+    expect(redact(new Map([["PIN-2", "y"]]), detecting)).toEqual(new Map([["PIN-2", "y"]]));
+  });
+
+  test("a policy with no detectors or an empty list redacts exactly as one without the field", () => {
+    const error = new Error("PIN-3");
+    const input = () => ({ password: "x", note: "PIN-1", list: ["PIN-2"], error });
+    const expected = redact(input(), { keys: ["password"] }) as Record<string, unknown>;
+
+    expect(expected.note).toBe("PIN-1");
+    expect(redact(input(), { keys: ["password"], detectors: [] })).toEqual(expected);
+    expect(redact(input(), { keys: ["password"], detectors: undefined })).toEqual(expected);
+  });
+
+  test("the input is never mutated", () => {
+    const build = () => ({ note: "PIN-1", list: ["PIN-2"], set: new Set(["PIN-3"]), map: new Map([["k", "PIN-4"]]) });
+    const input = build();
+
+    redact(input, detecting);
+
+    expect(input).toEqual(build());
+  });
+
+  test("cycles and the depth limit behave the same with detectors on", () => {
+    const input: Record<string, unknown> = { note: "PIN-1", deep: { deeper: { note: "PIN-2" } } };
+    input.self = input;
+
+    expect(redact(input, detecting, { maxDepth: 2 })).toEqual({ note: "[REDACTED]", deep: { deeper: "[Truncated]" }, self: "[Circular]" });
+  });
+
+  test("the built-in detectors compose with secretKeys", () => {
+    const composed = composePolicies(secretKeys, { keys: [], detectors: valueDetectors });
+
+    const result = redact({ password: "hunter2", note: "contact ada@example.com", count: 3, list: ["Bearer abcdef"] }, composed);
+
+    expect(result).toEqual({ password: "[REDACTED]", note: "contact [REDACTED]", count: 3, list: ["[REDACTED]"] });
   });
 });

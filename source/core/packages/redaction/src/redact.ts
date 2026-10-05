@@ -1,4 +1,5 @@
-import { matchKey, type RedactionPolicy } from "./key-matcher";
+import { findDetectorSpans, replaceSpans } from "./detector";
+import { type Detector, matchKey, type RedactionPolicy } from "./key-matcher";
 import {
   breadthMarker,
   breadthMarkerKey,
@@ -53,6 +54,8 @@ interface WalkContext {
   readonly policy: RedactionPolicy;
   readonly replacement: Replacement;
   readonly limits: Limits;
+  /** The policy's `detectors`, or `undefined` when it has none, so a string skips the scan entirely. */
+  readonly detectors: readonly Detector[] | undefined;
   /**
    * The containers on the current recursion path, not every container ever visited. A container
    * reachable from two sibling branches is walked, and redacted, once per branch; only a container
@@ -71,32 +74,59 @@ interface WalkContext {
  * keys, so the result never depends on the class being constructible. A `Map` is only matched
  * under its string keys; a value under any other key is still walked.
  *
+ * When the policy has `detectors`, every string value the walk reaches — a field value, an item, a
+ * member, a `Map` value, an `Error`'s fields, `value` itself — has each span a detector matches
+ * replaced, and the text around it kept. Keys are never scanned, and a value under a matched key is
+ * replaced whole without being scanned. A function `replacement` receives the matched span and the
+ * nearest string key the string sits under (`""` when there is none); a non-string return is
+ * converted with `String()`. The scan reads the whole string and `maxStringLength` cuts the result,
+ * so a match straddling the cutoff leaves no prefix of itself behind.
+ *
  * The walk is bounded by the depth, breadth and string length limits in {@link RedactOptions},
  * each on by default; a breach leaves a marker in the copy rather than throwing.
  */
 export function redact(value: unknown, policy: RedactionPolicy, options?: RedactOptions): unknown {
+  const detectors = policy.detectors;
   return walk(
     value,
-    { policy, replacement: options?.replacement ?? DEFAULT_REPLACEMENT, limits: resolveLimits(options), ancestors: new WeakSet() },
+    {
+      policy,
+      replacement: options?.replacement ?? DEFAULT_REPLACEMENT,
+      limits: resolveLimits(options),
+      detectors: detectors !== undefined && detectors.length > 0 ? detectors : undefined,
+      ancestors: new WeakSet(),
+    },
     1,
+    "",
   );
 }
 
 /**
- * `depth` is the level `value` sits at, the root being 1. The cycle check runs ahead of the depth
- * check, so a reference back to an ancestor reads as `"[Circular]"` even at the depth limit.
+ * `depth` is the level `value` sits at, the root being 1. `key` is the nearest string key on the
+ * path to `value` — its own field or `Map` key, or the one its keyless container (an array, a
+ * `Set`, a `Map` entry under a non-string key) sits under — and `""` when the path has none. The
+ * cycle check runs ahead of the depth check, so a reference back to an ancestor reads as
+ * `"[Circular]"` even at the depth limit.
  */
-function walk(value: unknown, context: WalkContext, depth: number): unknown {
-  if (typeof value === "string") return truncateString(value, context.limits);
+function walk(value: unknown, context: WalkContext, depth: number, key: string): unknown {
+  if (typeof value === "string")
+    return truncateString(context.detectors === undefined ? value : scrub(value, context, key), context.limits);
   if (typeof value !== "object" || value === null || isOpaque(value)) return value;
   if (context.ancestors.has(value)) return CIRCULAR;
   if (depth > context.limits.maxDepth) return TRUNCATED;
   context.ancestors.add(value);
   try {
-    return walkContainer(value, context, depth + 1);
+    return walkContainer(value, context, depth + 1, key);
   } finally {
     context.ancestors.delete(value);
   }
+}
+
+/** `value` with every span the policy's detectors match replaced, each under `key`. */
+function scrub(value: string, context: WalkContext, key: string): string {
+  return replaceSpans(value, findDetectorSpans(context.detectors, value), (match) =>
+    String(applyReplacement(context.replacement, match, key)),
+  );
 }
 
 /**
@@ -172,19 +202,22 @@ function isErrorTagged(value: object): boolean {
   return Object.prototype.toString.call(value) === "[object Error]";
 }
 
-/** `depth` is the level the container's own entries sit at, one below the container itself. */
-function walkContainer(value: object, context: WalkContext, depth: number): unknown {
+/**
+ * `depth` is the level the container's own entries sit at, one below the container itself; `key`
+ * is the nearest string key the container sits under, inherited by the entries that have none.
+ */
+function walkContainer(value: object, context: WalkContext, depth: number, key: string): unknown {
   if (isPlainObject(value)) return walkFields(value, context, depth);
-  if (Array.isArray(value)) return walkItems(value, context, depth);
-  if (isMapInstance(value)) return walkMap(value as Map<unknown, unknown>, context, depth);
-  if (isSetInstance(value)) return walkSet(value as Set<unknown>, context, depth);
+  if (Array.isArray(value)) return walkItems(value, context, depth, key);
+  if (isMapInstance(value)) return walkMap(value as Map<unknown, unknown>, context, depth, key);
+  if (isSetInstance(value)) return walkSet(value as Set<unknown>, context, depth, key);
   if (isErrorTagged(value)) return walkError(value as Error, context, depth);
   return walkFields(value, context, depth);
 }
 
 /** Copies an array's first `maxBreadth` items, then a marker item for the rest. */
-function walkItems(items: readonly unknown[], context: WalkContext, depth: number): unknown[] {
-  const out = keepWithinBreadth(items, context.limits).map((item: unknown) => walk(item, context, depth));
+function walkItems(items: readonly unknown[], context: WalkContext, depth: number, key: string): unknown[] {
+  const out = keepWithinBreadth(items, context.limits).map((item: unknown) => walk(item, context, depth, key));
   if (exceedsBreadth(items.length, context.limits)) out.push(breadthMarker(items.length, context.limits));
   return out;
 }
@@ -193,13 +226,13 @@ function walkItems(items: readonly unknown[], context: WalkContext, depth: numbe
  * Pulls only the first `maxBreadth` members from the `Set`, so a huge one costs no more than the
  * bounded tree; the marker's count comes from `size`.
  */
-function walkSet(value: Set<unknown>, context: WalkContext, depth: number): Set<unknown> {
+function walkSet(value: Set<unknown>, context: WalkContext, depth: number, key: string): Set<unknown> {
   const out = new Set<unknown>();
   let kept = 0;
   for (const item of value) {
     if (isBreadthFull(kept, context.limits)) break;
     kept++;
-    out.add(walk(item, context, depth));
+    out.add(walk(item, context, depth, key));
   }
   if (exceedsBreadth(value.size, context.limits)) {
     out.add(uniqueBreadthMarker(breadthMarker(value.size, context.limits), (candidate) => out.has(candidate)));
@@ -235,13 +268,13 @@ function walkFields(
  * Keys are kept as they are; the breadth marker's key is chosen against the kept string keys. Only
  * the first `maxBreadth` entries are pulled from the `Map`, and the marker's count comes from `size`.
  */
-function walkMap(value: Map<unknown, unknown>, context: WalkContext, depth: number): Map<unknown, unknown> {
+function walkMap(value: Map<unknown, unknown>, context: WalkContext, depth: number, mapKey: string): Map<unknown, unknown> {
   const out = new Map<unknown, unknown>();
   let kept = 0;
   for (const [key, entry] of value) {
     if (isBreadthFull(kept, context.limits)) break;
     kept++;
-    out.set(key, typeof key === "string" ? redactField(key, entry, context, depth) : walk(entry, context, depth));
+    out.set(key, typeof key === "string" ? redactField(key, entry, context, depth) : walk(entry, context, depth, mapKey));
   }
   if (exceedsBreadth(value.size, context.limits)) {
     const used = new Set([...out.keys()].filter((key): key is string => typeof key === "string"));
@@ -272,10 +305,10 @@ function walkError(error: Error, context: WalkContext, depth: number): Record<st
 
 /**
  * The key is matched before the value is walked, so a matched value is replaced even when it is a
- * container past `maxDepth`.
+ * container past `maxDepth`, and a matched string is never scanned by a detector.
  */
 function redactField(key: string, value: unknown, context: WalkContext, depth: number): unknown {
-  return matchKey(context.policy, key) ? applyReplacement(context.replacement, value, key) : walk(value, context, depth);
+  return matchKey(context.policy, key) ? applyReplacement(context.replacement, value, key) : walk(value, context, depth, key);
 }
 
 function setField(out: Record<string, unknown>, key: string, value: unknown, context: WalkContext, depth: number): void {

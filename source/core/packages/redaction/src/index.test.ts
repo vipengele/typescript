@@ -1,12 +1,21 @@
 // biome-ignore-all lint/security/noSecrets: the URL and query-string fixtures are flagged only for their entropy
 import { expect, test } from "vitest";
 import {
+  awsAccessKey,
+  bearerToken,
   composePolicies,
+  creditCard,
+  email,
+  githubToken,
+  jwt,
   redact,
   redactHeaders,
   redactQueryString,
   redactUrl,
   secretKeys,
+  stripeKey,
+  valueDetectors,
+  type Detector,
   type HeaderRecord,
   type HeaderTuples,
   type RedactionPolicy,
@@ -60,15 +69,77 @@ test("redactHeaders redacts a record, tuples and a Headers", () => {
   expect(redactHeaders(new Headers({ Authorization: "b x" })).get("authorization")).toBe(MASK);
 });
 
+function expectFrozenDetector(detector: Detector): void {
+  expect(Object.isFrozen(detector)).toBe(true);
+  expect(detector.pattern).toBeInstanceOf(RegExp);
+}
+
+test("jwt is a frozen detector", () => {
+  expectFrozenDetector(jwt);
+  expect(jwt.pattern.test(["eyJhbGciOiJIUzI1NiJ9", "eyJzdWIiOiIxIn0", "c2ln"].join("."))).toBe(true);
+});
+
+test("bearerToken is a frozen detector", () => {
+  expectFrozenDetector(bearerToken);
+  expect(bearerToken.pattern.test("Bearer abc.def")).toBe(true);
+});
+
+test("creditCard is a frozen detector with a Luhn validator", () => {
+  expectFrozenDetector(creditCard);
+  expect(creditCard.validate?.("4242 4242 4242 4242")).toBe(true);
+  expect(creditCard.validate?.("4242 4242 4242 4243")).toBe(false);
+});
+
+test("email is a frozen detector", () => {
+  expectFrozenDetector(email);
+  expect(email.pattern.test("alice@example.com")).toBe(true);
+});
+
+test("awsAccessKey is a frozen detector", () => {
+  expectFrozenDetector(awsAccessKey);
+  expect(awsAccessKey.pattern.test(["AKIA", "IOSFODNN7EXAMPLE"].join(""))).toBe(true);
+});
+
+test("githubToken is a frozen detector", () => {
+  expectFrozenDetector(githubToken);
+  expect(githubToken.pattern.test(`ghp_${"a".repeat(36)}`)).toBe(true);
+});
+
+test("stripeKey is a frozen detector", () => {
+  expectFrozenDetector(stripeKey);
+  expect(stripeKey.pattern.test(`sk_live_${"a".repeat(24)}`)).toBe(true);
+});
+
+test("valueDetectors is a frozen list of the seven built-in detectors", () => {
+  expect(Object.isFrozen(valueDetectors)).toBe(true);
+  expect(valueDetectors).toStrictEqual([jwt, bearerToken, creditCard, email, awsAccessKey, githubToken, stripeKey]);
+});
+
+test("redacts an email inside a message string with the value detectors", () => {
+  const policy = composePolicies(secretKeys, { keys: [], detectors: valueDetectors });
+
+  expect(redact({ message: "contact alice@example.com today" }, policy)).toStrictEqual({
+    message: `contact ${MASK} today`,
+  });
+});
+
 test("exposes exactly the public value exports", async () => {
   const surface = await import("./index");
 
   expect(Object.keys(surface).sort()).toStrictEqual([
+    "awsAccessKey",
+    "bearerToken",
     "composePolicies",
+    "creditCard",
+    "email",
+    "githubToken",
+    "jwt",
     "redact",
     "redactHeaders",
     "redactQueryString",
     "redactUrl",
     "secretKeys",
+    "stripeKey",
+    "valueDetectors",
   ]);
 });

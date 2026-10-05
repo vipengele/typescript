@@ -72,9 +72,11 @@ Error Event, Scope, Breadcrumb, Transport) before naming things.
   from `@vipengele/ts-core-common`'s `./types/numeric` sub-path, `Locale` (with `HourCycle`,
   `IsoWeekday`, `NameStyle`) from its `./locale` sub-path, `LocalDate`, `LocalTime` and
   `LocalDateTime` (with their errors, guards and `DateSegment`, `DateSegmentType`,
-  `DateTimeTryParseResult`, `IsoDayOfWeek`) from its `./types/date-time` sub-path, and `redact`, `secretKeys`,
-  `composePolicies`, `redactUrl`, `redactQueryString` and `redactHeaders` (with `RedactionPolicy`,
-  `KeyMatcher`, `RedactOptions`, `RedactStringOptions`, `Replacement`) from
+  `DateTimeTryParseResult`, `IsoDayOfWeek`) from its `./types/date-time` sub-path, and `redact`,
+  `secretKeys`, `composePolicies`, `redactUrl`, `redactQueryString` and `redactHeaders`, the value
+  detectors `valueDetectors`, `jwt`, `bearerToken`, `creditCard`, `email`, `awsAccessKey`,
+  `githubToken` and `stripeKey` (with `RedactionPolicy`, `KeyMatcher`, `Detector`, `RedactOptions`,
+  `RedactStringOptions`, `Replacement`) from
   `@vipengele/ts-core-redaction`.
 - A sub-path of `@vipengele/ts-core-common` needs both a `tsup.config.ts` entry and a
   `package.json` `exports` key; `src/package-exports.test.ts` fails when either is missing.
