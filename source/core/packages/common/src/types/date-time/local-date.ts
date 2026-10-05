@@ -3,7 +3,11 @@ import type { Clock } from "../../time/clock";
 import { civilFromDays, daysFromCivil, dayOfWeekFromDays, type IsoDayOfWeek, lengthOfMonth } from "./civil";
 import { DateTimeParseError, type DateTimeTryParseResult, InvalidDateTimeError } from "./errors";
 import { type DateSegment, dateSegments, formatDate, parseDate } from "./locale-format";
+import { LocalDateTime } from "./local-date-time";
+import { LocalTime } from "./local-time";
 import { civilNow } from "./now";
+import type { ZoneId } from "./zone-id";
+import { ZonedDateTime, type ZonedDateTimeOptions } from "./zoned-date-time";
 
 export type { DateSegment, DateSegmentType } from "./locale-format";
 
@@ -67,6 +71,10 @@ function assertAmount(amount: number): void {
  * Every instance names a real date: {@link LocalDate.of} rejects fields that overflow rather
  * than rolling them into the next month, and arithmetic that would leave the supported range
  * throws. Instances are frozen; every operation returns a new one.
+ *
+ * This module touches {@link LocalDateTime} and {@link ZonedDateTime} only when a method runs,
+ * never while it evaluates: both import it back, and a binding read during evaluation of the
+ * import cycle is not yet initialised.
  */
 export class LocalDate {
   /** The year, 1-9999. */
@@ -220,6 +228,23 @@ export class LocalDate {
   /** The date `months` months earlier, clamping the day as {@link LocalDate.plusMonths} does, with its errors. */
   minusMonths(months: number): LocalDate {
     return this.plusMonths(-months);
+  }
+
+  /**
+   * The first instant of this date in `zone`: midnight when the zone reads it, and otherwise the
+   * first instant on or after it. Midnight is settled as {@link ZonedDateTime.of} settles it under
+   * `options.disambiguation`, `compatible` by default. A midnight the zone skips moves forward by
+   * the gap's length, to the time the gap ends; when the gap spans the whole date, as Samoa's
+   * 2011-12-30 does in `Pacific/Apia`, that is midnight of the next date the zone reads. A midnight
+   * the zone reads twice takes the earlier instant. `later` takes the later instant in an overlap,
+   * and `earlier` moves a skipped midnight back by the gap's length, into the previous date.
+   *
+   * @throws {ZoneResolutionError} when the disambiguation is `reject` and midnight falls in a gap
+   *   or an overlap.
+   * @throws {InvalidDateTimeError} when moving a skipped midnight carries it outside 0001-01-01 to 9999-12-31.
+   */
+  atStartOfDay(zone: ZoneId, options?: ZonedDateTimeOptions): ZonedDateTime {
+    return ZonedDateTime.of(LocalDateTime.of(this, LocalTime.of(0, 0)), zone, options);
   }
 
   /**

@@ -2,6 +2,9 @@ import { type Clock, systemClock } from "../../time/clock";
 import { civilFromDays, daysFromCivil, lengthOfMonth } from "./civil";
 import { DateTimeParseError, type DateTimeTryParseResult } from "./errors";
 import { formatFraction, parseFraction } from "./fraction";
+import { LocalDateTime } from "./local-date-time";
+import type { ZoneId } from "./zone-id";
+import { ZonedDateTime } from "./zoned-date-time";
 
 /** The largest distance from the epoch, in seconds, an {@link Instant} spans: `Date`'s ±8.64e15 ms. */
 const MAX_EPOCH_SECOND = 8_640_000_000_000;
@@ -88,6 +91,10 @@ function parseValue(str: string): Instant | undefined {
  * Both parts are safe integers and every operation is exact integer arithmetic on them: no
  * operation rounds through a double of nanoseconds, and none reads a `Date`. A value or a result
  * outside the range is a `RangeError`. Instances are frozen; every operation returns a new one.
+ *
+ * This module touches {@link LocalDateTime} and {@link ZonedDateTime} only when a method runs,
+ * never while it evaluates: both import it back, and a binding read during evaluation of the
+ * import cycle is not yet initialised.
  */
 export class Instant {
   /** Whole seconds from the epoch, floored: an instant before the epoch has a negative second and a positive nano. */
@@ -206,6 +213,33 @@ export class Instant {
   /** Whole milliseconds from the epoch, floored, so an instant 1 ns before the epoch is millisecond -1. */
   toEpochMilli(): number {
     return this.epochSecond * MILLIS_PER_SECOND + Math.floor(this.nano / NANOS_PER_MILLI);
+  }
+
+  /**
+   * The instant in `zone`: the date and time of day the zone's wall clock shows at it, with the
+   * offset the zone reads in then. An instant names exactly one such reading, so a wall-clock time
+   * the zone reads twice takes the offset this instant has, keeping the nanosecond.
+   *
+   * @throws {InvalidDateTimeError} when the date in `zone` falls outside 0001-01-01 to 9999-12-31.
+   */
+  atZone(zone: ZoneId): ZonedDateTime {
+    const offsetSeconds = zone.offsetSecondsAt(this);
+    const localSecond = this.epochSecond + offsetSeconds;
+    const secondOfDay = floorMod(localSecond, SECONDS_PER_DAY);
+    const { year, month, day } = civilFromDays((localSecond - secondOfDay) / SECONDS_PER_DAY);
+    const local = LocalDateTime.ofFields(
+      year,
+      month,
+      day,
+      Math.floor(secondOfDay / 3600),
+      Math.floor((secondOfDay % 3600) / 60),
+      secondOfDay % 60,
+      this.nano,
+    );
+    // The wall-clock time names this instant under `earlier` unless the zone reads it twice and
+    // this is the second reading, which `later` names.
+    const earlier = ZonedDateTime.of(local, zone, { disambiguation: "earlier" });
+    return earlier.offsetSeconds === offsetSeconds ? earlier : ZonedDateTime.of(local, zone, { disambiguation: "later" });
   }
 
   /**
