@@ -5,20 +5,20 @@ import { LocalTime } from "./local-time";
 
 describe("LocalTime.of", () => {
   test("holds the fields it is given", () => {
-    const value = LocalTime.of(14, 30, 5, 250);
+    const value = LocalTime.of(14, 30, 5, 123_456_789);
 
-    expect([value.hour, value.minute, value.second, value.millisecond]).toEqual([14, 30, 5, 250]);
+    expect([value.hour, value.minute, value.second, value.nanosecond]).toEqual([14, 30, 5, 123_456_789]);
   });
 
-  test("defaults the second and the millisecond to zero", () => {
+  test("defaults the second and the nanosecond to zero", () => {
     const value = LocalTime.of(14, 30);
 
-    expect([value.second, value.millisecond]).toEqual([0, 0]);
+    expect([value.second, value.nanosecond]).toEqual([0, 0]);
   });
 
   test("accepts both ends of the day", () => {
     expect(LocalTime.of(0, 0).toString()).toBe("00:00");
-    expect(LocalTime.of(23, 59, 59, 999).toString()).toBe("23:59:59.999");
+    expect(LocalTime.of(23, 59, 59, 999_999_999).toString()).toBe("23:59:59.999999999");
   });
 
   test.for([
@@ -28,7 +28,7 @@ describe("LocalTime.of", () => {
     [0, -1, 0, 0],
     [0, 0, 60, 0],
     [0, 0, -1, 0],
-    [0, 0, 0, 1000],
+    [0, 0, 0, 1_000_000_000],
     [0, 0, 0, -1],
     [1.5, 0, 0, 0],
     [0, 1.5, 0, 0],
@@ -36,15 +36,15 @@ describe("LocalTime.of", () => {
     [0, 0, 0, 1.5],
     [Number.NaN, 0, 0, 0],
     [0, Number.POSITIVE_INFINITY, 0, 0],
-  ])("rejects %s:%s:%s.%s with InvalidDateTimeError", ([hour, minute, second, millisecond]) => {
-    expect(() => LocalTime.of(hour as number, minute as number, second, millisecond)).toThrow(InvalidDateTimeError);
+  ])("rejects %s:%s:%s.%s with InvalidDateTimeError", ([hour, minute, second, nanosecond]) => {
+    expect(() => LocalTime.of(hour as number, minute as number, second, nanosecond)).toThrow(InvalidDateTimeError);
   });
 
   test("names the offending field in the message", () => {
     expect(() => LocalTime.of(24, 0)).toThrow("hour must be an integer from 0 to 23, got 24");
     expect(() => LocalTime.of(0, 60)).toThrow("minute must be an integer from 0 to 59, got 60");
     expect(() => LocalTime.of(0, 0, 60)).toThrow("second must be an integer from 0 to 59, got 60");
-    expect(() => LocalTime.of(0, 0, 0, 1000)).toThrow("millisecond must be an integer from 0 to 999, got 1000");
+    expect(() => LocalTime.of(0, 0, 0, 1_000_000_000)).toThrow("nanosecond must be an integer from 0 to 999999999, got 1000000000");
   });
 
   test("throws an error the guard recognises", () => {
@@ -67,29 +67,55 @@ describe("LocalTime.of", () => {
 });
 
 describe("LocalTime.parse", () => {
-  test.for(["00:00", "14:30", "23:59", "14:30:05", "00:00:01", "14:30:05.250", "23:59:59.999", "00:00:00.001"])("round-trips %s", (str) => {
+  test.for([
+    "00:00",
+    "14:30",
+    "23:59",
+    "14:30:05",
+    "00:00:01",
+    "14:30:05.250",
+    "23:59:59.999",
+    "00:00:00.001",
+    "14:30:05.123456",
+    "00:00:00.000001",
+    "14:30:05.123456789",
+    "00:00:00.000000001",
+    "23:59:59.999999999",
+  ])("round-trips %s", (str) => {
     expect(LocalTime.parse(str).toString()).toBe(str);
   });
 
   test("reads the three forms", () => {
     expect(LocalTime.parse("14:30").equals(LocalTime.of(14, 30))).toBe(true);
     expect(LocalTime.parse("14:30:05").equals(LocalTime.of(14, 30, 5))).toBe(true);
-    expect(LocalTime.parse("14:30:05.250").equals(LocalTime.of(14, 30, 5, 250))).toBe(true);
+    expect(LocalTime.parse("14:30:05.250").equals(LocalTime.of(14, 30, 5, 250_000_000))).toBe(true);
   });
 
-  test("reads the fraction as a decimal of a second", () => {
-    expect(LocalTime.parse("12:00:00.5").millisecond).toBe(500);
-    expect(LocalTime.parse("12:00:00.05").millisecond).toBe(50);
-    expect(LocalTime.parse("12:00:00.005").millisecond).toBe(5);
-  });
+  test.for([
+    ["12:00:00.1", 100_000_000, "12:00:00.100"],
+    ["12:00:00.12", 120_000_000, "12:00:00.120"],
+    ["12:00:00.123", 123_000_000, "12:00:00.123"],
+    ["12:00:00.1234", 123_400_000, "12:00:00.123400"],
+    ["12:00:00.123456", 123_456_000, "12:00:00.123456"],
+    ["12:00:00.1234567", 123_456_700, "12:00:00.123456700"],
+    ["12:00:00.123456789", 123_456_789, "12:00:00.123456789"],
+    ["12:00:00.05", 50_000_000, "12:00:00.050"],
+    ["12:00:00.999999999", 999_999_999, "12:00:00.999999999"],
+  ] as const)("reads %s as nanosecond %i, written back as %s", ([str, nanosecond, written]) => {
+    const value = LocalTime.parse(str);
 
-  test("formats a zero second that has a millisecond", () => {
-    expect(LocalTime.parse("12:00:00.5").toString()).toBe("12:00:00.500");
+    expect(value.nanosecond).toBe(nanosecond);
+    expect(value.toString()).toBe(written);
   });
 
   test("drops an all-zero seconds part", () => {
     expect(LocalTime.parse("12:00:00").toString()).toBe("12:00");
     expect(LocalTime.parse("12:00:00.000").toString()).toBe("12:00");
+    expect(LocalTime.parse("12:00:00.000000000").toString()).toBe("12:00");
+  });
+
+  test("writes the second when only the nanosecond is non-zero", () => {
+    expect(LocalTime.of(12, 0, 0, 1).toString()).toBe("12:00:00.000000001");
   });
 
   test.for([
@@ -103,7 +129,8 @@ describe("LocalTime.parse", () => {
     "1430",
     "14:30:5",
     "14:30:05.",
-    "14:30:05.1234",
+    "14:30:05.1234567890",
+    "14:30:05.12a",
     "14:30.5",
     "T14:30",
     "14:30Z",
@@ -133,16 +160,30 @@ describe("LocalTime.tryParse", () => {
     expect(result.value?.equals(LocalTime.of(14, 30, 5))).toBe(true);
   });
 
-  test.for(["", "24:00", "12:60", "12:00:60", "nope"])("returns success false for %j", (str) => {
+  test("reads a nine-digit fraction", () => {
+    expect(LocalTime.tryParse("14:30:05.123456789").value?.nanosecond).toBe(123_456_789);
+  });
+
+  test.for(["", "24:00", "12:60", "12:00:60", "14:30:05.1234567890", "nope"])("returns success false for %j", (str) => {
     expect(LocalTime.tryParse(str)).toEqual({ success: false });
   });
 });
 
 describe("LocalTime.compare and equals", () => {
-  test("orders by hour, minute, second then millisecond", () => {
-    const ordered = ["00:00", "00:01", "00:01:01", "00:01:01.001", "00:01:01.002", "01:00", "23:59:59.999"].map((str) =>
-      LocalTime.parse(str),
-    );
+  test("orders by hour, minute, second then nanosecond", () => {
+    const ordered = [
+      "00:00",
+      "00:00:00.000000001",
+      "00:01",
+      "00:01:01",
+      "00:01:01.000000001",
+      "00:01:01.000001",
+      "00:01:01.001",
+      "00:01:01.002",
+      "01:00",
+      "23:59:59.999",
+      "23:59:59.999999999",
+    ].map((str) => LocalTime.parse(str));
 
     for (const [i, a] of ordered.entries()) {
       for (const [j, b] of ordered.entries()) {
@@ -152,12 +193,12 @@ describe("LocalTime.compare and equals", () => {
   });
 
   test("compare is zero exactly when equals is true", () => {
-    const a = LocalTime.of(14, 30, 5, 250);
+    const a = LocalTime.of(14, 30, 5, 250_000_000);
 
-    expect(LocalTime.compare(a, LocalTime.of(14, 30, 5, 250))).toBe(0);
-    expect(a.equals(LocalTime.of(14, 30, 5, 250))).toBe(true);
-    expect(LocalTime.compare(a, LocalTime.of(14, 30, 5, 251))).not.toBe(0);
-    expect(a.equals(LocalTime.of(14, 30, 5, 251))).toBe(false);
+    expect(LocalTime.compare(a, LocalTime.of(14, 30, 5, 250_000_000))).toBe(0);
+    expect(a.equals(LocalTime.parse("14:30:05.25"))).toBe(true);
+    expect(LocalTime.compare(a, LocalTime.of(14, 30, 5, 250_000_001))).toBeLessThan(0);
+    expect(a.equals(LocalTime.of(14, 30, 5, 250_000_001))).toBe(false);
   });
 });
 
@@ -203,8 +244,8 @@ describe("LocalTime#format", () => {
     expect(LocalTime.of(0, 59).format(locale)).toBe("00:59");
   });
 
-  test("writes the second and the millisecond nowhere", () => {
-    expect(LocalTime.of(13, 30, 45, 999).format(new Locale("de-DE"))).toBe("13:30");
+  test("writes the second and the nanosecond nowhere", () => {
+    expect(LocalTime.of(13, 30, 45, 999_999_999).format(new Locale("de-DE"))).toBe("13:30");
   });
 
   test("an omitted locale writes in Locale.default()", () => {
@@ -248,11 +289,11 @@ describe("LocalTime.parseLocalized and tryParseLocalized", () => {
     expect(LocalTime.tryParseLocalized(formatted, locale).value?.toString()).toBe(iso);
   });
 
-  test("reads back a time with seconds at second 0 and millisecond 0", () => {
+  test("reads back a time with seconds at second 0 and nanosecond 0", () => {
     const locale = new Locale("en-US");
-    const value = LocalTime.parseLocalized(LocalTime.of(13, 30, 45, 999).format(locale), locale);
+    const value = LocalTime.parseLocalized(LocalTime.of(13, 30, 45, 999_999_999).format(locale), locale);
 
-    expect([value.hour, value.minute, value.second, value.millisecond]).toEqual([13, 30, 0, 0]);
+    expect([value.hour, value.minute, value.second, value.nanosecond]).toEqual([13, 30, 0, 0]);
   });
 
   test.for([

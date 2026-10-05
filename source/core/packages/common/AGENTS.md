@@ -37,6 +37,10 @@ A sub-path needs both a `tsup.config.ts` `entry` and a `package.json` `exports` 
 - `LocalDate`, `LocalTime` and `LocalDateTime` are immutable and zoneless: a civil date and/or
   wall-clock time with no offset or time zone. Each has `of`, `parse`, `tryParse`, `compare`,
   `now(clock?)` and ISO 8601 formatting.
+- `LocalTime` and `LocalDateTime` hold a `nanosecond` (0 to 999,999,999); `now()` floors to the
+  microsecond. ISO output has `:ss` when the second or nanosecond is non-zero and a fraction only
+  when the nanosecond is, as 3, 6 or 9 digits; input takes one to nine fraction digits,
+  right-padded. `fraction.ts` is the one place the fraction is printed and parsed.
 - Construction validates and never rolls an overflowing field into the next unit; February 30 throws
   `InvalidDateTimeError`. A string that is not ISO 8601, or names no real date or time, throws
   `DateTimeParseError`.
