@@ -3,14 +3,28 @@ export { Locale } from "@vipengele/ts-core-common/locale";
 export type { HourCycle, IsoWeekday, NameStyle } from "@vipengele/ts-core-common/locale";
 export {
   DateTimeParseError,
+  Instant,
   InvalidDateTimeError,
   isDateTimeParseError,
   isInvalidDateTimeError,
+  isUnknownZoneError,
+  isZoneResolutionError,
   LocalDate,
   LocalDateTime,
   LocalTime,
+  UnknownZoneError,
+  ZonedDateTime,
+  ZoneId,
+  ZoneResolutionError,
 } from "@vipengele/ts-core-common/types/date-time";
-export type { DateSegment, DateSegmentType, DateTimeTryParseResult, IsoDayOfWeek } from "@vipengele/ts-core-common/types/date-time";
+export type {
+  DateSegment,
+  DateSegmentType,
+  DateTimeTryParseResult,
+  Disambiguation,
+  IsoDayOfWeek,
+  ZonedDateTimeOptions,
+} from "@vipengele/ts-core-common/types/date-time";
 export { Scope } from "@vipengele/ts-core-common/scope";
 export {
   awsAccessKey,

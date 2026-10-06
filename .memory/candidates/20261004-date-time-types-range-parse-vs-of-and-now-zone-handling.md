@@ -1,9 +1,10 @@
 ---
-about: The local date-time types hold years 1-9999 only and split their errors by entry point (of throws InvalidDateTimeError, parse throws DateTimeParseError); now() re-reads the zone on every call, floors the clock, and maps BC eras to proleptic years
+about: The local date-time types hold years 1-9999 only and split their errors by entry point (of throws InvalidDateTimeError, parse throws DateTimeParseError); now() re-reads the zone on every call and floors the clock to the microsecond, while civil-fields.ts owns the per-zone formatter cache and maps BC eras to proleptic years
 saw:
   - source/core/packages/common/src/types/date-time/local-date.ts
   - source/core/packages/common/src/types/date-time/local-date-time.ts
   - source/core/packages/common/src/types/date-time/now.ts
+  - source/core/packages/common/src/types/date-time/civil-fields.ts
   - source/core/packages/common/src/types/date-time/now.test.ts
   - source/core/packages/common/src/types/date-time/properties.test.ts
   - source/core/packages/common/src/types/date-time/civil.ts
@@ -19,13 +20,16 @@ saw:
   cannot throw (both parts are already valid); only `ofFields` can.
 - `civil.ts` is plain integer arithmetic (days-from-civil / civil-from-days); no `Date` or zone is involved, and it is not
   exported from `index.ts` (the index test pins the export list).
-- `now.ts` (`civilNow`) is the only zone-aware code. It reads `new Intl.DateTimeFormat().resolvedOptions().timeZone` on every
-  call and keeps a formatter per zone in a module `Map`; a cache keyed by zone cannot go stale when the zone changes. The
-  format is forced to `en-US`, `gregory`, `latn`, `hourCycle: "h23"` (midnight is hour 0, not 24) and `era: "short"`: without
-  the era part, 1 BC formats as year 1 and would silently become a valid AD date, so a `BC` era maps to `1 - eraYear` and
-  then fails `LocalDate.of`. The millisecond field is the floored instant's positive modulo 1000, never read from Intl.
-- `Clock` (`time/clock.ts`) returns a fractional epoch (`performance.timeOrigin + performance.now()`), so `civilNow` floors it;
-  a non-finite value or one beyond +-8.64e15 is a `RangeError`.
+- `civil-fields.ts` (`civilFieldsAt(timeZone, epochMilliseconds)`) is the one place an epoch time becomes civil fields in a
+  named zone; `now.ts`'s `civilNow` and `ZoneId#offsetSecondsAt` both call it, and `civil.ts` stays zone-free. `civilNow`
+  reads `new Intl.DateTimeFormat().resolvedOptions().timeZone` on every call; `civil-fields.ts` keeps a formatter per zone in a
+  module `Map`, so a cache keyed by zone cannot go stale when the zone changes. The format is forced to `en-US`, `gregory`,
+  `latn`, `hourCycle: "h23"` (midnight is hour 0, not 24) and `era: "short"`: without the era part, 1 BC formats as year 1
+  and would silently become a valid AD date, so a `BC` era maps to `1 - eraYear` and then fails `LocalDate.of`. The
+  nanosecond field is never read from Intl: it is the floored millisecond-of-second times 1,000,000 plus the floored
+  microsecond of the instant's sub-millisecond remainder (clamped to 999), so its last three digits are always 000.
+- `Clock` (`time/clock.ts`) returns a fractional epoch (`performance.timeOrigin + performance.now()`), so `civilNow` hands it to `civilFieldsAt`, which floors it to the microsecond (the whole millisecond comes from `Math.floor(reading)`, never from `reading * 1000`, which stops being exact for whole-millisecond readings past about year 4250);
+  a non-finite value or one beyond +-8.64e15 is a `RangeError` (`civilNow` checks the clock reading itself; `civilFieldsAt` relies on `formatToParts` throwing).
 - `now.test.ts` pins the zone by spying on `Intl.DateTimeFormat.prototype.resolvedOptions`, which the cached formatter never
   calls, and pins the default clock by spying on `performance.now`. No `process.env.TZ` is touched, so the suite is identical
   in node and chromium.

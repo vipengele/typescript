@@ -112,20 +112,34 @@ class TreeScope implements ScopeNode {
   }
 
   set(key: string, value: unknown): void {
-    const root = rootOf(this);
-    if (root === this) {
-      throw new ReservedScopeKeyError(`Cannot set "${key}" on the root scope, which never changes once built.`);
-    }
-    if (Object.hasOwn(root[ATTRIBUTES], key)) {
-      throw new ReservedScopeKeyError(`Cannot set "${key}": the root scope holds it, and no other scope may.`);
-    }
+    assertSettable(this, key);
     this[ATTRIBUTES][key] = value;
   }
 }
 
 /**
+ * Throws unless `key` may be set on `scope`: `scope` must not be the root, and the root must not
+ * hold `key`. It is the check {@link Scope.set} runs, exposed so a caller writing several keys can
+ * validate them all before writing any.
+ *
+ * Framework-internal, not for application use.
+ *
+ * @throws {ReservedScopeKeyError} when `scope` is the root or the root holds `key`.
+ */
+export function assertSettable(scope: Scope, key: string): void {
+  const root = rootOf(scope as ScopeNode);
+  if (root === scope) {
+    throw new ReservedScopeKeyError(`Cannot set "${key}" on the root scope, which never changes except through \`setResource\`.`);
+  }
+  if (Object.hasOwn(root[ATTRIBUTES], key)) {
+    throw new ReservedScopeKeyError(`Cannot set "${key}": the root scope holds it, and no other scope may.`);
+  }
+}
+
+/**
  * Builds a root holding exactly `resource`'s four keys, and a default scope beneath it. The root's
- * attributes are frozen once built; the default scope is mutable like any other non-root scope.
+ * attributes are frozen, and only {@link setResource} replaces them; the default scope is mutable
+ * like any other non-root scope.
  */
 export function createScopeTree(resource: Resource): ScopeTree {
   const root = new TreeScope(undefined, undefined);
@@ -137,6 +151,43 @@ export function createScopeTree(resource: Resource): ScopeTree {
   Object.freeze(attributes);
 
   return { root, defaultScope: new TreeScope(root, undefined) };
+}
+
+/** The four keys a root holds, and the only ones {@link setResource} reads from its argument. */
+const RESOURCE_KEYS = [
+  "service.name",
+  "service.version",
+  "deployment.environment.name",
+  "process.runtime.name",
+] as const satisfies readonly (keyof Resource)[];
+
+/**
+ * Merges `resource` into the Resource `root` holds. Each of the four keys whose value in `resource`
+ * is a string replaces the root's value; a key that is absent, `undefined` or not a string leaves
+ * the root's value as it is, and any other key is ignored.
+ *
+ * The root's frozen attribute bag is swapped for a new frozen one on the same node, so every scope
+ * already hanging off `root` — an in-flight isolated scope, the default scope — reads the merged
+ * values on its next `get`, from whichever copy of the package built it. A Resource read earlier is
+ * a separate frozen object and keeps the values it was read with. It never throws: an argument that
+ * fails to read, or a root whose slot refuses the write, leaves the root's Resource as it was.
+ *
+ * Framework-internal, not for application use; an application calls `Scope.setResource`.
+ */
+export function setResource(root: Scope, resource: Partial<Resource>): void {
+  try {
+    // The bag is `readonly` to every other caller; this is the one place that swaps it.
+    const node: { [ATTRIBUTES]: ScopeAttributes } = root as ScopeNode;
+    const current = node[ATTRIBUTES];
+    const next = Object.create(null) as ScopeAttributes;
+    for (const key of RESOURCE_KEYS) {
+      const value: unknown = resource[key];
+      next[key] = typeof value === "string" ? value : current[key];
+    }
+    node[ATTRIBUTES] = Object.freeze(next);
+  } catch {
+    // An argument or slot that throws leaves the root's Resource untouched: `next` is only installed whole.
+  }
 }
 
 /**

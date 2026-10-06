@@ -2,13 +2,16 @@ import { describe, expect, test } from "vitest";
 import { Locale } from "../../locale";
 import {
   DateTimeParseError,
+  Instant,
   InvalidDateTimeError,
   isDateTimeParseError,
   isInvalidDateTimeError,
   LocalDate,
   LocalDateTime,
   LocalTime,
+  ZoneId,
 } from "./index";
+import { ZonedDateTime } from "./zoned-date-time";
 
 const DATES = [
   "0001-01-01",
@@ -89,6 +92,65 @@ describe("ISO parse then format round-trips", () => {
   });
 });
 
+describe("ISO fractions of a second", () => {
+  const FORMS = [
+    "14:30",
+    "14:30:05",
+    "14:30:05.250",
+    "14:30:05.000001",
+    "14:30:05.123456",
+    "14:30:05.000000001",
+    "14:30:05.123456789",
+    "00:00:00.999999999",
+    "23:59:59.100",
+  ];
+
+  test.each(FORMS)("LocalTime %s round-trips", (text) => {
+    const time = LocalTime.parse(text);
+    expect(time.toString()).toBe(text);
+    expect(LocalTime.parse(time.toString()).equals(time)).toBe(true);
+  });
+
+  test.each(FORMS)("LocalDateTime %s round-trips", (text) => {
+    const value = LocalDateTime.parse(`2026-10-01T${text}`);
+    expect(value.toString()).toBe(`2026-10-01T${text}`);
+    expect(LocalDateTime.parse(value.toString()).equals(value)).toBe(true);
+  });
+
+  test.each([
+    ["14:30:05.5", "14:30:05.500"],
+    ["14:30:05.1234", "14:30:05.123400"],
+    ["14:30:05.12", "14:30:05.120"],
+    ["14:30:05.120000000", "14:30:05.120"],
+    ["14:30:05.123000", "14:30:05.123"],
+    ["14:30:05.0000010", "14:30:05.000001"],
+    ["14:30:05.000000000", "14:30:05"],
+    ["14:30:00.000000000", "14:30"],
+  ])("a non-shortest fraction in %s normalises to %s", (text, expected) => {
+    expect(LocalTime.parse(text).toString()).toBe(expected);
+    expect(LocalDateTime.parse(`2026-10-01T${text}`).toString()).toBe(`2026-10-01T${expected}`);
+  });
+
+  test("a fraction is read as digits of a second and never rounded", () => {
+    expect(LocalTime.parse("14:30:05.999999999").nanosecond).toBe(999_999_999);
+    expect(LocalTime.parse("14:30:05.1234").nanosecond).toBe(123_400_000);
+  });
+
+  test("a fraction of ten digits is rejected", () => {
+    throwsParse(() => LocalTime.parse("14:30:05.1234567890"));
+    throwsParse(() => LocalDateTime.parse("2026-10-01T14:30:05.1234567890"));
+    expect(LocalTime.tryParse("14:30:05.1234567890")).toEqual({ success: false });
+    expect(LocalDateTime.tryParse("2026-10-01T14:30:05.1234567890")).toEqual({ success: false });
+  });
+
+  test("a nanosecond out of range is rejected", () => {
+    for (const nanosecond of [-1, 1_000_000_000, 1.5, Number.NaN]) {
+      throwsInvalid(() => LocalTime.of(12, 0, 0, nanosecond));
+      throwsInvalid(() => LocalDateTime.ofFields(2026, 10, 1, 12, 0, 0, nanosecond));
+    }
+  });
+});
+
 describe("plusDays(n).minusDays(n) is the identity", () => {
   const starts = ["2024-02-28", "2024-12-31", "2023-02-28", "2000-02-29", "1900-03-01", "2026-10-01", "2024-01-01"];
 
@@ -150,6 +212,26 @@ describe("compare agrees with equals", () => {
         expect(Math.sign(LocalDateTime.compare(a, b)) === -Math.sign(LocalDateTime.compare(b, a))).toBe(true);
       }
     }
+  });
+
+  test("a nanosecond-only difference orders the values and breaks equality", () => {
+    const nanos = [0, 1, 999, 1_000, 999_999, 1_000_000, 123_456_789, 999_999_999];
+    for (const a of nanos) {
+      for (const b of nanos) {
+        const timeA = LocalTime.of(14, 30, 5, a);
+        const timeB = LocalTime.of(14, 30, 5, b);
+        const valueA = LocalDateTime.ofFields(2026, 10, 1, 14, 30, 5, a);
+        const valueB = LocalDateTime.ofFields(2026, 10, 1, 14, 30, 5, b);
+        expect(Math.sign(LocalTime.compare(timeA, timeB))).toBe(Math.sign(a - b));
+        expect(Math.sign(LocalDateTime.compare(valueA, valueB))).toBe(Math.sign(a - b));
+        expect(timeA.equals(timeB)).toBe(a === b);
+        expect(valueA.equals(valueB)).toBe(a === b);
+      }
+    }
+  });
+
+  test("a later second outranks an earlier nanosecond", () => {
+    expect(LocalTime.compare(LocalTime.of(0, 0, 1, 0), LocalTime.of(0, 0, 0, 999_999_999))).toBeGreaterThan(0);
   });
 
   test("equal values built separately compare as zero", () => {
@@ -273,6 +355,18 @@ describe("localized format then parse round-trips", () => {
       expect(result.value?.toString()).toBe(text);
     });
 
+    test("a time with a fraction of a second parses back with zero second and nanosecond", () => {
+      const time = LocalTime.parse("14:30:05.123456789");
+      const parsed = LocalTime.parseLocalized(time.format(locale), locale);
+      expect(parsed.hour).toBe(14);
+      expect(parsed.minute).toBe(30);
+      expect(parsed.second).toBe(0);
+      expect(parsed.nanosecond).toBe(0);
+      const value = LocalDateTime.parse("2026-10-01T14:30:05.123456789");
+      const parsedValue = LocalDateTime.parseLocalized(value.format(locale), locale);
+      expect(parsedValue.toString()).toBe("2026-10-01T14:30");
+    });
+
     test("LocalTime keeps hour and minute and zeroes the rest", () => {
       for (const text of TIMES) {
         const time = LocalTime.parse(text);
@@ -386,5 +480,295 @@ describe("12-hour and 24-hour clocks", () => {
         expect(LocalTime.parseLocalized(text, locale).equals(time)).toBe(true);
       }
     }
+  });
+});
+
+/**
+ * A transition: the instant `at` a zone's offset moves from `offsetBefore` to `offsetAfter`, in
+ * seconds, and the local window `[windowStart, windowEnd)` it skips (a gap) or reads twice (an
+ * overlap).
+ */
+interface ZoneTransition {
+  readonly zone: string;
+  readonly kind: "gap" | "overlap";
+  readonly at: string;
+  readonly windowStart: string;
+  readonly windowEnd: string;
+  readonly offsetBefore: number;
+  readonly offsetAfter: number;
+}
+
+const ZONE_TRANSITIONS: readonly ZoneTransition[] = [
+  {
+    zone: "Europe/Berlin",
+    kind: "gap",
+    at: "2026-03-29T01:00:00Z",
+    windowStart: "2026-03-29T02:00",
+    windowEnd: "2026-03-29T03:00",
+    offsetBefore: 3600,
+    offsetAfter: 7200,
+  },
+  {
+    zone: "Europe/Berlin",
+    kind: "overlap",
+    at: "2026-10-25T01:00:00Z",
+    windowStart: "2026-10-25T02:00",
+    windowEnd: "2026-10-25T03:00",
+    offsetBefore: 7200,
+    offsetAfter: 3600,
+  },
+  {
+    zone: "America/New_York",
+    kind: "gap",
+    at: "2026-03-08T07:00:00Z",
+    windowStart: "2026-03-08T02:00",
+    windowEnd: "2026-03-08T03:00",
+    offsetBefore: -18_000,
+    offsetAfter: -14_400,
+  },
+  {
+    zone: "America/New_York",
+    kind: "overlap",
+    at: "2026-11-01T06:00:00Z",
+    windowStart: "2026-11-01T01:00",
+    windowEnd: "2026-11-01T02:00",
+    offsetBefore: -14_400,
+    offsetAfter: -18_000,
+  },
+  {
+    zone: "Australia/Lord_Howe",
+    kind: "overlap",
+    at: "2026-04-04T15:00:00Z",
+    windowStart: "2026-04-05T01:30",
+    windowEnd: "2026-04-05T02:00",
+    offsetBefore: 39_600,
+    offsetAfter: 37_800,
+  },
+  {
+    zone: "Australia/Lord_Howe",
+    kind: "gap",
+    at: "2026-10-03T15:30:00Z",
+    windowStart: "2026-10-04T02:00",
+    windowEnd: "2026-10-04T02:30",
+    offsetBefore: 37_800,
+    offsetAfter: 39_600,
+  },
+  {
+    zone: "Pacific/Apia",
+    kind: "gap",
+    at: "2011-12-30T10:00:00Z",
+    windowStart: "2011-12-30T00:00",
+    windowEnd: "2011-12-31T00:00",
+    offsetBefore: -36_000,
+    offsetAfter: 50_400,
+  },
+];
+
+const ZONE_TRANSITION_ROWS = ZONE_TRANSITIONS.map((transition) => ({
+  ...transition,
+  label: `${transition.zone} ${transition.kind} at ${transition.at}`,
+}));
+
+/** The local date-time a wall clock at the fixed offset `offsetSeconds` shows at `instant`. */
+function wallClockAt(instant: Instant, offsetSeconds: number): LocalDateTime {
+  return LocalDateTime.parse(instant.plusSeconds(offsetSeconds).toString().slice(0, -1));
+}
+
+/** The instant `local` names when read at the fixed offset `offsetSeconds`. */
+function instantAtOffset(local: LocalDateTime, offsetSeconds: number): Instant {
+  const { date, time } = local;
+  const pad = (value: number, width = 2) => String(value).padStart(width, "0");
+  const utc = `${date}T${pad(time.hour)}:${pad(time.minute)}:${pad(time.second)}.${pad(time.nanosecond, 9)}Z`;
+  return Instant.parse(utc).minusSeconds(offsetSeconds);
+}
+
+/** Elapsed nanoseconds from `a` to `b`, exact while under 2^53. */
+function elapsedNanos(a: Instant, b: Instant): number {
+  return (b.toEpochSecond() - a.toEpochSecond()) * 1_000_000_000 + (b.nanosecond - a.nanosecond);
+}
+
+/** A deterministic sequence of integers in `[0, bound)`, a linear congruential generator seeded with `seed`. */
+function spread(seed: number, count: number, bound: number): number[] {
+  const values: number[] = [];
+  let state = seed;
+  for (let index = 0; index < count; index++) {
+    state = (Math.imul(state, 1_103_515_245) + 12_345) >>> 0;
+    values.push(state % bound);
+  }
+  return values;
+}
+
+/**
+ * Instants around a transition: every minute for two hours either side, every second for two
+ * minutes either side, every nanosecond for five either side, and a deterministic spread over two
+ * days either side with arbitrary nanoseconds.
+ */
+function instantsAround(transition: ZoneTransition): Instant[] {
+  const at = Instant.parse(transition.at);
+  const instants: Instant[] = [];
+  for (let minute = -120; minute <= 120; minute++) {
+    instants.push(at.plusSeconds(minute * 60));
+  }
+  for (let second = -120; second <= 120; second++) {
+    instants.push(at.plusSeconds(second).plusNanos(second * 7_919));
+  }
+  for (let nano = -5; nano <= 5; nano++) {
+    instants.push(at.plusNanos(nano));
+  }
+  const seconds = spread(transition.offsetAfter - transition.offsetBefore, 200, 4 * 86_400);
+  const nanos = spread(transition.offsetBefore, 200, 1_000_000_000);
+  seconds.forEach((second, index) => {
+    instants.push(at.plusSeconds(second - 2 * 86_400).plusNanos(nanos[index] as number));
+  });
+  return instants;
+}
+
+describe("LocalDateTime atZone then toLocalDateTime", () => {
+  test.for(ZONE_TRANSITION_ROWS)("is the identity outside the window and settles it inside, around $label", (transition) => {
+    const zone = ZoneId.of(transition.zone);
+    const windowStart = LocalDateTime.parse(transition.windowStart);
+    const windowEnd = LocalDateTime.parse(transition.windowEnd);
+    const shift = transition.offsetAfter - transition.offsetBefore;
+    const first = instantAtOffset(windowStart, 0).minusSeconds(3 * 3600);
+    const last = instantAtOffset(windowEnd, 0).plusSeconds(3 * 3600);
+    let inside = 0;
+    for (let step = 0; Instant.compare(first.plusSeconds(step * 60), last) <= 0; step++) {
+      const local = wallClockAt(first.plusSeconds(step * 60).plusNanos(step * 104_729), 0);
+      const value = local.atZone(zone);
+      const beforeWindow = LocalDateTime.compare(local, windowStart) < 0;
+      const afterWindow = LocalDateTime.compare(local, windowEnd) >= 0;
+      if (beforeWindow || afterWindow) {
+        expect(value.toLocalDateTime().equals(local)).toBe(true);
+        expect(value.offsetSeconds).toBe(beforeWindow ? transition.offsetBefore : transition.offsetAfter);
+        continue;
+      }
+      inside++;
+      if (transition.kind === "gap") {
+        const shifted = wallClockAt(instantAtOffset(local, 0).plusSeconds(shift), 0);
+        expect(value.toLocalDateTime().equals(shifted)).toBe(true);
+        expect(value.offsetSeconds).toBe(transition.offsetAfter);
+      } else {
+        expect(value.toLocalDateTime().equals(local)).toBe(true);
+        expect(value.offsetSeconds).toBe(transition.offsetBefore);
+      }
+    }
+    expect(inside).toBeGreaterThan(0);
+  });
+});
+
+describe("Instant atZone then toInstant", () => {
+  test.for(ZONE_TRANSITION_ROWS)("is the identity for every instant sampled around $label", (transition) => {
+    const zone = ZoneId.of(transition.zone);
+    const at = Instant.parse(transition.at);
+    for (const instant of instantsAround(transition)) {
+      const value = instant.atZone(zone);
+      expect(value.toInstant().equals(instant)).toBe(true);
+      expect(value.offsetSeconds).toBe(Instant.compare(instant, at) < 0 ? transition.offsetBefore : transition.offsetAfter);
+      expect(value.toLocalDateTime().equals(wallClockAt(instant, value.offsetSeconds))).toBe(true);
+    }
+  });
+});
+
+describe("ZonedDateTime toString then parse", () => {
+  test.for(ZONE_TRANSITION_ROWS)("round-trips every instant sampled around $label", (transition) => {
+    const zone = ZoneId.of(transition.zone);
+    for (const instant of instantsAround(transition)) {
+      const value = instant.atZone(zone);
+      const text = value.toString();
+      const parsed = ZonedDateTime.parse(text);
+      expect(parsed.equals(value)).toBe(true);
+      expect(parsed.offsetSeconds).toBe(value.offsetSeconds);
+      expect(parsed.toString()).toBe(text);
+    }
+  });
+
+  test.for(ZONE_TRANSITION_ROWS.filter((transition) => transition.kind === "overlap"))(
+    "keeps both instants of the overlap apart around $label",
+    (transition) => {
+      const zone = ZoneId.of(transition.zone);
+      const local = LocalDateTime.parse(transition.windowStart);
+      const earlier = local.atZone(zone, { disambiguation: "earlier" });
+      const later = local.atZone(zone, { disambiguation: "later" });
+      expect(earlier.offsetSeconds).toBe(transition.offsetBefore);
+      expect(later.offsetSeconds).toBe(transition.offsetAfter);
+      expect(elapsedNanos(earlier.toInstant(), later.toInstant())).toBe((transition.offsetBefore - transition.offsetAfter) * 1_000_000_000);
+      for (const value of [earlier, later]) {
+        const parsed = ZonedDateTime.parse(value.toString());
+        expect(parsed.toInstant().equals(value.toInstant())).toBe(true);
+        expect(parsed.toLocalDateTime().equals(local)).toBe(true);
+        expect(parsed.toString()).toBe(value.toString());
+      }
+      expect(earlier.toString()).not.toBe(later.toString());
+    },
+  );
+});
+
+describe("calendar days and elapsed hours across transitions", () => {
+  test.for([
+    ["Europe/Berlin", "2026-03-28T12:00", 1, 23],
+    ["Europe/Berlin", "2026-10-24T12:00", 1, 25],
+    ["America/New_York", "2026-03-07T12:00", 1, 23],
+    ["America/New_York", "2026-10-31T12:00", 1, 25],
+    ["Australia/Lord_Howe", "2026-04-04T12:00", 1, 24.5],
+    ["Australia/Lord_Howe", "2026-10-03T12:00", 1, 23.5],
+    ["Pacific/Apia", "2011-12-29T12:00", 2, 24],
+    ["Europe/Berlin", "2026-07-15T12:00", 1, 24],
+  ] as const)("in %s, %s plus %i days is %d elapsed hours", ([zone, start, days, hours]) => {
+    const value = LocalDateTime.parse(start).atZone(ZoneId.of(zone));
+    const later = value.plusDays(days);
+    expect(elapsedNanos(value.toInstant(), later.toInstant())).toBe(hours * 3_600_000_000_000);
+    expect(later.toLocalDateTime().equals(LocalDateTime.parse(start).plusDays(days))).toBe(true);
+    expect(later.minusDays(days).equals(value)).toBe(true);
+  });
+
+  test.for(ZONE_TRANSITION_ROWS)("plusHours(24) is 24 elapsed hours from every instant sampled around $label", (transition) => {
+    const zone = ZoneId.of(transition.zone);
+    const at = Instant.parse(transition.at);
+    for (let step = -60; step <= 12; step++) {
+      const value = at
+        .plusSeconds(step * 1800)
+        .plusNanos(Math.abs(step) * 31_337)
+        .atZone(zone);
+      const later = value.plusHours(24);
+      expect(elapsedNanos(value.toInstant(), later.toInstant())).toBe(24 * 3_600_000_000_000);
+      expect(later.minusHours(24).equals(value)).toBe(true);
+    }
+  });
+});
+
+describe("LocalDate atStartOfDay", () => {
+  /** Dates two days either side of every transition, plus the dates whose midnight a zone skips. */
+  const cases = [
+    ...ZONE_TRANSITIONS.flatMap((transition) =>
+      [-2, -1, 0, 1, 2].map(
+        (days) => [transition.zone, LocalDate.parse(transition.windowStart.slice(0, 10)).plusDays(days).toString()] as const,
+      ),
+    ).filter(([zone, date]) => !(zone === "Pacific/Apia" && date === "2011-12-30")),
+    ["America/Sao_Paulo", "2018-11-04"] as const,
+    ["Asia/Tehran", "2021-03-22"] as const,
+  ];
+
+  test.for(cases)("is the first instant of %s %s", ([zoneName, text]) => {
+    const zone = ZoneId.of(zoneName);
+    const date = LocalDate.parse(text);
+    const start = date.atStartOfDay(zone);
+    expect(start.toLocalDateTime().date.equals(date)).toBe(true);
+    const previous = start.toInstant().minusNanos(1).atZone(zone).toLocalDateTime().date;
+    expect(LocalDate.compare(previous, date)).toBeLessThan(0);
+  });
+
+  test.for([
+    ["America/Sao_Paulo", "2018-11-04", "2018-11-04T01:00-02:00"],
+    ["Asia/Tehran", "2021-03-22", "2021-03-22T01:00+04:30"],
+    ["Europe/Berlin", "2026-03-29", "2026-03-29T00:00+01:00"],
+    ["Pacific/Apia", "2011-12-31", "2011-12-31T00:00+14:00"],
+  ] as const)("in %s, %s starts at %s", ([zoneName, text, expected]) => {
+    const zone = ZoneId.of(zoneName);
+    expect(LocalDate.parse(text).atStartOfDay(zone).toString()).toBe(`${expected}[${zone.id}]`);
+  });
+
+  test("a date a zone skips whole starts on the next date", () => {
+    const zone = ZoneId.of("Pacific/Apia");
+    expect(LocalDate.parse("2011-12-30").atStartOfDay(zone).toString()).toBe(`2011-12-31T00:00+14:00[${zone.id}]`);
   });
 });

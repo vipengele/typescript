@@ -1,9 +1,11 @@
 import { describe, expect, test, vi } from "vitest";
 import { Locale } from "../../locale";
-import { DateTimeParseError, isDateTimeParseError, isInvalidDateTimeError } from "./errors";
+import { DateTimeParseError, isDateTimeParseError, isInvalidDateTimeError, isZoneResolutionError } from "./errors";
 import { LocalDate } from "./local-date";
 import { LocalDateTime } from "./local-date-time";
 import { LocalTime } from "./local-time";
+import { ZoneId } from "./zone-id";
+import { ZonedDateTime } from "./zoned-date-time";
 
 test("of combines a date and a time", () => {
   const date = LocalDate.of(2026, 10, 1);
@@ -13,14 +15,28 @@ test("of combines a date and a time", () => {
   expect(value.time).toBe(time);
 });
 
-test("ofFields defaults the second and the millisecond to zero", () => {
+test("ofFields defaults the second and the nanosecond to zero", () => {
   const value = LocalDateTime.ofFields(2026, 10, 1, 14, 30);
   expect(value.date.equals(LocalDate.of(2026, 10, 1))).toBe(true);
   expect(value.time.equals(LocalTime.of(14, 30, 0, 0))).toBe(true);
 });
 
 test("ofFields takes every field", () => {
-  expect(LocalDateTime.ofFields(2026, 10, 1, 14, 30, 5, 250).toString()).toBe("2026-10-01T14:30:05.250");
+  const value = LocalDateTime.ofFields(2026, 10, 1, 14, 30, 5, 250_000_000);
+  expect(value.time.nanosecond).toBe(250_000_000);
+  expect(value.toString()).toBe("2026-10-01T14:30:05.250");
+  expect(LocalDateTime.ofFields(2026, 10, 1, 14, 30, 5, 123_456_789).toString()).toBe("2026-10-01T14:30:05.123456789");
+});
+
+test("ofFields rejects a nanosecond outside 0 to 999 999 999 with InvalidDateTimeError", () => {
+  for (const nanosecond of [-1, 1_000_000_000, 0.5]) {
+    try {
+      LocalDateTime.ofFields(2026, 10, 1, 14, 30, 5, nanosecond);
+      expect.unreachable();
+    } catch (error) {
+      expect(isInvalidDateTimeError(error)).toBe(true);
+    }
+  }
 });
 
 test.each([
@@ -47,9 +63,12 @@ test.each([
   "2026-10-01T14:30",
   "2026-10-01T14:30:05",
   "2026-10-01T14:30:05.250",
+  "2026-10-01T14:30:05.123456",
+  "2026-10-01T14:30:05.000001",
+  "2026-10-01T14:30:05.123456789",
   "2026-10-01T00:00",
   "0001-01-01T00:00",
-  "9999-12-31T23:59:59.999",
+  "9999-12-31T23:59:59.999999999",
 ])("parse then toString round-trips %s", (iso) => {
   expect(LocalDateTime.parse(iso).toString()).toBe(iso);
   const result = LocalDateTime.tryParse(iso);
@@ -59,7 +78,16 @@ test.each([
 
 test("parse reads the fields of each form", () => {
   const value = LocalDateTime.parse("2026-10-01T14:30:05.25");
-  expect(value.equals(LocalDateTime.ofFields(2026, 10, 1, 14, 30, 5, 250))).toBe(true);
+  expect(value.equals(LocalDateTime.ofFields(2026, 10, 1, 14, 30, 5, 250_000_000))).toBe(true);
+  expect(value.time.nanosecond).toBe(250_000_000);
+  expect(LocalDateTime.parse("2026-10-01T14:30:05.1234").time.nanosecond).toBe(123_400_000);
+  expect(LocalDateTime.parse("2026-10-01T14:30:05.000000001").time.nanosecond).toBe(1);
+});
+
+test("parse writes the fraction back in the shortest of 3, 6 or 9 digits", () => {
+  expect(LocalDateTime.parse("2026-10-01T14:30:05.1").toString()).toBe("2026-10-01T14:30:05.100");
+  expect(LocalDateTime.parse("2026-10-01T14:30:05.1234").toString()).toBe("2026-10-01T14:30:05.123400");
+  expect(LocalDateTime.parse("2026-10-01T14:30:05.1234567").toString()).toBe("2026-10-01T14:30:05.123456700");
 });
 
 test.each([
@@ -79,6 +107,8 @@ test.each([
   "2026-10-01T10:00:60",
   "2026-10-01T10:00Z",
   " 2026-10-01T10:00",
+  "2026-10-01T10:00:00.",
+  "2026-10-01T10:00:00.1234567890",
 ])("parse rejects %j with DateTimeParseError and tryParse reports failure", (str) => {
   try {
     LocalDateTime.parse(str);
@@ -184,8 +214,8 @@ describe("LocalDateTime#format", () => {
     expect(LocalDateTime.ofFields(2026, 2, 3, 0, 0).format(new Locale("en-US-u-hc-h24"))).toBe("02/03/2026, 00:00");
   });
 
-  test("writes the second and the millisecond nowhere", () => {
-    expect(LocalDateTime.ofFields(2026, 2, 3, 13, 30, 45, 999).format(new Locale("de-DE"))).toBe("03.02.2026, 13:30");
+  test("writes the second and the nanosecond nowhere", () => {
+    expect(LocalDateTime.ofFields(2026, 2, 3, 13, 30, 45, 999_999_999).format(new Locale("de-DE"))).toBe("03.02.2026, 13:30");
   });
 
   test("an omitted locale writes in Locale.default()", () => {
@@ -228,9 +258,9 @@ describe("LocalDateTime.parseLocalized and tryParseLocalized", () => {
     expect(LocalDateTime.tryParseLocalized(formatted, locale).value?.toString()).toBe(iso);
   });
 
-  test("reads back a date-time with seconds at second 0 and millisecond 0", () => {
+  test("reads back a date-time with seconds at second 0 and nanosecond 0", () => {
     const locale = new Locale("en-US");
-    const value = LocalDateTime.parseLocalized(LocalDateTime.ofFields(2026, 2, 3, 13, 30, 45, 999).format(locale), locale);
+    const value = LocalDateTime.parseLocalized(LocalDateTime.ofFields(2026, 2, 3, 13, 30, 45, 999_999_999).format(locale), locale);
 
     expect(value.equals(LocalDateTime.ofFields(2026, 2, 3, 13, 30))).toBe(true);
   });
@@ -298,5 +328,59 @@ describe("LocalDateTime.parseLocalized and tryParseLocalized", () => {
   test("leaves parse and tryParse reading ISO 8601 only", () => {
     expect(LocalDateTime.tryParse("02/03/2026, 01:30 PM")).toEqual({ success: false });
     expect(LocalDateTime.parse("2026-02-03T13:30").equals(LocalDateTime.ofFields(2026, 2, 3, 13, 30))).toBe(true);
+  });
+});
+
+describe("LocalDateTime#atZone in a time zone", () => {
+  /** A value's local date-time, offset and instant as plain strings and numbers, for one `toEqual`. */
+  function zonedParts(value: ZonedDateTime): { local: string; offsetSeconds: number; instant: string } {
+    return { local: value.toLocalDateTime().toString(), offsetSeconds: value.offsetSeconds, instant: value.toInstant().toString() };
+  }
+
+  test("keeps a time the zone reads once as the value's toLocalDateTime, in the zone given", () => {
+    const local = LocalDateTime.parse("2026-07-15T13:45:30.123456789");
+    const zone = ZoneId.of("Europe/Berlin");
+    const value = local.atZone(zone);
+
+    expect(value.toLocalDateTime()).toBe(local);
+    expect(value.zone).toBe(zone);
+    expect(zonedParts(value)).toEqual({
+      local: "2026-07-15T13:45:30.123456789",
+      offsetSeconds: 7200,
+      instant: "2026-07-15T11:45:30.123456789Z",
+    });
+  });
+
+  test("settles a time in a gap as ZonedDateTime.of does, compatible by default", () => {
+    const local = LocalDateTime.parse("2026-03-29T02:30");
+    const zone = ZoneId.of("Europe/Berlin");
+
+    expect(zonedParts(local.atZone(zone))).toEqual({ local: "2026-03-29T03:30", offsetSeconds: 7200, instant: "2026-03-29T01:30:00Z" });
+    expect(local.atZone(zone).equals(ZonedDateTime.of(local, zone))).toBe(true);
+  });
+
+  test("passes the disambiguation through", () => {
+    const zone = ZoneId.of("Europe/Berlin");
+
+    expect(zonedParts(LocalDateTime.parse("2026-03-29T02:30").atZone(zone, { disambiguation: "earlier" }))).toEqual({
+      local: "2026-03-29T01:30",
+      offsetSeconds: 3600,
+      instant: "2026-03-29T00:30:00Z",
+    });
+    expect(zonedParts(LocalDateTime.parse("2026-10-25T02:30").atZone(zone, { disambiguation: "later" }))).toEqual({
+      local: "2026-10-25T02:30",
+      offsetSeconds: 3600,
+      instant: "2026-10-25T01:30:00Z",
+    });
+  });
+
+  test("throws ZoneResolutionError under reject for a time in a gap", () => {
+    let error: unknown;
+    try {
+      LocalDateTime.parse("2026-03-29T02:30").atZone(ZoneId.of("Europe/Berlin"), { disambiguation: "reject" });
+    } catch (caught) {
+      error = caught;
+    }
+    expect(isZoneResolutionError(error)).toBe(true);
   });
 });

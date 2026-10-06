@@ -84,8 +84,7 @@ them into Error Events and hands them to a Transport.
 
 **Error Event**:
 One captured error after normalization and enrichment: the exception chain with parsed stack
-frames, its mechanism (handled or unhandled, and what caught it), its scope's context and its
-breadcrumbs.
+frames, its mechanism (handled or unhandled, and what caught it) and its scope's attributes.
 _Avoid_: exception (that is one link of the chain), issue (a grouping on the backend)
 
 **Frame**:
@@ -109,13 +108,16 @@ _Avoid_: platform, environment
 
 **Scope**:
 The ambient context a Log Record and an Error Event are both enriched from, carried along an async
-call chain. Scopes form a tree: the root holds the environment and never changes; every other
-scope holds its own attributes and sees its ancestors', the innermost value winning, except that no
-scope may `set` a key the root already holds. A scope created to begin a Unit of Work is a child of
-the root, not of whatever scope was current; every other new scope is a child of the current one.
+call chain. Scopes form a tree: the root holds the environment and never changes except through
+`Scope.setResource`; every other scope holds its own attributes and sees its ancestors', the
+innermost value winning, except that no scope may `set` a key the root already holds. A scope
+created to begin a Unit of Work is a child of the root, not of whatever scope was current; every
+other scope is a child of the current one.
 Either kind may carry a tag, its own Breadcrumb.
-_Avoid_: context (OpenTelemetry's word for its own propagation object), MDC, request context (the
-browser has no request)
+`Scope.setUser`, `Scope.setTag` and `Scope.setContext` write attributes to the current scope.
+_Avoid_: context as a name for the Scope tree (OpenTelemetry's word for its own propagation
+object), MDC-style ambient data, request context (the browser has no request). `setContext` is the
+one sanctioned use: the verb that writes a namespaced group of attributes, `name.field` keys.
 
 **Carrier**:
 What actually threads a value across an async call chain on one runtime: `AsyncLocalStorage` on
@@ -127,7 +129,8 @@ _Avoid_: context (see Scope's own _Avoid_ — the same OpenTelemetry collision a
 
 **Resource**:
 The root Scope seen from outside the process: which service, release, environment and runtime is
-emitting. Sent once alongside Log Records and Error Events, never repeated inside each one.
+emitting. Set through `Scope.setResource`, and sent once alongside Log Records and Error Events
+(a Sink's and a Transport's second argument), never repeated inside each one.
 _Avoid_: global tags, global context
 
 **Unit of Work**:
@@ -156,7 +159,40 @@ A date, a time or a date and time with no time zone: `LocalDate`, `LocalTime`, `
 It names a point on a calendar or a clock face, not an instant. The zone is consulted only to
 read the current moment (`now()`), never to build, compare or format one. Owned by
 `@vipengele/ts-core-common`.
-_Avoid_: timestamp, instant (those name a point on the timeline), `Date` (carries an implicit zone)
+_Avoid_: timestamp, instant (an Instant is the term for a point on the timeline), `Date` (carries
+an implicit zone)
+
+**Instant**:
+A point on the UTC timeline, to the nanosecond, independent of any calendar or zone. It becomes a
+Local Value only by being read in a Zone. Owned by `@vipengele/ts-core-common`.
+_Avoid_: timestamp, `Date` (millisecond-only, and carries an implicit zone)
+
+**Zone**:
+A named IANA time zone, such as `Europe/Berlin`, whose rules fix the UTC offset at each Instant. A
+UTC offset like `+05:30` is not a Zone: it has no rules of its own. Represented by `ZoneId`.
+_Avoid_: timezone (write "time zone" in prose; `ZoneId` is the type), offset
+
+**Zoned value**:
+A Local Value of date and time paired with a Zone, which together fix exactly one Instant. Where
+the zone's rules make a local time ambiguous or nonexistent, the pairing is what resolves it.
+Represented by `ZonedDateTime`, which also holds the offset the date and time read in.
+_Avoid_: datetime with offset, timestamp
+
+**Disambiguation**:
+The mode that settles a Gap or an Overlap when a local value is resolved in a Zone: `compatible`
+(the default, as in `java.time`), `earlier`, `later` or `reject`. Passed as the `disambiguation`
+option wherever a local value meets a zone.
+_Avoid_: resolver, strategy, policy (a Redaction policy is unrelated)
+
+**Gap**:
+A span of local time a Zone skips when its offset moves forward, such as 02:00 to 03:00 on a
+spring-forward night. A local value in it names no Instant.
+_Avoid_: DST hole, nonexistent time
+
+**Overlap**:
+A span of local time a Zone reads twice when its offset moves back, such as 02:00 to 03:00 on a
+fall-back night. A local value in it names two Instants.
+_Avoid_: ambiguous time, repeated hour
 
 **Integration**:
 A piece a Reporter installs when it is created and removes when it is closed, such as a listener on

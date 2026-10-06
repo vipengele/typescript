@@ -23,7 +23,11 @@ Error Event, Scope, Breadcrumb, Transport) before naming things.
     `Locale` — a validated BCP 47 tag with month and weekday names, hour cycle and first day of the
     week — ADR-0013), `./types/date-time` (`LocalDate`, `LocalTime`, `LocalDateTime`: validated,
     immutable, zoneless civil values with ISO 8601 parse/format, arithmetic, `now()`, locale-aware
-    `format`/`parseLocalized`/`tryParseLocalized` and `LocalDate#segments`) or
+    `format`/`parseLocalized`/`tryParseLocalized` and `LocalDate#segments`; `Instant`, a
+    nanosecond point on the UTC timeline; `ZoneId`, a named time zone with `offsetSecondsAt`; `ZonedDateTime`, a date and time of day in a
+    zone, built by `LocalDateTime#atZone`, `LocalDate#atStartOfDay` and `Instant#atZone`, with a
+    `disambiguation` option settling a skipped or repeated local time, a `ZoneResolutionError` for
+    `reject`, and a strict ISO parse; ADR-0015) or
     `./context` (`createAsyncContextStore`, a value carried across an async call chain behind a
     fixed carrier fallback — `AsyncLocalStorage`, then `AsyncContext.Variable`, then a synchronous
     stack, ADR-0004; state shared across dual-resolved copies of the package lives behind a
@@ -70,9 +74,10 @@ Error Event, Scope, Breadcrumb, Transport) before naming things.
   depends on `@vipengele/ts-core-common` and `@vipengele/ts-core-redaction` — a pin plus a
   `link:` override in its `pnpm-workspace.yaml` for each (ADR-0009) — and re-exports `Numeric`
   from `@vipengele/ts-core-common`'s `./types/numeric` sub-path, `Locale` (with `HourCycle`,
-  `IsoWeekday`, `NameStyle`) from its `./locale` sub-path, `LocalDate`, `LocalTime` and
-  `LocalDateTime` (with their errors, guards and `DateSegment`, `DateSegmentType`,
-  `DateTimeTryParseResult`, `IsoDayOfWeek`) from its `./types/date-time` sub-path, and `redact`,
+  `IsoWeekday`, `NameStyle`) from its `./locale` sub-path, `LocalDate`, `LocalTime`,
+  `LocalDateTime`, `Instant`, `ZoneId` and `ZonedDateTime` (with their errors, guards,
+  `ZoneResolutionError` and `DateSegment`, `DateSegmentType`, `DateTimeTryParseResult`,
+  `Disambiguation`, `IsoDayOfWeek`, `ZonedDateTimeOptions`) from its `./types/date-time` sub-path, and `redact`,
   `secretKeys`, `composePolicies`, `redactUrl`, `redactQueryString`, `redactHeaders`, `maskKeepLast` and `pseudonymize`, the value
   detectors `valueDetectors`, `jwt`, `bearerToken`, `creditCard`, `email`, `awsAccessKey`,
   `githubToken` and `stripeKey` (with `RedactionPolicy`, `KeyMatcher`, `Detector`, `RedactOptions`,
