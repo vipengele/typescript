@@ -1,4 +1,4 @@
-import { hmacSha256, toHex } from "./hmac-sha256";
+import { BLOCK_SIZE, hmacSha256, sha256, toHex } from "./hmac-sha256";
 import type { Replacement } from "./replacement";
 
 /** How {@link pseudonymize} keys and shapes the tokens it writes. */
@@ -31,12 +31,16 @@ const OPAQUE_REPLACEMENT = "[REDACTED]";
 
 /**
  * The key as bytes, or a `TypeError` when it is not a non-empty string or `Uint8Array`. A
- * `Uint8Array` is copied, so the caller's array stays theirs to reuse or zero.
+ * `Uint8Array` is copied, so the caller's array stays theirs to reuse or zero. A key longer than the
+ * HMAC block is replaced by its SHA-256 digest, which HMAC would derive from it on every call, so
+ * the hash is paid once here instead of once per value.
  */
 function resolveKey(key: unknown): Uint8Array {
-  if (typeof key === "string" && key !== "") return new TextEncoder().encode(key);
-  if (key instanceof Uint8Array && key.length > 0) return Uint8Array.from(key);
-  throw new TypeError("pseudonymize: `key` must be a non-empty string or a non-empty Uint8Array");
+  let bytes: Uint8Array;
+  if (typeof key === "string" && key !== "") bytes = new TextEncoder().encode(key);
+  else if (key instanceof Uint8Array && key.length > 0) bytes = Uint8Array.from(key);
+  else throw new TypeError("pseudonymize: `key` must be a non-empty string or a non-empty Uint8Array");
+  return bytes.length > BLOCK_SIZE ? sha256(bytes) : bytes;
 }
 
 function resolvePrefix(prefix: unknown): string {

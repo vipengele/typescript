@@ -52,6 +52,23 @@ describe("key", () => {
     expect(token(fromBytes, "alice")).toBe(token(fromString, "alice"));
   });
 
+  test("a key longer than the 64-byte HMAC block gives the standard HMAC token", () => {
+    const message = "Test Using Larger Than Block-Size Key - Hash Key First";
+    const digest = "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54";
+    const bytes = new Uint8Array(131).fill(0xaa);
+    expect(token(pseudonymize({ key: bytes, prefix: "", length: 64 }), message)).toBe(digest);
+    expect(token(pseudonymize({ key: "ª".repeat(65), prefix: "", length: 64 }), message)).toBe(
+      token(pseudonymize({ key: new TextEncoder().encode("ª".repeat(65)), prefix: "", length: 64 }), message),
+    );
+  });
+
+  test("a key of exactly 64 bytes and one of 65 bytes both give a stable token", () => {
+    for (const size of [64, 65]) {
+      const replacement = pseudonymize({ key: new Uint8Array(size).fill(7) });
+      expect(token(replacement, "alice")).toBe(token(replacement, "alice"));
+    }
+  });
+
   test("a later change to the caller's Uint8Array does not change the tokens", () => {
     const bytes = new TextEncoder().encode(KEY);
     const replacement = pseudonymize({ key: bytes });

@@ -6,7 +6,7 @@
  */
 
 /** Bytes in one SHA-256 block, and the length an HMAC key is padded or hashed to. */
-const BLOCK_SIZE = 64;
+export const BLOCK_SIZE = 64;
 
 /** The first 32 bits of the fractional parts of the cube roots of the first 64 primes. */
 const K = new Uint32Array([
