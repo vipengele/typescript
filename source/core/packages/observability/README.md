@@ -5,7 +5,7 @@ Structured logging and error reporting for the browser and Node, as two entry po
 | Entry point | What it is |
 |-------------|------------|
 | `@vipengele/ts-core-observability/logger` | Category-scoped loggers with configurable levels, sinks and redaction |
-| `@vipengele/ts-core-observability/errors` | An error reporter: capture, normalization, scopes, breadcrumbs and pluggable transports |
+| `@vipengele/ts-core-observability/errors` | An error reporter: capture, normalization, scopes, redaction and pluggable transports |
 
 An application that only logs imports only `/logger` and bundles none of the reporter.
 
@@ -140,14 +140,15 @@ was delivered.
 
 ```ts
 interface Transport {
-  send(event: ErrorEvent): void;
+  send(event: ErrorEvent, resource: Resource): void;
   flush(timeoutMs?: number): Promise<boolean>;
   close(timeoutMs?: number): Promise<boolean>;
 }
 ```
 
 `send` is fire-and-forget: it returns at once and never throws, and the reporter never awaits it —
-batching, retry and the decision to drop belong to the transport. `flush` resolves `true` once
+batching, retry and the decision to drop belong to the transport. `resource` is the `Resource` read
+from `Scope.resource()` once for that event at delivery, frozen, with all four keys present. `flush` resolves `true` once
 everything accepted so far is delivered or dropped, `false` if `timeoutMs` elapses first; `close`
 flushes, then turns every later `send` into a no-op.
 
@@ -156,9 +157,10 @@ flushes, then turns every later `send` into a no-op.
 - `createConsoleTransport(options?)` writes each event to `console` (or `options.console`, for a
   test double): `error` and `fatal` go to `console.error`, `warn` to `console.warn`, `info` to
   `console.info`, and `trace` and `debug` to `console.debug`.
-- `createTestTransport()` records every sent event on its `events` array instead of delivering it
-  anywhere, for asserting what a reporter sent without a network or a console. Its `clear()` empties
-  `events` without affecting whether the transport is closed.
+- `createTestTransport()` records every sent event on its `events` array, and the `Resource` it was
+  sent with on `resources` at the same index, instead of delivering it anywhere, for asserting what a
+  reporter sent without a network or a console. Its `clear()` empties both without affecting
+  whether the transport is closed. `createConsoleTransport` does not print the Resource.
 
 **No transport configured** — the reporter still normalizes and returns an event `id` for every
 capture, but the event reaches nowhere: it is dropped once the pipeline runs. `flush` and `close`
@@ -174,32 +176,60 @@ attributes of every Scope between the current one and the root, the innermost wi
 `attributes` passed to the capture call, which win on a shared key. Each side is normalized
 separately and bounded to 100 entries. The Resource (`service.name`, `service.version`,
 `deployment.environment.name`, `process.runtime.name`) is not copied into events; a `Transport`
-that needs it reads `Scope.resource()`.
+receives it as the second argument of `send`.
 
-The reporter only reads the Scope. Per-request isolation, tags and `withScope`-style behaviour come
-from `Scope` in `@vipengele/ts-core-common/scope`:
+`./errors` re-exports `Scope` and the `Resource`, `ScopeAttributes` and `ScopeUser` types from
+`@vipengele/ts-core-common/scope`, so a reporter-only application needs one import:
 
 ```ts
-import { Scope } from "@vipengele/ts-core-common/scope";
+import { Scope } from "@vipengele/ts-core-observability/errors";
+
+Scope.setResource({ "service.name": "checkout", "service.version": "1.4.2" }); // once, at startup
 
 Scope.isolated("http-request", { requestId: "abc" }, () => {
-  Scope.current().set("userId", 42); // set after the request began, still reaches later events
+  Scope.setUser({ id: "u-42", email: "ada@example.com" }); // user.id, user.email
+  Scope.setTag("region", "eu-west"); // region
+  Scope.setContext("cart", { id: "c-9", items: 3 }); // cart.id, cart.items
 
-  Scope.inherit("checkout", { cartId: "c-9" }, () => {
-    reporter.captureException(error, { attributes: { step: "payment" } });
-    // attributes: { requestId: "abc", userId: 42, cartId: "c-9", step: "payment" }
+  Scope.inherit("checkout", { step: "payment" }, () => {
+    reporter.captureException(error, { attributes: { orderId: 7 } });
+    // attributes: { requestId, user.id, user.email, region, cart.id, cart.items, step, orderId }
   });
 });
 ```
 
-The reporter does not redact: Scope attributes reach the Transport as set, exactly as the call's own
-attributes do, so a secret placed on a Scope is sent. Keep secrets out of `Scope.current().set`,
-`Scope.inherit` and `Scope.isolated` attributes, or redact the event inside a custom `Transport`'s
-`send` before it leaves the process. A `ReporterBuilder` registers no event processors.
+- **`Scope.setResource(partial)`** merges the four Resource keys into the realm's one root, in
+  place: Loggers and Reporters already built read the merged values. A key that is `undefined` or
+  not a string is skipped, never cleared or coerced; an unknown key is ignored; it never throws.
+  `Scope.resource()` returns a frozen snapshot per call.
+- **`Scope.setUser({ id, email, username })`**, **`Scope.setTag(key, value)`** and
+  **`Scope.setContext(name, data)`** write flat dotted attribute keys to the current Scope:
+  `user.id`, `user.email` and `user.username`; the plain `key`; and `name.field`, one level deep.
+  Every key is validated before any is written, so a Resource key throws `ReservedScopeKeyError`
+  and leaves nothing written. `setContext` needs a non-empty string `name`, else a `TypeError`.
+  The event gains no `tags`, `user` or `contexts` field.
+- **A Scope's tag** is its Breadcrumb; an Error Event carries no breadcrumb trail field.
 
-If reading the Scope throws, the event is delivered without its Scope attributes. A Scope's tag is a
-Breadcrumb, and the Breadcrumb trail is not part of an Error Event. In the browser the synchronous-stack
-carrier loses the Scope after an `await` (ADR-0006).
+**Redaction** — on by default, using the `secretKeys` preset from `@vipengele/ts-core-redaction`. A
+stage after enrichment and before the processors applies the policy to the merged `attributes`, to
+`mechanism.data` and to every link of the exception chain (`code`, `data`, and the JSON `message`
+of a synthetic link), as the logger does for a record. The event's `message`, and each link's `stack`
+and `frames`, are not scanned. A Transport receives an event that is already redacted.
+`builder.redaction(policy)` replaces the policy and `builder.redaction(null)` disables redaction:
+
+```ts
+const reporter = createReporter((builder) => builder.transport(createConsoleTransport()).redaction(null));
+```
+
+`secretKeys` splits keys on every non-alphanumeric character, so a dotted key is read word by word:
+`Scope.setContext("session", { id })` writes `session.id`, which the default masks, as it does
+`Scope.setTag("sessionId", ...)` and `Scope.setContext("token", ...)`. A policy that throws drops
+the event silently, as the logger drops a record.
+
+If reading the Scope throws, the event is delivered without its Scope attributes. If reading the
+Resource for `send` throws, the event is delivered with a Resource whose four keys are `undefined`;
+the logger drops the record on the same throw, since an event is worth more than its Resource. In
+the browser the synchronous-stack carrier loses the Scope after an `await` (ADR-0006).
 
 ### Stack frames
 

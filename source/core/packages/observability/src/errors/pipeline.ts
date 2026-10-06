@@ -8,7 +8,9 @@ import {
   type SerializedError,
   serializeError,
 } from "@vipengele/ts-core-common";
-import { Scope, snapshot } from "@vipengele/ts-core-common/scope";
+import { type Resource, Scope, snapshot } from "@vipengele/ts-core-common/scope";
+import type { RedactionPolicy } from "@vipengele/ts-core-redaction";
+import { type RedactionSetting, redactAttributes, redactError } from "../redaction";
 import type { ErrorEvent, ExceptionRecord, Mechanism } from "./event";
 import { createEventId } from "./event-id";
 import { markInApp } from "./stack/in-app";
@@ -37,6 +39,8 @@ export interface Pipeline {
   readonly filters: readonly Filter[];
   /** What counts as in-app when frames are marked; every frame outside `node_modules` is in-app when absent. */
   readonly projectRoot?: string | undefined;
+  /** Applied to every event between enrichment and the processors; no event is redacted when it is `null` or absent. */
+  readonly redaction?: RedactionSetting | undefined;
 }
 
 /** An event after normalization, before enrichment: the payload a caller handed over, and nothing else. */
@@ -122,21 +126,58 @@ function enrich(payload: NormalizedPayload, input: CaptureInput, mechanism: Mech
 }
 
 /**
- * Stages 3 to 5: processors in order, then filters in order, then the transport. Returns without
- * sending once a filter drops the event.
+ * The Resource an event is sent with, read from `Scope.resource()` once per event. A throw while
+ * reading it yields a Resource whose four keys are all `undefined`, and the event still goes out:
+ * an event is worth more than its Resource. The logger drops a record on the same throw instead.
+ */
+function eventResource(): Resource {
+  try {
+    return Scope.resource();
+  } catch {
+    return Object.freeze({
+      "service.name": undefined,
+      "service.version": undefined,
+      "deployment.environment.name": undefined,
+      "process.runtime.name": undefined,
+    });
+  }
+}
+
+/**
+ * Between enrichment and the processors: a copy of `event` whose `attributes`, `mechanism.data`,
+ * and every link of its exception chain are redacted by `policy`, the links as the logger redacts
+ * a record's error. The event's `message`, and every link's `stack` and `frames`, are kept as they
+ * are. A throwing policy throws out of here, and the event is dropped like any stage's.
+ */
+function redactEvent(event: ErrorEvent, policy: RedactionPolicy): ErrorEvent {
+  const redacted: ErrorEvent = { ...event, attributes: redactAttributes(event.attributes, policy) };
+  if (event.exception !== undefined) {
+    redacted.exception = redactError(event.exception, policy);
+  }
+  if (event.mechanism.data !== undefined) {
+    redacted.mechanism = { ...event.mechanism, data: redactAttributes(event.mechanism.data, policy) };
+  }
+  return redacted;
+}
+
+/**
+ * Redaction, then stages 3 to 5: processors in order, then filters in order, then the transport.
+ * Returns without sending once a filter drops the event.
  */
 function deliver(event: ErrorEvent, pipeline: Pipeline): void {
-  const processed = pipeline.processors.reduce((current, processor) => processor(current), event);
+  const policy = pipeline.redaction ?? null;
+  const redacted = policy === null ? event : redactEvent(event, policy);
+  const processed = pipeline.processors.reduce((current, processor) => processor(current), redacted);
   if (!pipeline.filters.every((filter) => filter(processed))) {
     return;
   }
-  pipeline.transport?.send(processed);
+  pipeline.transport?.send(processed, eventResource());
 }
 
 /**
  * Creates the function every capture goes through — `captureException`, `captureMessage`, and any
  * handler that hands the reporter an error with its own {@link Mechanism}. It runs normalize,
- * enrich, processors, filters and the transport, in that order, every time. A stage or a
+ * enrich, redaction, processors, filters and the transport, in that order, every time. A stage or a
  * `transport.send` that throws drops the event silently: the id is returned either way, since a
  * transport is fire-and-forget and the caller learns nothing of delivery (ADR-0010).
  */

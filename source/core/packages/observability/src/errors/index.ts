@@ -1,4 +1,6 @@
 export type { Clock } from "@vipengele/ts-core-common";
+export { Scope } from "@vipengele/ts-core-common/scope";
+export type { Resource, ScopeAttributes, ScopeUser } from "@vipengele/ts-core-common/scope";
 export { ReporterBuilder } from "./builder";
 export type { ErrorEvent, ExceptionRecord, Mechanism, StackFrame } from "./event";
 export type { Integration, IntegrationCaptureContext, IntegrationHost } from "./integration";

@@ -7,8 +7,9 @@ description: A Transport's `send` returns at once, never throws, and is never aw
 The Reporter never awaits `send` and never catches anything it throws — a throw would surface
 inside the caller's own `catch` block, right where an exception was just being reported. Batching,
 retry and the decision to drop an event belong entirely to the Transport, behind `send`'s
-synchronous, non-throwing boundary. See ADR-0010 for the full contract, including `flush` and
-`close`.
+synchronous, non-throwing boundary. `send(event, resource)` takes the Resource the pipeline read
+for that event as its second argument, for the Transport to attach to its payload. See ADR-0010 for
+the full contract, including `flush` and `close`.
 
 ## Applies to
 
@@ -27,9 +28,19 @@ send(event) {
   target[methodFor(event.level)](event);
 },
 
-// ✗ async send(event) {
-//   await deliver(event); // the pipeline never awaits this; a rejection here is unhandled,
-//                         // and the caller's own catch block is the last place it can surface.
+// ✓ source/core/packages/observability/src/errors/transports/test-transport.ts
+send(event, resource) {
+  if (closed) {
+    return;
+  }
+  events.push(event);
+  resources.push(resource);
+},
+
+// ✗ async send(event, resource) {
+//   await deliver(event, resource); // the pipeline never awaits this; a rejection here is
+//                                   // unhandled, and the caller's own catch block is the last
+//                                   // place it can surface.
 // }
 ```
 

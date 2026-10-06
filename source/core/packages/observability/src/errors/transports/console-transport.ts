@@ -18,7 +18,8 @@ export interface ConsoleTransportOptions {
  * Creates a {@link Transport} that writes each event to `options.console` (default
  * `globalThis.console`). `error` and `fatal` go to `console.error`, `warn` to `console.warn`,
  * `info` to `console.info`, and `trace` and `debug` to `console.debug` — never `console.trace`,
- * which prints a stack on every call (ADR-0007, "Levels").
+ * which prints a stack on every call (ADR-0007, "Levels"). The event is the one argument written;
+ * the Resource it is sent with is not printed.
  */
 export function createConsoleTransport(options: ConsoleTransportOptions = {}): Transport {
   const target = options.console ?? globalThis.console;

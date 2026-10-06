@@ -1,4 +1,4 @@
-import { Scope } from "@vipengele/ts-core-common/scope";
+import { type Resource, Scope } from "@vipengele/ts-core-common/scope";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ErrorEvent } from "./event";
 import { createReporter } from "./reporter";
@@ -159,5 +159,69 @@ describe("scope attributes in an event", () => {
     const event = onlyEvent(transport.events);
     expect(event.id).toBe(id);
     expect(event.attributes).toEqual({ callOnly: 1 });
+  });
+});
+
+describe("the Resource an event is sent with", () => {
+  it("hands send the Resource Scope.resource() returns at delivery, alongside the event", () => {
+    const sent: [ErrorEvent, Resource][] = [];
+    const reporter = createReporter((b) =>
+      b.transport({
+        send: (event, resource) => {
+          sent.push([event, resource]);
+        },
+        flush: async () => true,
+        close: async () => true,
+      }),
+    );
+
+    const id = reporter.captureMessage("hello");
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.[0].id).toBe(id);
+    expect(sent[0]?.[1]).toEqual(Scope.resource());
+    expect(Object.isFrozen(sent[0]?.[1])).toBe(true);
+  });
+
+  it("carries a Resource set through Scope.setResource on the next event after the Reporter exists", () => {
+    // The realm's root is the default scope's parent; its attribute bag is put back afterwards so
+    // the Resource set here never reaches another test.
+    const defaultScope = Scope.current() as unknown as Record<symbol, unknown>;
+    const root = defaultScope[Symbol.for("vipengele:scope:parent")] as Record<symbol, unknown>;
+    const attributes = Symbol.for("vipengele:scope:attributes");
+    const original = root[attributes];
+    const { transport, reporter } = aReporter();
+
+    try {
+      reporter.captureMessage("before");
+      Scope.setResource({ "service.name": "checkout", "service.version": "1.2.3" });
+      reporter.captureMessage("after");
+      expect(transport.resources[1]).toEqual(Scope.resource());
+    } finally {
+      root[attributes] = original;
+    }
+
+    expect(transport.resources).toHaveLength(2);
+    expect(transport.resources[0]?.["service.name"]).not.toBe("checkout");
+    expect(transport.resources[1]?.["service.name"]).toBe("checkout");
+    expect(transport.resources[1]?.["service.version"]).toBe("1.2.3");
+  });
+
+  it("still delivers the event, with every Resource key undefined, when reading the Resource throws", () => {
+    const { transport, reporter } = aReporter();
+    vi.spyOn(Scope, "resource").mockImplementation(() => {
+      throw new Error("resource unreadable");
+    });
+
+    const id = reporter.captureException(new Error("hello"), { attributes: { callOnly: 1 } });
+
+    expect(onlyEvent(transport.events).id).toBe(id);
+    expect(transport.resources).toHaveLength(1);
+    const resource = transport.resources[0] as Resource;
+    expect(Object.keys(resource).sort()).toEqual([...RESOURCE_KEYS].sort());
+    for (const key of RESOURCE_KEYS) {
+      expect(resource[key as keyof Resource]).toBeUndefined();
+    }
+    expect(Object.isFrozen(resource)).toBe(true);
   });
 });

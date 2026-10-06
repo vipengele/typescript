@@ -1,6 +1,15 @@
+import {
+  Scope,
+  type Resource as CommonResource,
+  type ScopeAttributes as CommonScopeAttributes,
+  type ScopeUser as CommonScopeUser,
+} from "@vipengele/ts-core-common/scope";
 import { expect, expectTypeOf, test } from "vitest";
 import * as entry from "./index";
 import type {
+  Resource,
+  ScopeAttributes,
+  ScopeUser,
   ErrorEvent,
   ExitPolicy,
   GlobalErrorEventLike,
@@ -19,6 +28,22 @@ test("the entry point exports the reporter, the built-in transports and the buil
   expect(entry.createConsoleTransport).toBeTypeOf("function");
   expect(entry.createTestTransport).toBeTypeOf("function");
   expect(entry.ReporterBuilder).toBeTypeOf("function");
+});
+
+test("the entry point re-exports the shared Scope, not its internal snapshot", () => {
+  expect(entry.Scope).toBe(Scope);
+  expect(entry.Scope.setResource).toBeTypeOf("function");
+  expect(entry.Scope.setUser).toBeTypeOf("function");
+  expect(entry.Scope.setTag).toBeTypeOf("function");
+  expect(entry.Scope.setContext).toBeTypeOf("function");
+  expect("snapshot" in entry).toBe(false);
+});
+
+test("the entry point exports the Scope types", () => {
+  expectTypeOf<Resource>().toEqualTypeOf<CommonResource>();
+  expectTypeOf<ScopeAttributes>().toEqualTypeOf<CommonScopeAttributes>();
+  expectTypeOf<ScopeUser>().toEqualTypeOf<CommonScopeUser>();
+  expectTypeOf(entry.Scope.setUser).parameter(0).toEqualTypeOf<ScopeUser>();
 });
 
 test("the exported ErrorEvent is the framework's type, not the DOM one", () => {
