@@ -24,6 +24,11 @@ pnpm format:check
   the root.
 - `src/detector.ts` — the detector engine: normalization, span finding, merging and replacement.
 - `src/value-detectors.ts` — the built-in detectors and the `valueDetectors` preset.
+- `src/hmac-sha256.ts` — a synchronous pure-JS SHA-256 and HMAC-SHA-256. Internal: not exported
+  from the root.
+- `src/mask.ts` — `maskKeepLast`, a `Replacement` that keeps the last few code units behind a
+  fixed run of mask characters.
+- `src/pseudonymize.ts` — `pseudonymize`, a `Replacement` that writes a keyed, stable HMAC token.
 - `src/limits.ts` — the bounds on a walk and the markers a breach leaves behind.
 - `README.md` — public docs, including the Limits and Cost model sections; keep them in step
   with `limits.ts` defaults.

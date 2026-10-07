@@ -264,6 +264,78 @@ a function `Replacement` runs per match, every time.
 redact(payload, policy, { replacement: (value, key) => `[REDACTED:${key}]` });
 ```
 
+`maskKeepLast` and `pseudonymize` build ready-made function Replacements; see below.
+
+## `maskKeepLast` and `pseudonymize`
+
+Two factories that return a `Replacement`, for values that should stay recognisable or
+correlatable without being readable.
+
+```ts
+import { maskKeepLast, pseudonymize, redact } from "@vipengele/ts-core-redaction";
+
+redact({ card: "4242424242424242" }, { keys: ["card"] }, { replacement: maskKeepLast(4) });
+// => { card: "**** 4242" }
+
+redact({ email: "ana@example.com" }, { keys: ["email"] }, { replacement: pseudonymize({ key: secret }) });
+// => { email: "pseud_3f2a9c0d1e4b5a67" }
+```
+
+```ts
+function maskKeepLast(keep: number, options?: MaskOptions): Replacement;
+function pseudonymize(options: PseudonymizeOptions): Replacement;
+
+interface MaskOptions {
+  maskChar?: string;
+}
+
+interface PseudonymizeOptions {
+  key: string | Uint8Array;
+  prefix?: string;
+  length?: number;
+}
+```
+
+| Option     | Default   | Meaning                                                                                  |
+| ---------- | --------- | ---------------------------------------------------------------------------------------- |
+| `keep`     | required  | UTF-16 code units kept from the end of the value.                                        |
+| `maskChar` | `"*"`     | The character the mask run is made of; only its first code point is used.                |
+| `key`      | required  | The HMAC key: a non-empty string (UTF-8) or a non-empty `Uint8Array`.                    |
+| `prefix`   | `"pseud_"` | What every token starts with.                                                           |
+| `length`   | `16`      | Hex characters of the HMAC-SHA-256 digest kept after the prefix, clamped to 1..64.       |
+
+- **The mask run is always four characters.** `maskKeepLast(4)` turns `"4242424242424242"` and
+  `"4242 4242"` alike into `"**** 4242"`, so the result never shows how long the value was. A value
+  no longer than `keep`, an empty string included, becomes the bare run `"****"`, and so does every
+  value when `keep` is `0`, negative, `NaN` or `Infinity`. A fraction is floored. A bad `keep` or
+  `maskChar` never throws.
+- **A pseudonym is `<prefix><hex>`**: the first `length` hex characters of the HMAC-SHA-256 of the
+  value under `key`. The same value under the same key always gives the same token, so redacted
+  records still correlate, and a reader without the key cannot recompute a token from a guess.
+  Different keys give different tokens. A bad `prefix` or `length` falls back or clamps and never
+  throws; `0` is never used, since every value would then share one token.
+- **A bad key throws a `TypeError` when `pseudonymize` is called**, never from the returned
+  Replacement, which does not throw: an empty or wrongly typed `key` is rejected at build time. A
+  `Uint8Array` key is copied, so changing the caller's array later does not change the tokens.
+- **A primitive goes through `String()` first**, so `4242` and `"4242"` mask to the same text and
+  share a token. `null` and `undefined` are stringified too: `maskKeepLast(4)` of `undefined` is
+  `"**** ined"`, and `pseudonymize` gives `undefined` the token of `"undefined"`. An object, array,
+  function or boxed string has no string form worth keeping or correlating on and becomes
+  `"[REDACTED]"`.
+- **Hashing is UTF-8 through `TextEncoder`.** A lone surrogate becomes U+FFFD, so two strings that
+  differ only in which lone surrogate they hold share a token. A string key is encoded the same
+  way.
+- **Masking cuts UTF-16 code units**, as `maxStringLength` does, so the tail can start between the
+  two halves of a surrogate pair and keep a lone low surrogate.
+- **`maskChar` should stay within Latin-1.** The default `*` is. A `Headers` value must be a byte
+  string, so a mask run of `"•"` (U+2022) or any other character outside Latin-1 makes
+  `redactHeaders` store `"[REDACTED]"` for that header instead.
+- **The Replacement holds the key in memory** for as long as it is reachable, and nothing redacts
+  the key itself. Keep it out of anything that is logged or redacted.
+- **They apply through the `replacement` option of `redact`, `redactUrl`, `redactQueryString` and
+  `redactHeaders` only.** The logger passes a policy and never a replacement, so it cannot use
+  them; a record it writes is redacted with `"[REDACTED]"`.
+
 ## `redactUrl`, `redactQueryString` and `redactHeaders`
 
 `redact` walks structured values by key. Secrets in transit sit in strings and header lists
@@ -467,6 +539,9 @@ reference shared between branches, without being a cycle, is walked once per pat
 so an adversarially shared acyclic graph costs up to about 100^6 = 10^12 node visits at the
 defaults. Lower `maxBreadth` or `maxDepth` for input that is not
 trusted to be a tree.
+
+`pseudonymize` computes one synchronous, pure-JavaScript HMAC-SHA-256 per matched value, linear in
+the value's length; `maskKeepLast` is a slice.
 
 The output of a function `Replacement` is neither walked nor bounded. With `maxDepth: Infinity`,
 stack depth grows with the input's depth.
