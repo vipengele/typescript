@@ -6,12 +6,14 @@ import {
   type Level,
   normalizeAttributes,
   type SerializedError,
+  type SerializeErrorOptions,
   serializeError,
+  toJsonSafe,
 } from "@vipengele/ts-core-common";
 import { type Resource, Scope, snapshot } from "@vipengele/ts-core-common/scope";
 import type { RedactionPolicy } from "@vipengele/ts-core-redaction";
 import { type RedactionSetting, redactAttributes, redactError } from "../redaction";
-import type { ErrorEvent, ExceptionRecord, Mechanism } from "./event";
+import type { ErrorEvent, ExceptionRecord, Mechanism, StackFrame } from "./event";
 import { createEventId } from "./event-id";
 import { markInApp } from "./stack/in-app";
 import { parseStack } from "./stack/parse-stack";
@@ -41,7 +43,16 @@ export interface Pipeline {
   readonly projectRoot?: string | undefined;
   /** Applied to every event between enrichment and the processors; no event is redacted when it is `null` or absent. */
   readonly redaction?: RedactionSetting | undefined;
+  /**
+   * The bounds every event is cut to: attributes and the exception chain through
+   * `normalizeAttributes` and `serializeError`, `message` at `maxStringLength`, each link's
+   * `frames` at `maxBreadth`. An absent option, or an absent object, takes `serializeError`'s default.
+   */
+  readonly limits?: Readonly<SerializeErrorOptions> | undefined;
 }
+
+/** `serializeError`'s default `maxBreadth`, which `frames` take when no `maxBreadth` is set. */
+const DEFAULT_MAX_BREADTH = 100;
 
 /** An event after normalization, before enrichment: the payload a caller handed over, and nothing else. */
 type NormalizedPayload = Pick<ErrorEvent, "message" | "exception">;
@@ -52,23 +63,36 @@ function toLevel(level: unknown): Level {
 }
 
 /** Lifts a serialized error to an {@link ExceptionRecord}, giving every link of its `cause`/`errors` chain its own `frames`. */
-function toExceptionRecord(serialized: SerializedError, projectRoot: string | undefined): ExceptionRecord {
+function toExceptionRecord(serialized: SerializedError, pipeline: Pipeline): ExceptionRecord {
   const { cause, errors, ...rest } = serialized;
-  const record: ExceptionRecord = { ...rest, frames: markInApp(parseStack(serialized.stack), projectRoot) };
+  const record: ExceptionRecord = { ...rest, frames: markInApp(boundFrames(parseStack(serialized.stack), pipeline), pipeline.projectRoot) };
   if (cause !== undefined) {
-    record.cause = toExceptionRecord(cause, projectRoot);
+    record.cause = toExceptionRecord(cause, pipeline);
   }
   if (errors !== undefined) {
-    record.errors = errors.map((link) => toExceptionRecord(link, projectRoot));
+    record.errors = errors.map((link) => toExceptionRecord(link, pipeline));
   }
   return record;
 }
 
-/** Stage 1: the caller's thrown value or message, in the Error Event's shape. */
+/**
+ * The first `maxBreadth` frames, the throw site first, with no marker for the rest: a frame list
+ * is read as frames, and a marker entry would be one more frame to a consumer.
+ */
+function boundFrames(frames: StackFrame[], pipeline: Pipeline): StackFrame[] {
+  const maxBreadth = pipeline.limits?.maxBreadth ?? DEFAULT_MAX_BREADTH;
+  return frames.length > maxBreadth ? frames.slice(0, maxBreadth) : frames;
+}
+
+/**
+ * Stage 1: the caller's thrown value or message, in the Error Event's shape. A message longer than
+ * `maxStringLength` is cut and suffixed by the same engine, and with the same `"…[truncated]"`
+ * marker, as every string inside the attributes and the exception chain.
+ */
 function normalize(input: CaptureInput, pipeline: Pipeline): NormalizedPayload {
   return input.kind === "exception"
-    ? { exception: toExceptionRecord(serializeError(input.error), pipeline.projectRoot) }
-    : { message: input.message };
+    ? { exception: toExceptionRecord(serializeError(input.error, pipeline.limits), pipeline) }
+    : { message: toJsonSafe(input.message, { maxStringLength: pipeline.limits?.maxStringLength }) as string };
 }
 
 /**
@@ -76,9 +100,9 @@ function normalize(input: CaptureInput, pipeline: Pipeline): NormalizedPayload {
  * reading or normalizing them yields an empty record, so the event still goes out with the call's
  * own attributes instead of being dropped.
  */
-function scopeAttributes(): Attributes {
+function scopeAttributes(pipeline: Pipeline): Attributes {
   try {
-    return normalizeAttributes(snapshot(Scope.current()));
+    return normalizeAttributes(snapshot(Scope.current()), pipeline.limits);
   } catch {
     return {};
   }
@@ -121,7 +145,7 @@ function enrich(payload: NormalizedPayload, input: CaptureInput, mechanism: Mech
     level: toLevel(input.level),
     ...payload,
     mechanism,
-    attributes: mergeAttributes(scopeAttributes(), normalizeAttributes(input.attributes ?? {})),
+    attributes: mergeAttributes(scopeAttributes(pipeline), normalizeAttributes(input.attributes ?? {}, pipeline.limits)),
   };
 }
 
