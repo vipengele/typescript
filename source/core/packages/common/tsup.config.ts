@@ -11,6 +11,7 @@ export default defineConfig({
     "src/scope/index.ts",
     "src/runtime/index.ts",
     "src/locale/index.ts",
+    "src/testing/index.ts",
   ],
   format: ["esm"],
   target: "es2022",

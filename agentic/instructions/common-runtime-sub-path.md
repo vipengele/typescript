@@ -11,7 +11,8 @@ values with ISO 8601 parse and format, arithmetic, `now()`, locale-aware `format
 `ZoneId`, a named time zone with `offsetSecondsAt`; `ZonedDateTime`, a date and time of day in a
 zone, built by `LocalDateTime#atZone`, `LocalDate#atStartOfDay` and `Instant#atZone`, with a
 `disambiguation` option for a skipped or repeated local time and a `ZoneResolutionError` for
-`reject`), `./locale`, `./context`, `./attributes`, `./serialization`, `./scope` and `./runtime`. `./runtime` holds
+`reject`), `./locale`, `./context`, `./attributes`, `./serialization`, `./scope`, `./testing` (`createManualTime`, a virtual clock and scheduler on one timeline) and `./runtime`. `Scheduler` and
+`systemScheduler` are exported from the package root next to `Clock`. `./runtime` holds
 `detectRuntime` (`browser`, `worker`, `node`, `deno`, `bun`, `edge` or `unknown`) and
 `detectCapability` (`consoleStyling`, `ansiColour`, `asyncContext`, `sendBeacon`,
 `processExitHooks`). Ask it before reaching for `window`, `process` or another global directly. The

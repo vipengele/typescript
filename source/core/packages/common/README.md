@@ -641,3 +641,50 @@ import { type Clock, systemClock } from "@vipengele/ts-core-common";
 systemClock(); // e.g. 1704067200000.4
 const fixed: Clock = () => 0; // a stand-in for a test
 ```
+
+## Scheduler
+
+`Scheduler` is a source of delays: code that waits takes one instead of calling `setTimeout`
+directly, so a caller can substitute a scheduler it controls. `systemScheduler` is the default,
+backed by `setTimeout`. Both are exported from the package root.
+
+`sleep(ms, signal?)` resolves after `ms` milliseconds. An aborted `signal` rejects the promise with
+`signal.reason` and cancels the wait; a signal that is already aborted rejects without starting a
+timer. A negative or non-finite `ms` rejects with a `RangeError`.
+
+```ts
+import { type Scheduler, systemScheduler } from "@vipengele/ts-core-common";
+
+async function poll(scheduler: Scheduler = systemScheduler, signal?: AbortSignal) {
+  await scheduler.sleep(500, signal);
+}
+```
+
+## `./testing`
+
+`createManualTime(startMs?)` returns a virtual `Clock` and `Scheduler` over one timeline that moves
+only when `advance` is called. `startMs` is the starting epoch time (default `0`) and must be
+finite, or it throws a `RangeError`.
+
+```ts
+import { createManualTime } from "@vipengele/ts-core-common/testing";
+
+const { clock, scheduler, advance, pendingSleeps } = createManualTime(1_000);
+```
+
+- `clock()` returns the current virtual time.
+- `scheduler.sleep(ms, signal?)` follows the `Scheduler` contract above: a sleep registered at
+  virtual time `t` fires once an `advance` reaches `t + ms`.
+- `advance(ms)` moves virtual time forward by `ms`, firing every sleep due at or before the target,
+  earliest first and ties in registration order. Inside a fired sleep's continuation `clock()`
+  returns that sleep's deadline; once the last firing has drained, time settles at the target. A
+  sleep a continuation registers inside the window fires in the same call.
+- `pendingSleeps` counts the sleeps registered and neither fired nor aborted.
+
+`advance` rejects with a `RangeError` for a negative or non-finite `ms`, and with a `TypeError` when
+another `advance` is still in flight, including one called from a fired continuation.
+
+Manual time patches no globals. After each firing `advance` waits for one real `setTimeout(0)` so
+the continuation's microtasks run before the next deadline is checked. It replaces
+`vi.useFakeTimers()` rather than composing with it: under fake timers that hop never fires and
+`advance` never settles.

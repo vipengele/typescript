@@ -64,6 +64,10 @@
       "types": "./dist/locale/index.d.ts",
       "default": "./dist/locale/index.js"
     },
+    "./testing": {
+      "types": "./dist/testing/index.d.ts",
+      "default": "./dist/testing/index.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
