@@ -589,8 +589,8 @@ the chain. Each option defaults when omitted, and omitting `options` gives all t
 
 | Option            | Default | Effect                                                                                       |
 | ----------------- | ------- | -------------------------------------------------------------------------------------------- |
-| `maxDepth`        | 6       | Levels of nesting kept in `data`, the `data` record itself counting as the first level.      |
-| `maxBreadth`      | 100     | Entries kept per object or array in `data`; the rest are summarised by one marker.           |
+| `maxDepth`        | 6       | Levels of nesting kept in `data` and in a thrown value's JSON `message`; the root counts as the first level. |
+| `maxBreadth`      | 100     | Entries kept per object or array in `data` and in a thrown value's JSON `message`; the rest are summarised by one marker. |
 | `maxStringLength` | 8192    | Characters kept per string: `message`, `stack`, and strings in `data`.                       |
 | `maxLinks`        | 5       | Links followed from the outermost error, through `cause` or into `errors`.                   |
 | `maxErrors`       | 100     | Entries of one `errors` array serialized; one `"[Truncated]"` entry summarises the rest.     |
