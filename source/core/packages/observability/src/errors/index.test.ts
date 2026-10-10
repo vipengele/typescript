@@ -30,6 +30,13 @@ test("the entry point exports the reporter, the built-in transports and the buil
   expect(entry.ReporterBuilder).toBeTypeOf("function");
 });
 
+test("the entry point exports the reporter's config error and its guard", () => {
+  const error = new entry.ReporterConfigError("nope");
+
+  expect(error.code).toBe("observability.errors.config");
+  expect(entry.isReporterConfigError(error)).toBe(true);
+});
+
 test("the entry point re-exports the shared Scope, not its internal snapshot", () => {
   expect(entry.Scope).toBe(Scope);
   expect(entry.Scope.setResource).toBeTypeOf("function");

@@ -14,6 +14,7 @@ export type {
   GlobalRejectionEventLike,
 } from "./integrations/global-handlers";
 export { createReporter } from "./reporter";
+export { isReporterConfigError, ReporterConfigError } from "./reporter-config-error";
 export type { CaptureContext, Reporter } from "./reporter";
 export type { Transport } from "./transport";
 export { createConsoleTransport } from "./transports/console-transport";
