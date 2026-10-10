@@ -251,10 +251,18 @@ LocalTime.parseLocalized("3:30 PM", us).toString(); // "15:30"
 LocalDateTime.ofFields(2024, 3, 9, 15, 30).format(us); // "03/09/2024, 03:30 PM"
 ```
 
-A time or date-time is localized to hour and minute only, so parsing one gives second and
-nanosecond `0`. The locale's hour cycle is honoured: a 12-hour locale prints a day-period marker
-and a 24-hour one never prints hour 24. The pattern is derived from `Intl`, with the Gregorian
-calendar and ASCII digits forced.
+A date-time is localized to hour and minute only, and so is a time unless `{ seconds: true }` is
+passed to `LocalTime#format`, `parseLocalized`, `tryParseLocalized` or `segments`, so parsing gives
+nanosecond `0` and, without the option, second `0`. With the option, a string without a second is
+rejected, and without it a string with one is. The locale's hour cycle is honoured: a
+12-hour locale prints a day-period marker and a 24-hour one never prints hour 24. The pattern is
+derived from `Intl`, with the Gregorian calendar and ASCII digits forced.
+
+```ts
+time.format(de, { seconds: true }); // "15:30:00"
+LocalTime.parseLocalized("3:30:15 PM", us, { seconds: true }).toString(); // "15:30:15"
+LocalTime.tryParseLocalized("3:30 PM", us, { seconds: true }); // { success: false }
+```
 
 **Segments** — `LocalDate#segments(locale?)` returns the date pattern as `DateSegment[]`, each a
 `{ type: "year" | "month" | "day" | "literal", value }`, for a date input that lays out its own
@@ -267,8 +275,24 @@ date.segments(us);
 //     { type: "year", value: "2024" }]
 ```
 
-`DateSegment`, `DateSegmentType`, `DateTimeTryParseResult` and `IsoDayOfWeek` are exported
-alongside the values.
+`LocalTime#segments(locale?, options?)` does the same for a time as `TimeSegment[]`, each a
+`{ type: "hour" | "minute" | "second" | "dayPeriod" | "literal", value }`; `second` appears with
+`{ seconds: true }` and `dayPeriod` only on a 12-hour locale. The hour is `01`-`12` on a 12-hour
+clock and `00`-`23` on a 24-hour one, empty literals are omitted, and the values joined equal
+`format()`. The space before the day period is the locale's own.
+
+```ts
+time.segments(us).map((s) => s.type);
+// => ["hour", "literal", "minute", "literal", "dayPeriod"]
+time.segments(de, { seconds: true }).map((s) => s.value);
+// => ["15", ":", "30", ":", "00"]
+```
+
+`LocalTime.dayPeriods(locale?)` returns the locale's `{ am, pm }` labels, for a picker that lists
+them; a 24-hour locale still returns its 12-hour labels.
+
+`DateSegment`, `DateSegmentType`, `TimeSegment`, `TimeSegmentType`, `DateTimeTryParseResult` and
+`IsoDayOfWeek` are exported alongside the values.
 
 ### `ZoneId`
 
