@@ -21,8 +21,9 @@ export interface ReporterSettings {
    */
   readonly redaction: RedactionSetting;
   /**
-   * The bounds applied when an event's exception chain is serialized. Only the options a
-   * `limits` call set are present; an absent one takes `serializeError`'s default.
+   * The bounds every event is cut to: its attributes, `message`, exception chain and each link's
+   * `frames`. Only the options a `limits` call set are present; an absent one takes
+   * `serializeError`'s default.
    */
   readonly limits: Readonly<SerializeErrorOptions>;
 }
