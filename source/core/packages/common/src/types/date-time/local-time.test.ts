@@ -381,3 +381,251 @@ describe("LocalTime.parseLocalized and tryParseLocalized", () => {
     expect(LocalTime.parse("13:30").equals(LocalTime.of(13, 30))).toBe(true);
   });
 });
+
+describe("LocalTime with seconds", () => {
+  const SECONDS = { seconds: true };
+  const TAGS = ["en-US", "de-DE", "ko-KR", "ar-EG", "ja-JP-u-hc-h12", "en-US-u-hc-h23"];
+
+  test.for([
+    ["en-US", "01:30:45 PM"],
+    ["de-DE", "13:30:45"],
+    ["ko-KR", "오후 01:30:45"],
+    ["ja-JP-u-hc-h12", "午後01:30:45"],
+    ["en-US-u-hc-h23", "13:30:45"],
+  ] as const)("writes 13:30:45 in %s as %s", ([tag, expected]) => {
+    expect(spaced(LocalTime.of(13, 30, 45).format(new Locale(tag), SECONDS))).toBe(expected);
+  });
+
+  test("writes second 0 when the time has none, and never the nanosecond", () => {
+    const locale = new Locale("de-DE");
+
+    expect(LocalTime.of(13, 30).format(locale, SECONDS)).toBe("13:30:00");
+    expect(LocalTime.of(13, 30, 5, 999_999_999).format(locale, SECONDS)).toBe("13:30:05");
+  });
+
+  test.for(TAGS.flatMap((tag) => ["00:00:00", "01:05:09", "12:00:30", "13:30:45", "23:59:59"].map((iso) => [tag, iso] as const)))(
+    "round-trips %s through format in %s",
+    ([tag, iso]) => {
+      const locale = new Locale(tag);
+      const formatted = LocalTime.parse(iso).format(locale, SECONDS);
+
+      const time = LocalTime.parse(iso);
+
+      expect(LocalTime.parseLocalized(formatted, locale, SECONDS).equals(time)).toBe(true);
+      expect(LocalTime.tryParseLocalized(formatted, locale, SECONDS).value?.equals(time)).toBe(true);
+    },
+  );
+
+  test("reads back the nanosecond as zero", () => {
+    const locale = new Locale("en-US");
+    const value = LocalTime.parseLocalized("01:30:45 PM", locale, SECONDS);
+
+    expect([value.hour, value.minute, value.second, value.nanosecond]).toEqual([13, 30, 45, 0]);
+  });
+
+  test.for([
+    ["en-US", "01:30 PM"],
+    ["de-DE", "13:30"],
+    ["de-DE", "13:30:60"],
+    ["de-DE", "13:30:5"],
+  ] as const)("rejects %s %o when seconds are on", ([tag, str]) => {
+    const locale = new Locale(tag);
+
+    expect(LocalTime.tryParseLocalized(str, locale, SECONDS)).toEqual({ success: false });
+    expect(() => LocalTime.parseLocalized(str, locale, SECONDS)).toThrow(DateTimeParseError);
+  });
+
+  test.for([
+    ["en-US", "01:30:45 PM"],
+    ["de-DE", "13:30:45"],
+  ] as const)("rejects %s %o when seconds are off", ([tag, str]) => {
+    const locale = new Locale(tag);
+
+    expect(LocalTime.tryParseLocalized(str, locale, { seconds: false })).toEqual({ success: false });
+    expect(() => LocalTime.parseLocalized(str, locale)).toThrow(DateTimeParseError);
+  });
+
+  test("an omitted locale reads and writes in Locale.default()", () => {
+    const spy = vi.spyOn(Locale, "default").mockReturnValue(new Locale("de-DE"));
+
+    try {
+      expect(LocalTime.of(13, 30, 45).format(undefined, SECONDS)).toBe("13:30:45");
+      expect(LocalTime.parseLocalized("13:30:45", undefined, SECONDS).equals(LocalTime.of(13, 30, 45))).toBe(true);
+      expect(LocalTime.tryParseLocalized("13:30:45", undefined, SECONDS).value?.equals(LocalTime.of(13, 30, 45))).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
+describe("LocalTime#segments", () => {
+  /** The space `Intl` writes before en-US's day period: U+202F in Node's ICU, a regular space in Chromium's. */
+  const enUSSpace = new Intl.DateTimeFormat("en-US", { hour: "2-digit", minute: "2-digit", hourCycle: "h12", timeZone: "UTC" })
+    .formatToParts(0)
+    .find((part) => part.type === "literal" && part.value !== ":")?.value;
+
+  test("splits en-US's 12-hour clock into hour, minute and day period, keeping Intl's space", () => {
+    expect(LocalTime.of(13, 30).segments(new Locale("en-US"))).toEqual([
+      { type: "hour", value: "01" },
+      { type: "literal", value: ":" },
+      { type: "minute", value: "30" },
+      { type: "literal", value: enUSSpace },
+      { type: "dayPeriod", value: "PM" },
+    ]);
+  });
+
+  test.runIf(enUSSpace === "\u202f")("keeps U+202F before en-US's day period where Intl writes it", () => {
+    expect(LocalTime.of(13, 30).segments(new Locale("en-US"))[3]).toEqual({ type: "literal", value: "\u202f" });
+  });
+
+  test("writes no day period on a 24-hour clock", () => {
+    expect(LocalTime.of(13, 30).segments(new Locale("de-DE"))).toEqual([
+      { type: "hour", value: "13" },
+      { type: "literal", value: ":" },
+      { type: "minute", value: "30" },
+    ]);
+  });
+
+  test("ko-KR writes the day period first", () => {
+    expect(LocalTime.of(9, 5).segments(new Locale("ko-KR"))).toEqual([
+      { type: "dayPeriod", value: "오전" },
+      { type: "literal", value: " " },
+      { type: "hour", value: "09" },
+      { type: "literal", value: ":" },
+      { type: "minute", value: "05" },
+    ]);
+  });
+
+  test("ja-JP-u-hc-h12 writes the day period straight before the hour, with no empty literal", () => {
+    expect(LocalTime.of(13, 30).segments(new Locale("ja-JP-u-hc-h12"))).toEqual([
+      { type: "dayPeriod", value: "午後" },
+      { type: "hour", value: "01" },
+      { type: "literal", value: ":" },
+      { type: "minute", value: "30" },
+    ]);
+  });
+
+  test("plain ja-JP is a 24-hour clock with no day period", () => {
+    expect(LocalTime.of(13, 30).segments(new Locale("ja-JP"))).toEqual([
+      { type: "hour", value: "13" },
+      { type: "literal", value: ":" },
+      { type: "minute", value: "30" },
+    ]);
+  });
+
+  test.for([
+    ["00:00", "12", "AM", "00"],
+    ["12:00", "12", "PM", "12"],
+  ] as const)("writes %s as hour %s %s on a 12-hour clock and hour %s on a 24-hour one", ([iso, twelve, period, twentyFour]) => {
+    const time = LocalTime.parse(iso);
+    const segmentValue = (locale: Locale, type: string) => time.segments(locale).find((segment) => segment.type === type)?.value;
+
+    expect(segmentValue(new Locale("en-US"), "hour")).toBe(twelve);
+    expect(segmentValue(new Locale("en-US"), "dayPeriod")).toBe(period);
+    expect(segmentValue(new Locale("en-GB"), "hour")).toBe(twentyFour);
+    expect(segmentValue(new Locale("en-GB"), "dayPeriod")).toBeUndefined();
+  });
+
+  test("writes the second only with options.seconds", () => {
+    const time = LocalTime.of(13, 30, 45, 999_999_999);
+    const locale = new Locale("en-US");
+
+    expect(time.segments(locale, { seconds: true })).toEqual([
+      { type: "hour", value: "01" },
+      { type: "literal", value: ":" },
+      { type: "minute", value: "30" },
+      { type: "literal", value: ":" },
+      { type: "second", value: "45" },
+      { type: "literal", value: enUSSpace },
+      { type: "dayPeriod", value: "PM" },
+    ]);
+    expect(time.segments(locale).map((segment) => segment.type)).toEqual(["hour", "literal", "minute", "literal", "dayPeriod"]);
+  });
+
+  test.for(["en-US", "de-DE", "ja-JP", "ko-KR", "ar-EG", "he-IL", "ja-JP-u-hc-h12", "en-US-u-hc-h24"])(
+    "joins to format's output in %s",
+    (tag) => {
+      const locale = new Locale(tag);
+
+      for (const time of [LocalTime.of(0, 0), LocalTime.of(12, 0, 30), LocalTime.of(23, 59, 59)]) {
+        for (const options of [{}, { seconds: true }]) {
+          expect(
+            time
+              .segments(locale, options)
+              .map((segment) => segment.value)
+              .join(""),
+          ).toBe(time.format(locale, options));
+        }
+      }
+    },
+  );
+
+  test("an omitted locale writes in Locale.default()", () => {
+    const spy = vi.spyOn(Locale, "default").mockReturnValue(new Locale("de-DE"));
+
+    try {
+      expect(LocalTime.of(13, 30).segments()).toEqual(LocalTime.of(13, 30).segments(new Locale("de-DE")));
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
+describe("LocalTime.dayPeriods", () => {
+  test.for([
+    ["en-US", "AM", "PM"],
+    ["ko-KR", "오전", "오후"],
+    ["ja-JP-u-hc-h12", "午前", "午後"],
+  ] as const)("reads %s's markers as %s and %s", ([tag, am, pm]) => {
+    expect(LocalTime.dayPeriods(new Locale(tag))).toEqual({ am, pm });
+  });
+
+  test("matches the dayPeriod segment of a morning and an afternoon time", () => {
+    const locale = new Locale("ko-KR");
+    const dayPeriodOf = (time: LocalTime) => time.segments(locale).find((segment) => segment.type === "dayPeriod")?.value;
+
+    expect(LocalTime.dayPeriods(locale)).toEqual({ am: dayPeriodOf(LocalTime.of(0, 0)), pm: dayPeriodOf(LocalTime.of(12, 0)) });
+  });
+
+  test("returns a 24-hour locale's 12-hour markers", () => {
+    expect(LocalTime.dayPeriods(new Locale("de-DE"))).toEqual({ am: "AM", pm: "PM" });
+    expect(LocalTime.dayPeriods(new Locale("ja-JP"))).toEqual({ am: "午前", pm: "午後" });
+    expect(LocalTime.dayPeriods(new Locale("en-US-u-hc-h23"))).toEqual({ am: "AM", pm: "PM" });
+  });
+
+  test("reads the same cached pattern as segments, building no formatter of its own", () => {
+    const locale = new Locale("en-AU");
+    expect(locale.uses24Hour).toBe(false);
+    const spy = vi.spyOn(Intl, "DateTimeFormat");
+
+    try {
+      const segments = LocalTime.of(13, 30).segments(locale);
+      const built = spy.mock.calls.length;
+      const periods = LocalTime.dayPeriods(locale);
+
+      expect(built).toBeGreaterThan(0);
+      expect(spy.mock.calls.length).toBe(built);
+      expect(segments.at(-1)).toEqual({ type: "dayPeriod", value: periods.pm });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test("returns a fresh object, leaving the cached pattern untouched", () => {
+    const locale = new Locale("en-US");
+    const periods = LocalTime.dayPeriods(locale);
+    periods.am = "changed";
+
+    expect(LocalTime.dayPeriods(locale)).toEqual({ am: "AM", pm: "PM" });
+  });
+
+  test("an omitted locale reads Locale.default()", () => {
+    const spy = vi.spyOn(Locale, "default").mockReturnValue(new Locale("ko-KR"));
+
+    try {
+      expect(LocalTime.dayPeriods()).toEqual({ am: "오전", pm: "오후" });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});

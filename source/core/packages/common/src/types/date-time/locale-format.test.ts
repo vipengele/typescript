@@ -15,6 +15,7 @@ import {
   resolveTimePattern,
   stripBidiMarks,
   type Token,
+  timeSegments,
 } from "./locale-format";
 
 const enUS = new Locale("en-US");
@@ -466,6 +467,85 @@ describe("formatTime", () => {
   );
 });
 
+describe("timeSegments", () => {
+  test("lays out en-US's 12-hour clock with the day period last", () => {
+    expect(timeSegments({ hour: 13, minute: 5 }, enUS)).toEqual([
+      { type: "hour", value: "01" },
+      { type: "literal", value: ":" },
+      { type: "minute", value: "05" },
+      { type: "literal", value: resolveTimePattern(enUS).literals[2] },
+      { type: "dayPeriod", value: "PM" },
+    ]);
+  });
+
+  /** The space `Intl` writes before en-US's day period: U+202F in Node's ICU, a regular space in Chromium's. */
+  const enUSSpace = new Intl.DateTimeFormat("en-US", { hour: "2-digit", minute: "2-digit", hourCycle: "h12", timeZone: "UTC" })
+    .formatToParts(0)
+    .find((part) => part.type === "literal" && part.value !== ":")?.value;
+
+  test("keeps the space character Intl writes before en-US's day period", () => {
+    expect(timeSegments({ hour: 9, minute: 0 }, enUS)[3]).toEqual({ type: "literal", value: enUSSpace });
+  });
+
+  test.runIf(enUSSpace === "\u202f")("keeps U+202F before en-US's day period where Intl writes it", () => {
+    expect(timeSegments({ hour: 9, minute: 0 }, enUS)[3]).toEqual({ type: "literal", value: "\u202f" });
+  });
+
+  test("on a 12-hour locale, reads the same cached pattern a forced 12-hour cycle resolves", () => {
+    expect(resolveTimePattern(enUS, { hourCycle: "h12" })).toBe(resolveTimePattern(enUS));
+    expect(resolveTimePattern(deDE, { hourCycle: "h12" })).not.toBe(resolveTimePattern(deDE));
+  });
+
+  test("writes no day period on a 24-hour clock", () => {
+    expect(timeSegments({ hour: 13, minute: 5 }, deDE)).toEqual([
+      { type: "hour", value: "13" },
+      { type: "literal", value: ":" },
+      { type: "minute", value: "05" },
+    ]);
+  });
+
+  test("writes the second only with seconds", () => {
+    expect(timeSegments({ hour: 13, minute: 5, second: 9 }, deDE, { seconds: true })).toEqual([
+      { type: "hour", value: "13" },
+      { type: "literal", value: ":" },
+      { type: "minute", value: "05" },
+      { type: "literal", value: ":" },
+      { type: "second", value: "09" },
+    ]);
+    expect(timeSegments({ hour: 13, minute: 5 }, deDE, { seconds: true }).at(-1)).toEqual({ type: "second", value: "00" });
+    expect(timeSegments({ hour: 13, minute: 5, second: 9 }, deDE).map((segment) => segment.type)).not.toContain("second");
+  });
+
+  test("omits the empty literal between ja-JP's day period and hour", () => {
+    expect(timeSegments({ hour: 13, minute: 5 }, new Locale("ja-JP-u-hc-h12"))).toEqual([
+      { type: "dayPeriod", value: "午後" },
+      { type: "hour", value: "01" },
+      { type: "literal", value: ":" },
+      { type: "minute", value: "05" },
+    ]);
+  });
+
+  test.for(["en-US", "de-DE", "ja-JP", "ar-EG", "he-IL", "ko-KR", "ja-JP-u-hc-h12", "en-US-u-hc-h23"])(
+    "joins to formatTime's output in %s, with and without seconds",
+    (tag) => {
+      const locale = new Locale(tag);
+
+      for (const time of [
+        { hour: 0, minute: 0, second: 0 },
+        { hour: 12, minute: 30, second: 45 },
+        { hour: 23, minute: 59, second: 59 },
+      ]) {
+        for (const options of [{}, { seconds: true }]) {
+          const segments = timeSegments(time, locale, options);
+
+          expect(segments.map((segment) => segment.value).join("")).toBe(formatTime(time, locale, options));
+          expect(segments.every((segment) => segment.value !== "")).toBe(true);
+        }
+      }
+    },
+  );
+});
+
 describe("parseTime", () => {
   test.for([
     ["12:00 AM", 0, 0],
@@ -557,6 +637,143 @@ describe("parseTime", () => {
     ["01: 05 PM", "whitespace inside the time"],
   ])("rejects %o, %s, in en-US", ([str]) => {
     expect(parseTime(str as string, enUS)).toBeUndefined();
+  });
+});
+
+describe("time patterns with seconds", () => {
+  const jaJP12 = new Locale("ja-JP-u-hc-h12");
+  const seconds = { seconds: true };
+
+  test("en-US places the second after the minute and before the day period", () => {
+    const { twelveHour, fields, literals } = resolveTimePattern(enUS, seconds);
+
+    expect(twelveHour).toBe(true);
+    expect(fields).toEqual(["hour", "minute", "second", "dayPeriod"]);
+    expect(literals.map(spaced)).toEqual(["", ":", ":", " ", ""]);
+  });
+
+  test("de-DE places the second after the minute on a 24-hour clock", () => {
+    expect(resolveTimePattern(deDE, seconds)).toEqual({
+      twelveHour: false,
+      fields: ["hour", "minute", "second"],
+      literals: ["", ":", ":", ""],
+      am: "",
+      pm: "",
+    });
+  });
+
+  test("a pattern with seconds is cached apart from the one without", () => {
+    expect(resolveTimePattern(enUS, seconds)).not.toBe(resolveTimePattern(enUS));
+    expect(resolveTimePattern(new Locale("en-us"), seconds)).toBe(resolveTimePattern(enUS, seconds));
+  });
+
+  test("a forced hour cycle overrides the locale's own", () => {
+    const { twelveHour, fields, am, pm } = resolveTimePattern(deDE, { hourCycle: "h12" });
+
+    expect(twelveHour).toBe(true);
+    expect(fields).toContain("dayPeriod");
+    expect([am, pm]).toEqual(["AM", "PM"]);
+    expect(resolveTimePattern(enUS, { hourCycle: "h23" })).toEqual(resolveTimePattern(enUS24));
+    expect(resolveTimePattern(deDE, { hourCycle: "h23" })).toBe(resolveTimePattern(deDE));
+  });
+
+  test("a forced 12-hour cycle reads the day periods of a 24-hour tag override", () => {
+    const { twelveHour, am, pm } = resolveTimePattern(enUS24, { hourCycle: "h12", seconds: true });
+
+    expect(twelveHour).toBe(true);
+    expect([am, pm]).toEqual(["AM", "PM"]);
+  });
+
+  test.for(["en-US", "de-DE", "ko-KR", "ar-EG", "ja-JP-u-hc-h12", "en-US-u-hc-h23", "en-US-u-hc-h24", "en-GB-u-hc-h12"])(
+    "formatTime matches Intl's own spelling with seconds in %s",
+    (tag) => {
+      const locale = new Locale(tag);
+      const hourCycle = locale.uses24Hour ? "h23" : "h12";
+
+      for (const [hour, minute, second] of [
+        [0, 30, 0],
+        [9, 5, 7],
+        [12, 0, 59],
+        [23, 59, 30],
+      ] as const) {
+        expect(formatTime({ hour, minute, second }, locale, seconds)).toBe(
+          intlParts(tag, { hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle }, Date.UTC(2026, 1, 3, hour, minute, second)),
+        );
+      }
+    },
+  );
+
+  test("formatTime writes an absent second as 00", () => {
+    expect(formatTime({ hour: 13, minute: 5 }, deDE, seconds)).toBe("13:05:00");
+  });
+
+  test("formatTime leaves the second out unless asked for it", () => {
+    expect(formatTime({ hour: 13, minute: 5, second: 9 }, deDE)).toBe("13:05");
+    expect(formatTime({ hour: 13, minute: 5, second: 9 }, deDE, { seconds: false })).toBe("13:05");
+  });
+
+  test.for([
+    ["01:05:09 PM", "en-US", 13, 5, 9],
+    ["12:00:00 AM", "en-US", 0, 0, 0],
+    ["1:05:09 pm", "en-US", 13, 5, 9],
+    ["13:05:09", "de-DE", 13, 5, 9],
+    ["00:00:00", "de-DE", 0, 0, 0],
+    ["오후 01:05:09", "ko-KR", 13, 5, 9],
+    ["오전 12:05:09", "ko-KR", 0, 5, 9],
+    ["01:05:09 م", "ar-EG", 13, 5, 9],
+    ["‏01:05:09‏ ص", "ar-EG", 1, 5, 9],
+    ["午後01:05:09", "ja-JP-u-hc-h12", 13, 5, 9],
+    ["午前12:00:30", "ja-JP-u-hc-h12", 0, 0, 30],
+    ["13:05:09", "en-US-u-hc-h23", 13, 5, 9],
+    ["00:05:09", "en-US-u-hc-h24", 0, 5, 9],
+  ] as const)("parseTime reads %o in %s as %d:%d:%d", ([str, tag, hour, minute, second]) => {
+    expect(parseTime(str, new Locale(tag), seconds)).toEqual({ hour, minute, second });
+  });
+
+  test("parseTime reads what formatTime writes with seconds", () => {
+    for (const locale of [enUS, deDE, koKR, arEG, jaJP12, enUS24]) {
+      const time = { hour: 21, minute: 4, second: 58 };
+
+      expect(parseTime(formatTime(time, locale, seconds), locale, seconds)).toEqual(time);
+    }
+  });
+
+  test("parseTime leaves the second unchecked", () => {
+    expect(parseTime("13:05:60", deDE, seconds)).toEqual({ hour: 13, minute: 5, second: 60 });
+  });
+
+  test.for([
+    ["01:05 PM", "en-US", "a missing second"],
+    ["13:05", "de-DE", "a missing second"],
+    ["오후 01:05", "ko-KR", "a missing second"],
+    ["01:05 م", "ar-EG", "a missing second"],
+    ["午後01:05", "ja-JP-u-hc-h12", "a missing second"],
+    ["13:05", "en-US-u-hc-h23", "a missing second"],
+    ["01:05:9 PM", "en-US", "a one-digit second"],
+    ["01:05:009 PM", "en-US", "a three-digit second"],
+    ["13:05:09 PM", "en-US", "hour 13 on a 12-hour clock"],
+    ["00:05:09 AM", "en-US", "hour 0 on a 12-hour clock"],
+    ["01:05:09", "en-US", "a missing day period"],
+    ["01:05:09 PM", "de-DE", "a day period on a 24-hour clock"],
+  ] as const)("parseTime with seconds rejects %o in %s, %s", ([str, tag]) => {
+    expect(parseTime(str, new Locale(tag), seconds)).toBeUndefined();
+  });
+
+  test.for([
+    ["01:05:09 PM", "en-US"],
+    ["13:05:09", "de-DE"],
+    ["오후 01:05:09", "ko-KR"],
+    ["01:05:09 م", "ar-EG"],
+    ["午後01:05:09", "ja-JP-u-hc-h12"],
+    ["13:05:09", "en-US-u-hc-h23"],
+  ] as const)("parseTime without seconds rejects %o in %s", ([str, tag]) => {
+    expect(parseTime(str, new Locale(tag))).toBeUndefined();
+    expect(parseTime(str, new Locale(tag), { seconds: false })).toBeUndefined();
+  });
+
+  test("parseTime without seconds returns no second", () => {
+    expect(parseTime("13:05", deDE)).toStrictEqual({ hour: 13, minute: 5 });
+    expect(parseTime("01:05 PM", enUS, { seconds: false })).toStrictEqual({ hour: 13, minute: 5 });
   });
 });
 
