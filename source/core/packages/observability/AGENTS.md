@@ -37,6 +37,11 @@ Run commands from `source/core` (`pnpm build`, `pnpm type-check`, `pnpm test`, `
   `builder.redaction(policy | null)` (default `secretKeys`, `null` disables) to the merged
   `attributes`, `mechanism.data` and every link of the exception chain; never the event `message`,
   `stack` or `frames`. A throwing policy drops the event silently, as the logger drops a record.
+- `builder.limits({ maxDepth, maxBreadth, maxStringLength, maxLinks, maxErrors })` is validated at
+  the call (`ReporterConfigError`, builder left unchanged) and merges per option. The pipeline
+  passes it to `normalizeAttributes` and `serializeError`, cuts the event `message` at
+  `maxStringLength` and each link's `frames` at `maxBreadth` (default 100, throw site first, no
+  marker entry), so the limits also bound what redaction and processors see.
 - `Transport.send(event, resource)`: `eventResource()` reads `Scope.resource()` once per event at
   delivery inside a guard. A throw yields a Resource with all four keys `undefined` and the event
   still goes out — asymmetric with the logger, which drops the record, because an event is worth
