@@ -307,6 +307,17 @@ describe("the limits an event is cut to", () => {
     expect(frames[99]?.function).toBe("fn99");
   });
 
+  it("caps frames at the same default breadth that attributes are cut to", () => {
+    const { transport, reporter } = aReporter();
+
+    reporter.captureException(anErrorWithFrames(150), { attributes: { entries: Array.from({ length: 150 }, (_, index) => index) } });
+
+    const event = onlyEvent(transport.events);
+    const kept = (event.attributes.entries as unknown[]).length - 1;
+    expect(kept).toBeLessThan(150);
+    expect(event.exception?.frames).toHaveLength(kept);
+  });
+
   it("bounds the call's and the scope's attributes by the configured limits", () => {
     const { transport, reporter } = aLimitedReporter({ maxStringLength: 3 });
 
