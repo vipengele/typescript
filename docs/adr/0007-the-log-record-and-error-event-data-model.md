@@ -112,9 +112,13 @@ a snapshot, so a caller mutating its object afterwards cannot change what a late
 Sink sees, and a filtered-out record costs nothing. `toJSON()` is honoured, so a class decides its
 own logged shape; otherwise own enumerable properties are taken. `bigint`, `Map`, `Set`, `Date`,
 cycles, functions, symbols and nested errors are coerced, never thrown on, and depth (6), breadth
-(100) and string length (8 KiB) are bounded by builder-configurable limits, with truncation marked.
-Redaction runs at the same point, before any Sink. Every record a Sink receives is JSON-safe,
-bounded and redacted.
+(100) and string length (8192 UTF-16 code units) are bounded, with truncation marked. Only the
+Reporter's limits are builder-configurable: `ReporterBuilder.limits` takes `maxDepth`, `maxBreadth`,
+`maxStringLength`, `maxLinks` and `maxErrors`, each a positive integer or `Infinity`, and rejects
+anything else with a `ReporterConfigError` (ADR-0002). The Logger's limits are the defaults and have
+no builder option. The limits are per value; neither the Logger nor the Reporter caps a whole record
+or event, because wire limits belong to the Transport (ADR-0010). Redaction runs at the same point, before
+any Sink. Every record a Sink receives is JSON-safe, bounded and redacted.
 
 ## One error type for both
 
