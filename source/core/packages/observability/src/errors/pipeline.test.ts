@@ -1,8 +1,12 @@
+import type { SerializeErrorOptions } from "@vipengele/ts-core-common";
 import { type Resource, Scope } from "@vipengele/ts-core-common/scope";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ErrorEvent } from "./event";
 import { createReporter } from "./reporter";
 import { createTestTransport } from "./transports/test-transport";
+
+// biome-ignore lint/security/noSecrets: a fixed marker string, flagged only for its entropy
+const CUT = "…[truncated]";
 
 const RESOURCE_KEYS = ["service.name", "service.version", "deployment.environment.name", "process.runtime.name"];
 
@@ -223,5 +227,118 @@ describe("the Resource an event is sent with", () => {
       expect(resource[key as keyof Resource]).toBeUndefined();
     }
     expect(Object.isFrozen(resource)).toBe(true);
+  });
+});
+
+describe("the limits an event is cut to", () => {
+  function aLimitedReporter(limits: SerializeErrorOptions) {
+    const transport = createTestTransport();
+    return { transport, reporter: createReporter((b) => b.transport(transport).limits(limits)) };
+  }
+
+  function anErrorWithFrames(count: number, message = "boom"): Error {
+    const error = new Error(message);
+    const lines = Array.from({ length: count }, (_, index) => `    at fn${index} (/app/src/file.js:${index + 1}:1)`);
+    error.stack = [`Error: ${message}`, ...lines].join("\n");
+    return error;
+  }
+
+  it("cuts a message longer than maxStringLength and appends the truncation suffix", () => {
+    const { transport, reporter } = aLimitedReporter({ maxStringLength: 5 });
+
+    reporter.captureMessage("abcdefgh");
+
+    expect(onlyEvent(transport.events).message).toBe(`abcde${CUT}`);
+  });
+
+  it("keeps a message exactly maxStringLength long as it is", () => {
+    const { transport, reporter } = aLimitedReporter({ maxStringLength: 5 });
+
+    reporter.captureMessage("abcde");
+
+    expect(onlyEvent(transport.events).message).toBe("abcde");
+  });
+
+  it("keeps a message of 8192 code units and cuts one of 8193 when no maxStringLength is set", () => {
+    const { transport, reporter } = aReporter();
+
+    reporter.captureMessage("a".repeat(8192));
+    reporter.captureMessage("a".repeat(8193));
+
+    expect(transport.events[0]?.message).toBe("a".repeat(8192));
+    expect(transport.events[1]?.message).toBe(`${"a".repeat(8192)}${CUT}`);
+  });
+
+  it("keeps the first maxBreadth frames, the throw site first, with no marker for the rest", () => {
+    const { transport, reporter } = aLimitedReporter({ maxBreadth: 2 });
+
+    reporter.captureException(anErrorWithFrames(5));
+
+    expect(onlyEvent(transport.events).exception?.frames.map((frame) => frame.function)).toEqual(["fn0", "fn1"]);
+  });
+
+  it("keeps every frame when there are no more than maxBreadth", () => {
+    const { transport, reporter } = aLimitedReporter({ maxBreadth: 3 });
+
+    reporter.captureException(anErrorWithFrames(3));
+
+    expect(onlyEvent(transport.events).exception?.frames.map((frame) => frame.function)).toEqual(["fn0", "fn1", "fn2"]);
+  });
+
+  it("caps the frames of every link of the exception chain", () => {
+    const { transport, reporter } = aLimitedReporter({ maxBreadth: 1 });
+    const outer = anErrorWithFrames(4, "outer");
+    outer.cause = anErrorWithFrames(4, "inner");
+
+    reporter.captureException(outer);
+
+    const exception = onlyEvent(transport.events).exception;
+    expect(exception?.frames).toHaveLength(1);
+    expect(exception?.cause?.frames).toHaveLength(1);
+  });
+
+  it("keeps 100 frames and drops the rest when no maxBreadth is set", () => {
+    const { transport, reporter } = aReporter();
+
+    reporter.captureException(anErrorWithFrames(150));
+
+    const frames = onlyEvent(transport.events).exception?.frames ?? [];
+    expect(frames).toHaveLength(100);
+    expect(frames[99]?.function).toBe("fn99");
+  });
+
+  it("caps frames at the same default breadth that attributes are cut to", () => {
+    const { transport, reporter } = aReporter();
+
+    reporter.captureException(anErrorWithFrames(150), { attributes: { entries: Array.from({ length: 150 }, (_, index) => index) } });
+
+    const event = onlyEvent(transport.events);
+    const kept = (event.attributes.entries as unknown[]).length - 1;
+    expect(kept).toBeLessThan(150);
+    expect(event.exception?.frames).toHaveLength(kept);
+  });
+
+  it("bounds the call's and the scope's attributes by the configured limits", () => {
+    const { transport, reporter } = aLimitedReporter({ maxStringLength: 3 });
+
+    Scope.isolated("request", { scoped: "abcdef" }, () => {
+      reporter.captureMessage("m");
+    });
+    reporter.captureException(new Error("e"), { attributes: { called: "abcdef" } });
+
+    expect(transport.events[0]?.attributes.scoped).toBe(`abc${CUT}`);
+    expect(transport.events[1]?.attributes.called).toBe(`abc${CUT}`);
+  });
+
+  it("bounds the exception chain by the configured limits", () => {
+    const { transport, reporter } = aLimitedReporter({ maxLinks: 1, maxStringLength: 4 });
+    const error = new Error("outermost", { cause: new Error("middle", { cause: new Error("innermost") }) });
+
+    reporter.captureException(error);
+
+    const exception = onlyEvent(transport.events).exception;
+    expect(exception?.message).toBe(`oute${CUT}`);
+    expect(exception?.cause?.message).toBe(`midd${CUT}`);
+    expect(exception?.cause?.cause?.type).toBe("[Truncated]");
   });
 });

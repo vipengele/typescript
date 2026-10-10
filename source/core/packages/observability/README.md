@@ -174,7 +174,7 @@ resolve `true` in that case, since there is nothing to wait on.
 An Error Event's `attributes` carry the ambient `Scope` chain beneath the call's own attributes: the
 attributes of every Scope between the current one and the root, the innermost winning, then the
 `attributes` passed to the capture call, which win on a shared key. Each side is normalized
-separately and bounded to 100 entries. The Resource (`service.name`, `service.version`,
+separately and bounded by the reporter's limits (`maxBreadth`, 100 entries by default). The Resource (`service.name`, `service.version`,
 `deployment.environment.name`, `process.runtime.name`) is not copied into events; a `Transport`
 receives it as the second argument of `send`.
 
@@ -230,6 +230,40 @@ If reading the Scope throws, the event is delivered without its Scope attributes
 Resource for `send` throws, the event is delivered with a Resource whose four keys are `undefined`;
 the logger drops the record on the same throw, since an event is worth more than its Resource. In
 the browser the synchronous-stack carrier loses the Scope after an `await` (ADR-0006).
+
+### Limits
+
+`builder.limits(options)` bounds what one event carries. Any subset of the options may be set; each
+is a positive integer or `Infinity`:
+
+| Option | Bounds | Default |
+|--------|--------|---------|
+| `maxDepth` | nesting levels of an attribute or error `data` value | `6` |
+| `maxBreadth` | entries per object or array, and the `frames` of each exception link | `100` |
+| `maxStringLength` | UTF-16 code units per string, and the event `message` | `8192` |
+| `maxLinks` | links followed through `cause` and `errors` | `5` |
+| `maxErrors` | entries of one link's `errors` | `100` |
+
+```ts
+const reporter = createReporter((builder) => builder.limits({ maxStringLength: 2048, maxBreadth: 50 }));
+```
+
+- **Validation** — any other value, or a `limits` argument that is not an object, throws
+  `ReporterConfigError` (code `observability.errors.config`, checked with `isReporterConfigError`)
+  and leaves the builder as it was. An option left `undefined` is not set.
+- **Replacement** — a later call replaces only the options it sets; the rest keep their earlier value
+  or the default.
+- **What is bounded** — the merged `attributes`, the serialized exception chain, the event `message`
+  and each link's `frames`. A `frames` list keeps its first `maxBreadth` frames, the throw site
+  first, with no marker entry.
+- **The cut is marked, so the result exceeds the limit** — a cut string is the first
+  `maxStringLength` code units plus the `"…[truncated]"` suffix, and a cut object or array holds
+  `maxBreadth` entries plus one marker entry. Frames are the exception: exactly `maxBreadth`, no
+  marker.
+- **Units** — levels, entries per container and code units per string. There is no byte limit and no
+  total over an event; the transport owns wire limits (ADR-0010).
+- **The logger** has the same defaults for its records but no builder option to change them. Neither
+  the logger nor the reporter scans free text for secrets; see Redaction.
 
 ### Stack frames
 

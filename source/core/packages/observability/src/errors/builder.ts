@@ -1,7 +1,8 @@
-import { type Clock, systemClock } from "@vipengele/ts-core-common";
+import { type Clock, type SerializeErrorOptions, systemClock } from "@vipengele/ts-core-common";
 import { secretKeys } from "@vipengele/ts-core-redaction";
 import type { RedactionSetting } from "../redaction";
 import type { Integration } from "./integration";
+import { ReporterConfigError } from "./reporter-config-error";
 import type { Transport } from "./transport";
 
 /** What a {@link ReporterBuilder} builds: the settings one Reporter holds for its whole life. */
@@ -19,6 +20,24 @@ export interface ReporterSettings {
    * record's error. `null` disables it.
    */
   readonly redaction: RedactionSetting;
+  /**
+   * The bounds every event is cut to: its attributes, `message`, exception chain and each link's
+   * `frames`. Only the options a `limits` call set are present; an absent one takes
+   * `serializeError`'s default.
+   */
+  readonly limits: Readonly<SerializeErrorOptions>;
+}
+
+/** The options {@link ReporterBuilder.limits} accepts, in the order they are validated. */
+const LIMIT_KEYS = ["maxDepth", "maxBreadth", "maxStringLength", "maxLinks", "maxErrors"] as const;
+
+/** A limit is a positive integer, or `Infinity` for no bound. */
+function isLimit(value: unknown): value is number {
+  return value === Number.POSITIVE_INFINITY || (Number.isInteger(value) && (value as number) > 0);
+}
+
+function describe(value: unknown): string {
+  return typeof value === "number" ? String(value) : `of type ${value === null ? "null" : typeof value}`;
 }
 
 /**
@@ -32,6 +51,7 @@ export class ReporterBuilder {
   #projectRoot: string | undefined;
   #redaction: RedactionSetting | undefined;
   readonly #integrations = new Map<string, Integration>();
+  #limits: Readonly<SerializeErrorOptions> = Object.freeze({});
 
   /** Where captured events go. A later call replaces the transport an earlier one set. */
   transport(transport: Transport): this {
@@ -73,6 +93,34 @@ export class ReporterBuilder {
     return this;
   }
 
+  /**
+   * The bounds on an event's serialized exception chain: any of `maxDepth`, `maxBreadth`,
+   * `maxStringLength`, `maxLinks` and `maxErrors`, each a positive integer or `Infinity`. An option
+   * left `undefined` keeps the value an earlier call set, or `serializeError`'s default. A later
+   * call replaces only the options it sets.
+   *
+   * @throws {ReporterConfigError} When `limits` is not an object, or any option set is not a positive integer or `Infinity`;
+   * the builder is then left as it was.
+   */
+  limits(limits: SerializeErrorOptions): this {
+    if (typeof limits !== "object" || limits === null) {
+      throw new ReporterConfigError(`Invalid reporter limits ${describe(limits)}: expected an object.`);
+    }
+    const merged: Record<string, number> = { ...this.#limits };
+    for (const key of LIMIT_KEYS) {
+      const value: unknown = limits[key];
+      if (value === undefined) {
+        continue;
+      }
+      if (!isLimit(value)) {
+        throw new ReporterConfigError(`Invalid reporter limit ${key} ${describe(value)}: expected a positive integer or Infinity.`);
+      }
+      merged[key] = value;
+    }
+    this.#limits = Object.freeze(merged);
+    return this;
+  }
+
   /** The settings composed so far, as a snapshot a later call on this builder does not change. */
   build(): ReporterSettings {
     return {
@@ -82,6 +130,7 @@ export class ReporterBuilder {
       integrations: [...this.#integrations.values()],
       // The preset is read when a build is made, never at module scope (ADR-0011).
       redaction: this.#redaction === undefined ? secretKeys : this.#redaction,
+      limits: this.#limits,
     };
   }
 }

@@ -42,8 +42,10 @@ const CAPTURED: Mechanism = { handled: true, source: "capture" };
  */
 export function createReporter(configure?: (builder: ReporterBuilder) => ReporterBuilder): Reporter {
   const initial = new ReporterBuilder();
-  const { transport, clock, projectRoot, integrations, redaction } = (configure === undefined ? initial : configure(initial)).build();
-  const capture = createCapture({ clock, transport, projectRoot, redaction, processors: [], filters: [] });
+  const { transport, clock, projectRoot, integrations, redaction, limits } = (
+    configure === undefined ? initial : configure(initial)
+  ).build();
+  const capture = createCapture({ clock, transport, projectRoot, redaction, limits, processors: [], filters: [] });
   const flush = async (timeoutMs?: number): Promise<boolean> => (transport === undefined ? true : transport.flush(timeoutMs));
   const teardown = setupIntegrations(integrations, {
     capture(error, { mechanism, level, attributes }) {
