@@ -564,13 +564,28 @@ export function resolveTimePattern(locale: Locale, options: TimePatternOptions =
   return resolveTime(locale, options.hourCycle ?? clockCycle(locale), options.seconds ?? false).pattern;
 }
 
+/** What a {@link TimeSegment} holds: one of the time's fields, or the text between them. */
+export type TimeSegmentType = TimeField | "literal";
+
 /**
- * The time written in `locale`'s pattern: the hour and the minute padded to two digits, with
- * `seconds` the second too, and on a 12-hour clock the locale's marker for the half of the day,
- * between the locale's own separators. Midnight is `12:00 AM` on a 12-hour clock and `00:00` on a
- * 24-hour one, never `24:00`.
+ * One run of a formatted time: the hour, minute or second's padded digits, the day-period marker,
+ * or a literal exactly as the locale writes it.
  */
-export function formatTime(time: ClockTime, locale: Locale, options: TimeOptions = {}): string {
+export interface TimeSegment {
+  readonly type: TimeSegmentType;
+  readonly value: string;
+}
+
+/**
+ * The time written in `locale`'s time pattern, split into its fields and the literals between
+ * them, in the order the locale writes them. The hour, the minute and, with `seconds`, the second
+ * are padded to two digits; the hour counts 01-12 on a 12-hour clock and 00-23 on a 24-hour one,
+ * and only a 12-hour clock has a `dayPeriod`, the locale's marker for the time's half of the day.
+ * A literal is kept exactly as `Intl` emits it, bidi marks and U+202F included, and one the locale
+ * leaves empty is omitted, so no segment has an empty `value` and the values joined are
+ * {@link formatTime}'s output.
+ */
+export function timeSegments(time: ClockTime, locale: Locale, options: TimeOptions = {}): TimeSegment[] {
   const { twelveHour, fields, literals, am, pm } = resolveTime(locale, clockCycle(locale), options.seconds ?? false).pattern;
   const values: Readonly<Record<TimeField, string>> = {
     hour: String(twelveHour ? time.hour % 12 || 12 : time.hour).padStart(2, "0"),
@@ -578,11 +593,28 @@ export function formatTime(time: ClockTime, locale: Locale, options: TimeOptions
     second: String(time.second ?? 0).padStart(2, "0"),
     dayPeriod: time.hour < 12 ? am : pm,
   };
-  return literals
-    .map((literal, index) => {
-      const field = fields[index];
-      return field === undefined ? literal : literal + values[field];
-    })
+  const segments: TimeSegment[] = [];
+  literals.forEach((literal, index) => {
+    if (literal !== "") {
+      segments.push({ type: "literal", value: literal });
+    }
+    const field = fields[index];
+    if (field !== undefined) {
+      segments.push({ type: field, value: values[field] });
+    }
+  });
+  return segments;
+}
+
+/**
+ * The time written in `locale`'s pattern: the hour and the minute padded to two digits, with
+ * `seconds` the second too, and on a 12-hour clock the locale's marker for the half of the day,
+ * between the locale's own separators. Midnight is `12:00 AM` on a 12-hour clock and `00:00` on a
+ * 24-hour one, never `24:00`.
+ */
+export function formatTime(time: ClockTime, locale: Locale, options: TimeOptions = {}): string {
+  return timeSegments(time, locale, options)
+    .map((segment) => segment.value)
     .join("");
 }
 

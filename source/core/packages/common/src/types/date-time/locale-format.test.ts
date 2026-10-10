@@ -15,6 +15,7 @@ import {
   resolveTimePattern,
   stripBidiMarks,
   type Token,
+  timeSegments,
 } from "./locale-format";
 
 const enUS = new Locale("en-US");
@@ -461,6 +462,85 @@ describe("formatTime", () => {
         expect(formatTime({ hour, minute }, locale)).toBe(
           intlParts(tag, { hour: "2-digit", minute: "2-digit", hourCycle }, Date.UTC(2026, 1, 3, hour, minute)),
         );
+      }
+    },
+  );
+});
+
+describe("timeSegments", () => {
+  test("lays out en-US's 12-hour clock with the day period last", () => {
+    expect(timeSegments({ hour: 13, minute: 5 }, enUS)).toEqual([
+      { type: "hour", value: "01" },
+      { type: "literal", value: ":" },
+      { type: "minute", value: "05" },
+      { type: "literal", value: resolveTimePattern(enUS).literals[2] },
+      { type: "dayPeriod", value: "PM" },
+    ]);
+  });
+
+  /** The space `Intl` writes before en-US's day period: U+202F in Node's ICU, a regular space in Chromium's. */
+  const enUSSpace = new Intl.DateTimeFormat("en-US", { hour: "2-digit", minute: "2-digit", hourCycle: "h12", timeZone: "UTC" })
+    .formatToParts(0)
+    .find((part) => part.type === "literal" && part.value !== ":")?.value;
+
+  test("keeps the space character Intl writes before en-US's day period", () => {
+    expect(timeSegments({ hour: 9, minute: 0 }, enUS)[3]).toEqual({ type: "literal", value: enUSSpace });
+  });
+
+  test.runIf(enUSSpace === "\u202f")("keeps U+202F before en-US's day period where Intl writes it", () => {
+    expect(timeSegments({ hour: 9, minute: 0 }, enUS)[3]).toEqual({ type: "literal", value: "\u202f" });
+  });
+
+  test("on a 12-hour locale, reads the same cached pattern a forced 12-hour cycle resolves", () => {
+    expect(resolveTimePattern(enUS, { hourCycle: "h12" })).toBe(resolveTimePattern(enUS));
+    expect(resolveTimePattern(deDE, { hourCycle: "h12" })).not.toBe(resolveTimePattern(deDE));
+  });
+
+  test("writes no day period on a 24-hour clock", () => {
+    expect(timeSegments({ hour: 13, minute: 5 }, deDE)).toEqual([
+      { type: "hour", value: "13" },
+      { type: "literal", value: ":" },
+      { type: "minute", value: "05" },
+    ]);
+  });
+
+  test("writes the second only with seconds", () => {
+    expect(timeSegments({ hour: 13, minute: 5, second: 9 }, deDE, { seconds: true })).toEqual([
+      { type: "hour", value: "13" },
+      { type: "literal", value: ":" },
+      { type: "minute", value: "05" },
+      { type: "literal", value: ":" },
+      { type: "second", value: "09" },
+    ]);
+    expect(timeSegments({ hour: 13, minute: 5 }, deDE, { seconds: true }).at(-1)).toEqual({ type: "second", value: "00" });
+    expect(timeSegments({ hour: 13, minute: 5, second: 9 }, deDE).map((segment) => segment.type)).not.toContain("second");
+  });
+
+  test("omits the empty literal between ja-JP's day period and hour", () => {
+    expect(timeSegments({ hour: 13, minute: 5 }, new Locale("ja-JP-u-hc-h12"))).toEqual([
+      { type: "dayPeriod", value: "午後" },
+      { type: "hour", value: "01" },
+      { type: "literal", value: ":" },
+      { type: "minute", value: "05" },
+    ]);
+  });
+
+  test.for(["en-US", "de-DE", "ja-JP", "ar-EG", "he-IL", "ko-KR", "ja-JP-u-hc-h12", "en-US-u-hc-h23"])(
+    "joins to formatTime's output in %s, with and without seconds",
+    (tag) => {
+      const locale = new Locale(tag);
+
+      for (const time of [
+        { hour: 0, minute: 0, second: 0 },
+        { hour: 12, minute: 30, second: 45 },
+        { hour: 23, minute: 59, second: 59 },
+      ]) {
+        for (const options of [{}, { seconds: true }]) {
+          const segments = timeSegments(time, locale, options);
+
+          expect(segments.map((segment) => segment.value).join("")).toBe(formatTime(time, locale, options));
+          expect(segments.every((segment) => segment.value !== "")).toBe(true);
+        }
       }
     },
   );

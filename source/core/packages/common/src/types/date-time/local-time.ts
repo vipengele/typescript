@@ -2,8 +2,10 @@ import { Locale } from "../../locale";
 import type { Clock } from "../../time/clock";
 import { DateTimeParseError, type DateTimeTryParseResult, InvalidDateTimeError } from "./errors";
 import { formatFraction, parseFraction } from "./fraction";
-import { formatTime, parseTime, type TimeOptions } from "./locale-format";
+import { formatTime, parseTime, resolveTimePattern, type TimeOptions, type TimeSegment, timeSegments } from "./locale-format";
 import { civilNow } from "./now";
+
+export type { TimeSegment, TimeSegmentType } from "./locale-format";
 
 /**
  * `HH:mm`, `HH:mm:ss` or `HH:mm:ss.` followed by fraction digits, exactly: no zone designator, no
@@ -175,6 +177,20 @@ export class LocalTime {
     return value === undefined ? { success: false } : { success: true, value };
   }
 
+  /**
+   * The markers `locale`, or `Locale.default()` when `locale` is omitted, writes for the first
+   * (`am`) and second (`pm`) half of the day on a 12-hour clock: `AM` and `PM` in `en-US`, `오전`
+   * and `오후` in `ko-KR`. They are read from the same cached time pattern
+   * {@link LocalTime#format} and {@link LocalTime#segments} write with, so each equals the
+   * `dayPeriod` segment of a time in that half of the day. A locale on a 24-hour clock writes no
+   * marker, yet still has 12-hour ones (`de-DE` gives `AM` and `PM`), which are returned, so a
+   * time input can offer a 12-hour clock in any locale.
+   */
+  static dayPeriods(locale: Locale = Locale.default()): { am: string; pm: string } {
+    const { am, pm } = resolveTimePattern(locale, { hourCycle: "h12" });
+    return { am, pm };
+  }
+
   /** A negative number when `a` is earlier in the day than `b`, a positive one when later, and `0` when they are equal. */
   static compare(a: LocalTime, b: LocalTime): number {
     return a.hour - b.hour || a.minute - b.minute || a.second - b.second || a.nanosecond - b.nanosecond;
@@ -205,6 +221,21 @@ export class LocalTime {
    */
   format(locale: Locale = Locale.default(), options: TimeOptions = {}): string {
     return formatTime(this, locale, options);
+  }
+
+  /**
+   * The parts of {@link LocalTime#format}'s output under `locale`, or `Locale.default()` when
+   * `locale` is omitted, and `options`, in the order the locale writes them: `hour`, `minute`,
+   * with `options.seconds` `second`, on a 12-hour clock `dayPeriod`, and each `literal` between or
+   * around them. `13:30` in `en-US` is hour `01`, literal `:`, minute `30`, literal U+202F (or a
+   * space, by ICU version), day period `PM`; in `ko-KR` the day period comes first. The hour is
+   * 01-12 on a 12-hour clock (`12` at midnight and noon) and 00-23 on a 24-hour one, which has no
+   * `dayPeriod` segment. A literal the locale leaves empty is omitted, and the values joined are
+   * exactly {@link LocalTime#format}'s output, bidi marks and the locale's own space characters
+   * included.
+   */
+  segments(locale: Locale = Locale.default(), options: TimeOptions = {}): TimeSegment[] {
+    return timeSegments(this, locale, options);
   }
 
   /**
