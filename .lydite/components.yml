@@ -26,17 +26,6 @@ components:
       - sh -c 'cd "$(git rev-parse --show-toplevel)/source/core" && pnpm --filter @vipengele/ts-core-common run build'
       - sh -c 'cd "$(git rev-parse --show-toplevel)/source/core" && pnpm --filter @vipengele/ts-core-redaction run build'
 
-  - name: ts
-    dir: source/ts/packages/ts
-    runner: vitest
-    # ts pins and links @vipengele/ts-core-common and @vipengele/ts-core-redaction across
-    # projects (ADR-0009); lydite's vitest runner has no cross-project build graph, so the
-    # build runs here instead.
-    depends_on: [core-common, core-redaction]
-    setup:
-      - sh -c 'cd "$(git rev-parse --show-toplevel)/source/core" && pnpm --filter @vipengele/ts-core-common run build'
-      - sh -c 'cd "$(git rev-parse --show-toplevel)/source/core" && pnpm --filter @vipengele/ts-core-redaction run build'
-
 # Each project's own vitest.shared.ts (source/<project>/vitest.shared.ts) is the
 # Node+Chromium preset every package under that project imports — real TypeScript,
 # but a workspace-root file no package's own `dir` contains, so it is an orphan
@@ -47,6 +36,11 @@ components:
 # lasting automated fixture-test suite for them is scope beyond issue #71; each was
 # hand-verified against fixtures instead.
 #
+# @vipengele/ts is re-exports only (packages/ts/src/index.ts), so v8 reports no coverable
+# line for it and lydite cannot measure a component there; a component with no measurement
+# leaves the baseline without an entry for it, and a partial baseline is never recorded. Its
+# suite still runs under `pnpm test` in ci-test.yml, which checks the re-exported surface.
+#
 # Each project's biome/ directory holds lint tooling run by `pnpm lint`: the check
 # script and the fixtures it lints against the project's real biome.json. The
 # fixtures are deliberately violating or deliberately passing sources with no tests
@@ -54,6 +48,7 @@ components:
 excludes:
   - "source/core/biome/**"
   - "source/ts/biome/**"
+  - "source/ts/packages/ts/src/index.ts"
   - "source/core/vitest.shared.ts"
   - "source/ts/vitest.shared.ts"
   - ".github/actions/build-cross-project-deps/build.sh"
