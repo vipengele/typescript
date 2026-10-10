@@ -48,7 +48,7 @@ components:
 excludes:
   - "source/core/biome/**"
   - "source/ts/biome/**"
-  - "source/ts/packages/ts/src/index.ts"
+  - "source/ts/packages/ts/**"
   - "source/core/vitest.shared.ts"
   - "source/ts/vitest.shared.ts"
   - ".github/actions/build-cross-project-deps/build.sh"
