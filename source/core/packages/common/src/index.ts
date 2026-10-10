@@ -7,7 +7,7 @@ export { SEVERITY_NUMBERS, isLevel } from "./levels/severity";
 export type { SeverityNumber } from "./levels/severity";
 export type { JsonSafeValue } from "./serialization/json-safe-value";
 export { serializeError } from "./serialization/serialize-error";
-export type { SerializedError } from "./serialization/serialize-error";
+export type { SerializeErrorOptions, SerializedError } from "./serialization/serialize-error";
 export { systemClock } from "./time/clock";
 export type { Clock } from "./time/clock";
 export { toJsonSafe } from "./serialization/to-json-safe";

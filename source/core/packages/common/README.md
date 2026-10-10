@@ -583,6 +583,28 @@ serializeError("boom"); // => { type: "Error", message: "boom", synthetic: true 
 - A thrown value that is not an `Error` gives `synthetic: true`, typed `Error`, with its JSON-safe
   form as the `message`: a string as it is, anything else as its JSON text.
 
+**Options** — `serializeError(value, options?)` takes a `SerializeErrorOptions`, which extends the
+`maxDepth`, `maxBreadth` and `maxStringLength` bounds of `normalizeAttributes` with two limits on
+the chain. Each option defaults when omitted, and omitting `options` gives all the defaults.
+
+| Option            | Default | Effect                                                                                       |
+| ----------------- | ------- | -------------------------------------------------------------------------------------------- |
+| `maxDepth`        | 6       | Levels of nesting kept in `data` and in a thrown value's JSON `message`; the root counts as the first level. |
+| `maxBreadth`      | 100     | Entries kept per object or array in `data` and in a thrown value's JSON `message`; the rest are summarised by one marker. |
+| `maxStringLength` | 8192    | Characters kept per string: `message`, `stack`, and strings in `data`.                       |
+| `maxLinks`        | 5       | Links followed from the outermost error, through `cause` or into `errors`.                   |
+| `maxErrors`       | 100     | Entries of one `errors` array serialized; one `"[Truncated]"` entry summarises the rest.     |
+
+A limit bounds the result without being an exact ceiling on it:
+
+- A string cut at `maxStringLength` is the first `maxStringLength` characters plus the
+  `"…[truncated]"` suffix, so it is `maxStringLength` plus the length of that suffix.
+- An object or array cut at `maxBreadth` holds `maxBreadth` entries plus one marker entry, and an
+  `errors` array cut at `maxErrors` holds `maxErrors` entries plus one `"[Truncated]"` entry.
+
+The options are not validated. A `NaN` or non-positive limit is used as given, and what it cuts is
+the caller's concern.
+
 ## Levels
 
 `Level` (`"trace" | "debug" | "info" | "warn" | "error" | "fatal"`) is the severity of a log record

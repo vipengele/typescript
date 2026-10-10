@@ -1,5 +1,5 @@
 import type { Attributes } from "../attributes/attribute-value";
-import { normalizeAttributes } from "../attributes/normalize-attributes";
+import { type NormalizeAttributesOptions, normalizeAttributes } from "../attributes/normalize-attributes";
 import { makeErrorLeaf, makeThrownValueLeaf } from "./engine";
 
 /**
@@ -23,15 +23,50 @@ export interface SerializedError {
   errors?: SerializedError[];
 }
 
-/** Links followed from the outermost error, through `cause` or into `errors`, before the chain is cut. */
-const MAX_LINKS = 5;
-/** Entries of one `errors` array serialized; the rest are summarised by one marker. */
-const MAX_ERRORS = 100;
+/**
+ * Options accepted by {@link serializeError}. The depth, breadth and string length limits bound
+ * every link's `message`, `stack` and `data`, and a thrown value's JSON-safe `message`, as
+ * {@link NormalizeAttributesOptions} describes.
+ */
+export interface SerializeErrorOptions extends NormalizeAttributesOptions {
+  /**
+   * Links followed from the outermost error, through `cause` or into `errors`, before the chain
+   * is cut with a `"[Truncated]"` entry. Defaults to 5.
+   */
+  readonly maxLinks?: number;
+  /**
+   * Entries of one `errors` array serialized; the rest are summarised by one `"[Truncated]"`
+   * entry. Defaults to 100.
+   */
+  readonly maxErrors?: number;
+}
+
+const DEFAULT_MAX_LINKS = 5;
+const DEFAULT_MAX_ERRORS = 100;
 
 /** Serialized in place of an error that is already on the path from the outermost one. */
 const CIRCULAR: SerializedError = { type: "[Circular]", message: "an error already on this chain" };
-/** Serialized in place of an error further than {@link MAX_LINKS} links from the outermost one. */
-const TRUNCATED: SerializedError = { type: "[Truncated]", message: `the chain continues past ${MAX_LINKS} links` };
+
+/** One call's limits, and the path of errors from the outermost one to the link being serialized. */
+interface State {
+  readonly options: SerializeErrorOptions | undefined;
+  readonly maxLinks: number;
+  readonly maxErrors: number;
+  /** Serialized in place of an error further than `maxLinks` links from the outermost one. */
+  readonly truncated: SerializedError;
+  readonly path: Set<unknown>;
+}
+
+function createState(options: SerializeErrorOptions | undefined): State {
+  const maxLinks = options?.maxLinks ?? DEFAULT_MAX_LINKS;
+  return {
+    options,
+    maxLinks,
+    maxErrors: options?.maxErrors ?? DEFAULT_MAX_ERRORS,
+    truncated: { type: "[Truncated]", message: `the chain continues past ${maxLinks} links` },
+    path: new Set(),
+  };
+}
 
 /**
  * Own enumerable properties that are part of the chain. The `{ cause }` constructor option
@@ -63,7 +98,7 @@ function isError(value: unknown): value is Error {
  * {@link normalizeAttributes} confines a throwing read to its own key. An error whose keys cannot
  * be listed, or that has none outside {@link CHAIN_KEYS}, has no `data`.
  */
-function collectData(error: Error): Attributes | undefined {
+function collectData(error: Error, options: NormalizeAttributesOptions | undefined): Attributes | undefined {
   let keys: string[];
   try {
     keys = Object.keys(error).filter((key) => !CHAIN_KEYS.has(key));
@@ -78,44 +113,44 @@ function collectData(error: Error): Attributes | undefined {
   for (const key of keys) {
     Object.defineProperty(input, key, { enumerable: true, get: () => (error as unknown as Record<string, unknown>)[key] });
   }
-  return normalizeAttributes(input);
+  return normalizeAttributes(input, options);
 }
 
-function serializeErrors(errors: readonly unknown[], links: number, path: Set<unknown>): SerializedError[] {
-  const result = errors.slice(0, MAX_ERRORS).map((entry) => serializeLink(entry, links, path));
-  if (errors.length > MAX_ERRORS) {
-    result.push({ type: "[Truncated]", message: `${errors.length - MAX_ERRORS} more errors` });
+function serializeErrors(errors: readonly unknown[], links: number, state: State): SerializedError[] {
+  const result = errors.slice(0, state.maxErrors).map((entry) => serializeLink(entry, links, state));
+  if (errors.length > state.maxErrors) {
+    result.push({ type: "[Truncated]", message: `${errors.length - state.maxErrors} more errors` });
   }
   return result;
 }
 
-function serializeNode(value: unknown, links: number, path: Set<unknown>): SerializedError {
+function serializeNode(value: unknown, links: number, state: State): SerializedError {
   if (!isError(value)) {
-    return { ...makeThrownValueLeaf(value), synthetic: true };
+    return { ...makeThrownValueLeaf(value, state.options), synthetic: true };
   }
 
-  const serialized: SerializedError = makeErrorLeaf(value);
+  const serialized: SerializedError = makeErrorLeaf(value, state.options);
 
   const code = read(value, "code");
   if (typeof code === "string") {
     serialized.code = code;
   }
 
-  const data = collectData(value);
+  const data = collectData(value, state.options);
   if (data !== undefined) {
     serialized.data = data;
   }
 
-  path.add(value);
+  state.path.add(value);
   const cause = read(value, "cause");
   if (cause !== undefined) {
-    serialized.cause = serializeLink(cause, links + 1, path);
+    serialized.cause = serializeLink(cause, links + 1, state);
   }
   const errors = read(value, "errors");
   if (Array.isArray(errors)) {
-    serialized.errors = serializeErrors(errors, links + 1, path);
+    serialized.errors = serializeErrors(errors, links + 1, state);
   }
-  path.delete(value);
+  state.path.delete(value);
 
   return serialized;
 }
@@ -124,14 +159,14 @@ function serializeNode(value: unknown, links: number, path: Set<unknown>): Seria
  * Only an error on the path from the outermost one is circular; the same error reached twice as
  * siblings is serialized in full both times.
  */
-function serializeLink(value: unknown, links: number, path: Set<unknown>): SerializedError {
-  if (path.has(value)) {
+function serializeLink(value: unknown, links: number, state: State): SerializedError {
+  if (state.path.has(value)) {
     return { ...CIRCULAR };
   }
-  if (links > MAX_LINKS) {
-    return { ...TRUNCATED };
+  if (links > state.maxLinks) {
+    return { ...state.truncated };
   }
-  return serializeNode(value, links, path);
+  return serializeNode(value, links, state);
 }
 
 /**
@@ -139,11 +174,12 @@ function serializeLink(value: unknown, links: number, path: Set<unknown>): Seria
  *
  * An `Error` gives its `{ type, message, stack? }` as {@link toJsonSafe} does, a string `code`
  * property as `code`, and its own enumerable properties as `data`. Its `cause`, and the entries of
- * an `errors` array such as an `AggregateError`'s, are serialized in turn, up to five links from
- * the outermost error: a link further than that becomes a `"[Truncated]"` entry, and a link back to
- * an error already on the path a `"[Circular]"` one. A thrown value that is not an `Error` gives
- * `synthetic: true`, with its JSON-safe form as the `message`.
+ * an `errors` array such as an `AggregateError`'s, are serialized in turn, up to `maxLinks` links
+ * from the outermost error: a link further than that becomes a `"[Truncated]"` entry, and a link
+ * back to an error already on the path a `"[Circular]"` one. A thrown value that is not an `Error`
+ * gives `synthetic: true`, with its JSON-safe form as the `message`. The limits in
+ * {@link SerializeErrorOptions} bound the size of the result.
  */
-export function serializeError(value: unknown): SerializedError {
-  return serializeLink(value, 0, new Set());
+export function serializeError(value: unknown, options?: SerializeErrorOptions): SerializedError {
+  return serializeLink(value, 0, createState(options));
 }
