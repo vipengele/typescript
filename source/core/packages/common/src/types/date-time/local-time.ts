@@ -2,7 +2,7 @@ import { Locale } from "../../locale";
 import type { Clock } from "../../time/clock";
 import { DateTimeParseError, type DateTimeTryParseResult, InvalidDateTimeError } from "./errors";
 import { formatFraction, parseFraction } from "./fraction";
-import { formatTime, parseTime } from "./locale-format";
+import { formatTime, parseTime, type TimeOptions } from "./locale-format";
 import { civilNow } from "./now";
 
 /**
@@ -45,16 +45,16 @@ function parseValue(str: string): LocalTime | undefined {
 }
 
 /**
- * The time `str` writes in `locale`'s time pattern, at second 0 and nanosecond 0, or `undefined`
- * when it writes none.
+ * The time `str` writes in `locale`'s time pattern, at nanosecond 0 and at second 0 unless
+ * `options.seconds` has the pattern write one, or `undefined` when it writes none.
  */
-function parseLocalizedValue(str: string, locale: Locale): LocalTime | undefined {
-  const fields = parseTime(str, locale);
+function parseLocalizedValue(str: string, locale: Locale, options: TimeOptions): LocalTime | undefined {
+  const fields = parseTime(str, locale, options);
   if (fields === undefined) {
     return undefined;
   }
-  const { hour, minute } = fields;
-  return invalidReason(hour, minute, 0, 0) === undefined ? LocalTime.of(hour, minute) : undefined;
+  const { hour, minute, second = 0 } = fields;
+  return invalidReason(hour, minute, second, 0) === undefined ? LocalTime.of(hour, minute, second) : undefined;
 }
 
 /**
@@ -135,8 +135,14 @@ export class LocalTime {
   /**
    * Reads the hour and minute `str` writes in `locale`'s time pattern, or in `Locale.default()`
    * when `locale` is omitted: `01:30 PM` in `en-US`, `13:30` in `de-DE`, `午後01:30` in `ja-JP` on
-   * a 12-hour clock. The result's second and nanosecond are zero. The locale's separators,
+   * a 12-hour clock. The result's second and nanosecond are zero unless `options.seconds` says
+   * otherwise. The locale's separators,
    * day-period markers and hour cycle are read from `Intl`, matching {@link LocalTime#format}.
+   *
+   * With `options.seconds` the pattern also places a two-digit second after the minute
+   * (`01:30:45 PM` in `en-US`, `13:30:45` in `de-DE`) and the result carries it, so a string with
+   * no second is rejected. Without it a string that writes a second is rejected. The nanosecond is
+   * zero either way.
    *
    * On a 12-hour clock the hour is 1-12 and the day-period marker must be one of the locale's own,
    * in any letter case: `12:00 AM` is midnight and `12:00 PM` noon. On a 24-hour clock the hour is
@@ -151,8 +157,8 @@ export class LocalTime {
    * @throws {DateTimeParseError} when `str` does not follow the pattern, or its fields do not name
    *   a time (`13:00 PM`, `00:30 AM`, `25:00`, `12:60`).
    */
-  static parseLocalized(str: string, locale: Locale = Locale.default()): LocalTime {
-    const value = parseLocalizedValue(str, locale);
+  static parseLocalized(str: string, locale: Locale = Locale.default(), options: TimeOptions = {}): LocalTime {
+    const value = parseLocalizedValue(str, locale, options);
     if (value === undefined) {
       throw new DateTimeParseError(`Cannot parse ${JSON.stringify(str)} as a time in ${locale.tag}.`);
     }
@@ -161,10 +167,11 @@ export class LocalTime {
 
   /**
    * The non-throwing counterpart of {@link LocalTime.parseLocalized}: a string that does not
-   * write a time yields `{ success: false }` rather than a {@link DateTimeParseError}.
+   * write a time yields `{ success: false }` rather than a {@link DateTimeParseError}. With
+   * `options.seconds` a string with no second yields it too, and without it a string with one does.
    */
-  static tryParseLocalized(str: string, locale: Locale = Locale.default()): DateTimeTryParseResult<LocalTime> {
-    const value = parseLocalizedValue(str, locale);
+  static tryParseLocalized(str: string, locale: Locale = Locale.default(), options: TimeOptions = {}): DateTimeTryParseResult<LocalTime> {
+    const value = parseLocalizedValue(str, locale, options);
     return value === undefined ? { success: false } : { success: true, value };
   }
 
@@ -190,9 +197,14 @@ export class LocalTime {
    * the day period, and the locale's short time pattern writes no more. So
    * {@link LocalTime.parseLocalized} under the same locale reads back this time with its second
    * and nanosecond set to zero.
+   *
+   * With `options.seconds` the second is written after the minute, padded to two digits
+   * (`01:30:45 PM` in `en-US`, `13:30:45` in `de-DE`), and
+   * {@link LocalTime.parseLocalized} under the same locale and option reads it back. The
+   * nanosecond is still not written.
    */
-  format(locale: Locale = Locale.default()): string {
-    return formatTime(this, locale);
+  format(locale: Locale = Locale.default(), options: TimeOptions = {}): string {
+    return formatTime(this, locale, options);
   }
 
   /**

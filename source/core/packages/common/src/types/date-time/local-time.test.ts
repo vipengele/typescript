@@ -381,3 +381,79 @@ describe("LocalTime.parseLocalized and tryParseLocalized", () => {
     expect(LocalTime.parse("13:30").equals(LocalTime.of(13, 30))).toBe(true);
   });
 });
+
+describe("LocalTime with seconds", () => {
+  const SECONDS = { seconds: true };
+  const TAGS = ["en-US", "de-DE", "ko-KR", "ar-EG", "ja-JP-u-hc-h12", "en-US-u-hc-h23"];
+
+  test.for([
+    ["en-US", "01:30:45 PM"],
+    ["de-DE", "13:30:45"],
+    ["ko-KR", "오후 01:30:45"],
+    ["ja-JP-u-hc-h12", "午後01:30:45"],
+    ["en-US-u-hc-h23", "13:30:45"],
+  ] as const)("writes 13:30:45 in %s as %s", ([tag, expected]) => {
+    expect(spaced(LocalTime.of(13, 30, 45).format(new Locale(tag), SECONDS))).toBe(expected);
+  });
+
+  test("writes second 0 when the time has none, and never the nanosecond", () => {
+    const locale = new Locale("de-DE");
+
+    expect(LocalTime.of(13, 30).format(locale, SECONDS)).toBe("13:30:00");
+    expect(LocalTime.of(13, 30, 5, 999_999_999).format(locale, SECONDS)).toBe("13:30:05");
+  });
+
+  test.for(TAGS.flatMap((tag) => ["00:00:00", "01:05:09", "12:00:30", "13:30:45", "23:59:59"].map((iso) => [tag, iso] as const)))(
+    "round-trips %s through format in %s",
+    ([tag, iso]) => {
+      const locale = new Locale(tag);
+      const formatted = LocalTime.parse(iso).format(locale, SECONDS);
+
+      const time = LocalTime.parse(iso);
+
+      expect(LocalTime.parseLocalized(formatted, locale, SECONDS).equals(time)).toBe(true);
+      expect(LocalTime.tryParseLocalized(formatted, locale, SECONDS).value?.equals(time)).toBe(true);
+    },
+  );
+
+  test("reads back the nanosecond as zero", () => {
+    const locale = new Locale("en-US");
+    const value = LocalTime.parseLocalized("01:30:45 PM", locale, SECONDS);
+
+    expect([value.hour, value.minute, value.second, value.nanosecond]).toEqual([13, 30, 45, 0]);
+  });
+
+  test.for([
+    ["en-US", "01:30 PM"],
+    ["de-DE", "13:30"],
+    ["de-DE", "13:30:60"],
+    ["de-DE", "13:30:5"],
+  ] as const)("rejects %s %o when seconds are on", ([tag, str]) => {
+    const locale = new Locale(tag);
+
+    expect(LocalTime.tryParseLocalized(str, locale, SECONDS)).toEqual({ success: false });
+    expect(() => LocalTime.parseLocalized(str, locale, SECONDS)).toThrow(DateTimeParseError);
+  });
+
+  test.for([
+    ["en-US", "01:30:45 PM"],
+    ["de-DE", "13:30:45"],
+  ] as const)("rejects %s %o when seconds are off", ([tag, str]) => {
+    const locale = new Locale(tag);
+
+    expect(LocalTime.tryParseLocalized(str, locale, { seconds: false })).toEqual({ success: false });
+    expect(() => LocalTime.parseLocalized(str, locale)).toThrow(DateTimeParseError);
+  });
+
+  test("an omitted locale reads and writes in Locale.default()", () => {
+    const spy = vi.spyOn(Locale, "default").mockReturnValue(new Locale("de-DE"));
+
+    try {
+      expect(LocalTime.of(13, 30, 45).format(undefined, SECONDS)).toBe("13:30:45");
+      expect(LocalTime.parseLocalized("13:30:45", undefined, SECONDS).equals(LocalTime.of(13, 30, 45))).toBe(true);
+      expect(LocalTime.tryParseLocalized("13:30:45", undefined, SECONDS).value?.equals(LocalTime.of(13, 30, 45))).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
