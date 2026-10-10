@@ -234,3 +234,111 @@ describe("the chain", () => {
     expect(serializeError(error)).not.toHaveProperty("cause");
   });
 });
+
+describe("options", () => {
+  test("bound each link's data by depth, breadth and string length", () => {
+    const inner = Object.assign(new Error("inner"), {
+      nested: { a: { b: "deep" } },
+      wide: [1, 2, 3],
+      text: "abcdef",
+    });
+    const error = new Error("outer", { cause: inner });
+
+    const serialized = serializeError(error, { maxDepth: 2, maxBreadth: 2, maxStringLength: 3 });
+
+    expect(serialized.cause?.data).toEqual({
+      nested: { a: "[Truncated]" },
+      wide: [1, 2, "[Truncated: 1 more]"],
+      "…": "[Truncated: 1 more]",
+    });
+  });
+
+  test("cut each link's message and stack at the string length limit", () => {
+    const inner = new Error("inner message");
+    inner.stack = "inner stack";
+    const outer = new Error("outer message", { cause: inner });
+    outer.stack = "outer stack";
+
+    expect(serializeError(outer, { maxStringLength: 5 })).toEqual({
+      type: "Error",
+      message: `outer${CUT}`,
+      stack: `outer${CUT}`,
+      cause: { type: "Error", message: `inner${CUT}`, stack: `inner${CUT}` },
+    });
+  });
+
+  test("bound a thrown value's JSON form by depth, breadth and string length", () => {
+    const thrown = { deep: { deeper: { deepest: 1 } }, list: [1, 2, 3], text: "abcdef" };
+
+    expect(serializeError(new Error("outer", { cause: thrown }), { maxDepth: 2, maxBreadth: 2, maxStringLength: 3 }).cause).toEqual({
+      type: "Error",
+      message: `{"d${CUT}`,
+      synthetic: true,
+    });
+
+    const bounded = serializeError(thrown, { maxDepth: 2, maxBreadth: 2, maxStringLength: 100 });
+
+    expect(bounded).toMatchObject({ type: "Error", synthetic: true });
+    expect(JSON.parse(bounded.message)).toEqual({
+      deep: { deeper: "[Truncated]" },
+      list: [1, 2, "[Truncated: 1 more]"],
+      "…": "[Truncated: 1 more]",
+    });
+  });
+
+  test("cut the chain at maxLinks, the marker naming the configured limit", () => {
+    const serialized = serializeError(chain(3), { maxLinks: 2 });
+
+    expect(messages(serialized)).toEqual(["link 0", "link 1", "link 2", "the chain continues past 2 links"]);
+    expect(serialized.cause?.cause?.cause).toEqual({ type: "[Truncated]", message: "the chain continues past 2 links" });
+  });
+
+  test("keep a chain of exactly maxLinks links whole", () => {
+    expect(messages(serializeError(chain(7), { maxLinks: 7 }))).toEqual([
+      "link 0",
+      "link 1",
+      "link 2",
+      "link 3",
+      "link 4",
+      "link 5",
+      "link 6",
+      "link 7",
+    ]);
+  });
+
+  test("count a link into errors toward maxLinks", () => {
+    const error = new AggregateError([chain(2)], "outer");
+
+    expect(messages(serializeError(error, { maxLinks: 2 }).errors?.[0] as SerializedError)).toEqual([
+      "link 0",
+      "link 1",
+      "the chain continues past 2 links",
+    ]);
+  });
+
+  test("summarise errors beyond maxErrors in one entry", () => {
+    const errors = serializeError(new AggregateError([new Error("0"), new Error("1"), new Error("2")]), { maxErrors: 1 }).errors;
+
+    expect(errors).toEqual([expect.objectContaining({ message: "0" }), { type: "[Truncated]", message: "2 more errors" }]);
+  });
+
+  test("bound an aggregate's entries by the string length limit too", () => {
+    const errors = serializeError(new AggregateError([new Error("abcdef"), "ghijkl"]), { maxStringLength: 3 }).errors;
+
+    expect(errors).toMatchObject([
+      { type: "Error", message: `abc${CUT}` },
+      { type: "Error", message: `ghi${CUT}`, synthetic: true },
+    ]);
+  });
+
+  test("default every limit that is omitted", () => {
+    const error = new AggregateError(
+      Array.from({ length: 102 }, (_, index) => new Error(`${index}`)),
+      "many",
+    );
+    const deep = chain(6);
+
+    expect(serializeError(error, {})).toEqual(serializeError(error));
+    expect(serializeError(deep, {})).toEqual(serializeError(deep));
+  });
+});
