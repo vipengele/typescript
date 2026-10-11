@@ -58,7 +58,13 @@ _Avoid_: serialized (that is a value already turned into text), sanitized
 
 **Logger**:
 A handle bound to one Category that emits Log Records. Obtained from
-`@vipengele/ts-core-observability/logger`.
+`@vipengele/ts-core-observability/logger`. `with` derives a Logger that carries Bindings, and every
+record also carries the attributes of the current Scope.
+
+**Binding**:
+An attribute a Logger carries from `with` and puts on every record it emits. It lies over the
+current Scope's attributes and beneath the attributes a call passes.
+_Avoid_: context, default attributes
 
 **Logger Provider**:
 The level configuration and Sinks a set of Loggers share. The process has one default provider,

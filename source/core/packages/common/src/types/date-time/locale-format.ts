@@ -17,8 +17,8 @@ export interface DatePattern {
   readonly literals: readonly string[];
 }
 
-/** A field a {@link DigitsToken} reads: one of a date's fields, the hour or the minute. */
-export type DigitField = DateField | "hour" | "minute";
+/** A field a {@link DigitsToken} reads: one of a date's fields, the hour, the minute or the second. */
+export type DigitField = DateField | "hour" | "minute" | "second";
 
 /** Exactly `text`; with `foldCase`, in any letter case, `text` then being lower-case. */
 export interface TextToken {
@@ -356,13 +356,33 @@ export function parseDate(str: string, locale: Locale): CivilDate | undefined {
   return { year, month, day };
 }
 
-/** A field a locale's time pattern places: the hour, the minute, or the day period (AM or PM). */
-export type TimeField = "hour" | "minute" | "dayPeriod";
+/** A field a locale's time pattern places: the hour, the minute, the second, or the day period (AM or PM). */
+export type TimeField = "hour" | "minute" | "second" | "dayPeriod";
 
-/** An hour (0-23) and a minute (0-59): the precision a locale's short time pattern writes. */
+/**
+ * An hour (0-23), a minute (0-59) and a second (0-59): the precision a locale's time pattern
+ * writes. `second` is read only by a pattern with seconds, which writes an absent one as `00`.
+ */
 export interface ClockTime {
   readonly hour: number;
   readonly minute: number;
+  readonly second?: number;
+}
+
+/**
+ * The cycle a time pattern counts hours on: `h12` (01-12, with a day period) or `h23` (00-23,
+ * without one).
+ */
+export type ClockCycle = "h12" | "h23";
+
+/** How a time is written and read: with `seconds`, the pattern places a second after the minute. */
+export interface TimeOptions {
+  readonly seconds?: boolean;
+}
+
+/** {@link TimeOptions}, and the cycle the pattern counts hours on; the locale's own by default. */
+export interface TimePatternOptions extends TimeOptions {
+  readonly hourCycle?: ClockCycle;
 }
 
 /**
@@ -435,7 +455,10 @@ const FALLBACK_LAYOUT: DateTimeLayout = { timeFirst: false, literals: ["", " ", 
 /** A run of whitespace of any kind: a space, U+00A0, U+202F or another space separator. */
 const WHITESPACE = /\s+/g;
 
-/** Keyed by `Locale#tag` and the hour cycle, for the reason {@link CACHE} is keyed by tag. */
+/**
+ * Keyed by `Locale#tag`, the hour cycle and whether seconds are written, for the reason
+ * {@link CACHE} is keyed by tag.
+ */
 const TIME_CACHE = new Map<string, ResolvedTimePattern>();
 const DATE_TIME_CACHE = new Map<string, ResolvedDateTimeLayout>();
 
@@ -459,22 +482,23 @@ function spacedTokens(literal: string): Token[] {
  * `h11` would spell midnight `00:00 AM` and `h24` would spell it `24:00`, neither of which a
  * reader of the usual 12- or 24-hour clock accepts.
  */
-function clockCycle(locale: Locale): "h12" | "h23" {
+function clockCycle(locale: Locale): ClockCycle {
   return locale.uses24Hour ? "h23" : "h12";
 }
 
-function cacheKey(locale: Locale): string {
-  return `${locale.tag} ${clockCycle(locale)}`;
+function cacheKey(locale: Locale, cycle: ClockCycle, seconds: boolean): string {
+  return `${locale.tag} ${cycle} ${seconds}`;
 }
 
-function timeFormatOptions(locale: Locale): Intl.DateTimeFormatOptions {
+function timeFormatOptions(cycle: ClockCycle, seconds: boolean): Intl.DateTimeFormatOptions {
   return {
     calendar: "gregory",
     numberingSystem: "latn",
     timeZone: "UTC",
     hour: "2-digit",
     minute: "2-digit",
-    hourCycle: clockCycle(locale),
+    ...(seconds ? { second: "2-digit" } : {}),
+    hourCycle: cycle,
   };
 }
 
@@ -485,23 +509,23 @@ function dayPeriod(parts: readonly Intl.DateTimeFormatPart[]): string {
     .join("");
 }
 
-function resolveTime(locale: Locale): ResolvedTimePattern {
-  const key = cacheKey(locale);
+function resolveTime(locale: Locale, cycle: ClockCycle, seconds: boolean): ResolvedTimePattern {
+  const key = cacheKey(locale, cycle, seconds);
   const cached = TIME_CACHE.get(key);
   if (cached !== undefined) {
     return cached;
   }
 
-  const formatter = new Intl.DateTimeFormat(locale.tag, timeFormatOptions(locale));
+  const formatter = new Intl.DateTimeFormat(locale.tag, timeFormatOptions(cycle, seconds));
   const morning = formatter.formatToParts(MORNING);
-  const twelveHour = clockCycle(locale) === "h12";
+  const twelveHour = cycle === "h12";
   const am = twelveHour ? dayPeriod(morning) : "";
   const pm = twelveHour ? dayPeriod(formatter.formatToParts(AFTERNOON)) : "";
 
   const fields: TimeField[] = [];
   const literals = [""];
   for (const part of morning) {
-    if (part.type === "hour" || part.type === "minute" || part.type === "dayPeriod") {
+    if (part.type === "hour" || part.type === "minute" || part.type === "second" || part.type === "dayPeriod") {
       fields.push(part.type);
       literals.push("");
     } else {
@@ -512,6 +536,7 @@ function resolveTime(locale: Locale): ResolvedTimePattern {
   const fieldToken: Readonly<Record<TimeField, Token>> = {
     hour: { kind: "digits", field: "hour", min: 1, max: 2 },
     minute: { kind: "digits", field: "minute", min: 2, max: 2 },
+    second: { kind: "digits", field: "second", min: 2, max: 2 },
     dayPeriod: { kind: "dayPeriod", am: spacedTokens(am), pm: spacedTokens(pm) },
   };
   const tokens = literals.flatMap((literal, index): Token[] => {
@@ -526,62 +551,99 @@ function resolveTime(locale: Locale): ResolvedTimePattern {
 }
 
 /**
- * The order and separators `locale` writes an hour-and-minute time with on its own hour cycle,
- * and its day-period markers, read from `Intl.DateTimeFormat#formatToParts` as
- * {@link resolveDatePattern} reads a date's. A locale whose cycle is `h11` or `h12` gets a
- * 12-hour pattern counting 01-12; one whose cycle is `h23` or `h24` gets a 24-hour pattern
- * counting 00-23.
+ * The order and separators `locale` writes an hour-and-minute time with, and its day-period
+ * markers, read from `Intl.DateTimeFormat#formatToParts` as {@link resolveDatePattern} reads a
+ * date's. With `seconds`, the pattern writes the second too.
+ *
+ * The hour cycle is `options.hourCycle` when given, so a 24-hour locale's 12-hour pattern and its
+ * day periods can be read; otherwise it is the locale's own: a locale whose cycle is `h11` or
+ * `h12` gets a 12-hour pattern counting 01-12, one whose cycle is `h23` or `h24` a 24-hour
+ * pattern counting 00-23.
  */
-export function resolveTimePattern(locale: Locale): TimePattern {
-  return resolveTime(locale).pattern;
+export function resolveTimePattern(locale: Locale, options: TimePatternOptions = {}): TimePattern {
+  return resolveTime(locale, options.hourCycle ?? clockCycle(locale), options.seconds ?? false).pattern;
+}
+
+/** What a {@link TimeSegment} holds: one of the time's fields, or the text between them. */
+export type TimeSegmentType = TimeField | "literal";
+
+/**
+ * One run of a formatted time: the hour, minute or second's padded digits, the day-period marker,
+ * or a literal exactly as the locale writes it.
+ */
+export interface TimeSegment {
+  readonly type: TimeSegmentType;
+  readonly value: string;
 }
 
 /**
- * The time written in `locale`'s pattern: the hour and the minute padded to two digits, and on a
- * 12-hour clock the locale's marker for the half of the day, between the locale's own separators.
- * Midnight is `12:00 AM` on a 12-hour clock and `00:00` on a 24-hour one, never `24:00`.
+ * The time written in `locale`'s time pattern, split into its fields and the literals between
+ * them, in the order the locale writes them. The hour, the minute and, with `seconds`, the second
+ * are padded to two digits; the hour counts 01-12 on a 12-hour clock and 00-23 on a 24-hour one,
+ * and only a 12-hour clock has a `dayPeriod`, the locale's marker for the time's half of the day.
+ * A literal is kept exactly as `Intl` emits it, bidi marks and U+202F included, and one the locale
+ * leaves empty is omitted, so no segment has an empty `value` and the values joined are
+ * {@link formatTime}'s output.
  */
-export function formatTime(time: ClockTime, locale: Locale): string {
-  const { twelveHour, fields, literals, am, pm } = resolveTime(locale).pattern;
+export function timeSegments(time: ClockTime, locale: Locale, options: TimeOptions = {}): TimeSegment[] {
+  const { twelveHour, fields, literals, am, pm } = resolveTime(locale, clockCycle(locale), options.seconds ?? false).pattern;
   const values: Readonly<Record<TimeField, string>> = {
     hour: String(twelveHour ? time.hour % 12 || 12 : time.hour).padStart(2, "0"),
     minute: String(time.minute).padStart(2, "0"),
+    second: String(time.second ?? 0).padStart(2, "0"),
     dayPeriod: time.hour < 12 ? am : pm,
   };
-  return literals
-    .map((literal, index) => {
-      const field = fields[index];
-      return field === undefined ? literal : literal + values[field];
-    })
+  const segments: TimeSegment[] = [];
+  literals.forEach((literal, index) => {
+    if (literal !== "") {
+      segments.push({ type: "literal", value: literal });
+    }
+    const field = fields[index];
+    if (field !== undefined) {
+      segments.push({ type: field, value: values[field] });
+    }
+  });
+  return segments;
+}
+
+/**
+ * The time written in `locale`'s pattern: the hour and the minute padded to two digits, with
+ * `seconds` the second too, and on a 12-hour clock the locale's marker for the half of the day,
+ * between the locale's own separators. Midnight is `12:00 AM` on a 12-hour clock and `00:00` on a
+ * 24-hour one, never `24:00`.
+ */
+export function formatTime(time: ClockTime, locale: Locale, options: TimeOptions = {}): string {
+  return timeSegments(time, locale, options)
+    .map((segment) => segment.value)
     .join("");
 }
 
 /**
- * The hour (0-23) and minute `str` writes in `locale`'s time pattern, or `undefined` when it does
- * not follow the pattern. On a 12-hour clock the hour must be 1-12 and the day-period marker one
- * of the locale's own, matched case-insensitively; `12 AM` is hour 0 and `12 PM` hour 12. On a
- * 24-hour clock the hour is returned as written, unchecked: `25:00` yields hour 25. The minute is
- * two digits and unchecked on either clock.
+ * The hour (0-23) and minute `str` writes in `locale`'s time pattern, and with `seconds` the
+ * second, or `undefined` when it does not follow the pattern. With `seconds` the second is
+ * required; without it a second is rejected. On a 12-hour clock the hour must be 1-12 and the
+ * day-period marker one of the locale's own, matched case-insensitively; `12 AM` is hour 0 and
+ * `12 PM` hour 12. On a 24-hour clock the hour is returned as written, unchecked: `25:00` yields
+ * hour 25. The minute and the second are two digits each and unchecked on either clock.
  *
  * Bidi marks are removed first, whitespace around the time is ignored, and a run of whitespace
  * inside the pattern matches any run of whitespace characters.
  */
-export function parseTime(str: string, locale: Locale): ClockTime | undefined {
-  const { pattern, matcher } = resolveTime(locale);
+export function parseTime(str: string, locale: Locale, options: TimeOptions = {}): ClockTime | undefined {
+  const seconds = options.seconds ?? false;
+  const { pattern, matcher } = resolveTime(locale, clockCycle(locale), seconds);
   const input = stripBidiMarks(str);
   const matches = matchTokens(matcher, input);
   if (matches === undefined) {
     return undefined;
   }
 
-  const { hour, minute } = readDigits(matcher, matches, input) as Record<"hour" | "minute", number>;
-  if (!pattern.twelveHour) {
-    return { hour, minute };
-  }
-  if (hour < 1 || hour > 12) {
+  const { hour: written, minute, second } = readDigits(matcher, matches, input) as Record<"hour" | "minute" | "second", number>;
+  if (pattern.twelveHour && (written < 1 || written > 12)) {
     return undefined;
   }
-  return { hour: (hour % 12) + (matches.some((match) => match.pm) ? 12 : 0), minute };
+  const hour = pattern.twelveHour ? (written % 12) + (matches.some((match) => match.pm) ? 12 : 0) : written;
+  return seconds ? { hour, minute, second } : { hour, minute };
 }
 
 /**
@@ -621,13 +683,14 @@ function formatAfternoon(locale: Locale, options: Intl.DateTimeFormatOptions): s
 }
 
 function resolveDateTime(locale: Locale): ResolvedDateTimeLayout {
-  const key = cacheKey(locale);
+  const cycle = clockCycle(locale);
+  const key = cacheKey(locale, cycle, false);
   const cached = DATE_TIME_CACHE.get(key);
   if (cached !== undefined) {
     return cached;
   }
 
-  const timeOptions = timeFormatOptions(locale);
+  const timeOptions = timeFormatOptions(cycle, false);
   const layout = layoutDateTime(
     formatAfternoon(locale, { ...DATE_OPTIONS, ...timeOptions }),
     formatAfternoon(locale, DATE_OPTIONS),
@@ -639,7 +702,7 @@ function resolveDateTime(locale: Locale): ResolvedDateTimeLayout {
   const timeStart: MarkToken = { kind: "mark" };
   const timeEnd: MarkToken = { kind: "mark" };
   const date = [dateStart, ...resolve(locale).tokens, dateEnd];
-  const time = [timeStart, ...resolveTime(locale).tokens, timeEnd];
+  const time = [timeStart, ...resolveTime(locale, cycle, false).tokens, timeEnd];
   const [before, between, after] = layout.literals;
   const [first, second] = layout.timeFirst ? [time, date] : [date, time];
   const matcher = anchored([...spacedTokens(before), ...first, ...spacedTokens(between), ...second, ...spacedTokens(after)]);

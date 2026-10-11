@@ -251,10 +251,18 @@ LocalTime.parseLocalized("3:30 PM", us).toString(); // "15:30"
 LocalDateTime.ofFields(2024, 3, 9, 15, 30).format(us); // "03/09/2024, 03:30 PM"
 ```
 
-A time or date-time is localized to hour and minute only, so parsing one gives second and
-nanosecond `0`. The locale's hour cycle is honoured: a 12-hour locale prints a day-period marker
-and a 24-hour one never prints hour 24. The pattern is derived from `Intl`, with the Gregorian
-calendar and ASCII digits forced.
+A date-time is localized to hour and minute only, and so is a time unless `{ seconds: true }` is
+passed to `LocalTime#format`, `parseLocalized`, `tryParseLocalized` or `segments`, so parsing gives
+nanosecond `0` and, without the option, second `0`. With the option, a string without a second is
+rejected, and without it a string with one is. The locale's hour cycle is honoured: a
+12-hour locale prints a day-period marker and a 24-hour one never prints hour 24. The pattern is
+derived from `Intl`, with the Gregorian calendar and ASCII digits forced.
+
+```ts
+time.format(de, { seconds: true }); // "15:30:00"
+LocalTime.parseLocalized("3:30:15 PM", us, { seconds: true }).toString(); // "15:30:15"
+LocalTime.tryParseLocalized("3:30 PM", us, { seconds: true }); // { success: false }
+```
 
 **Segments** — `LocalDate#segments(locale?)` returns the date pattern as `DateSegment[]`, each a
 `{ type: "year" | "month" | "day" | "literal", value }`, for a date input that lays out its own
@@ -267,8 +275,24 @@ date.segments(us);
 //     { type: "year", value: "2024" }]
 ```
 
-`DateSegment`, `DateSegmentType`, `DateTimeTryParseResult` and `IsoDayOfWeek` are exported
-alongside the values.
+`LocalTime#segments(locale?, options?)` does the same for a time as `TimeSegment[]`, each a
+`{ type: "hour" | "minute" | "second" | "dayPeriod" | "literal", value }`; `second` appears with
+`{ seconds: true }` and `dayPeriod` only on a 12-hour locale. The hour is `01`-`12` on a 12-hour
+clock and `00`-`23` on a 24-hour one, empty literals are omitted, and the values joined equal
+`format()`. The space before the day period is the locale's own.
+
+```ts
+time.segments(us).map((s) => s.type);
+// => ["hour", "literal", "minute", "literal", "dayPeriod"]
+time.segments(de, { seconds: true }).map((s) => s.value);
+// => ["15", ":", "30", ":", "00"]
+```
+
+`LocalTime.dayPeriods(locale?)` returns the locale's `{ am, pm }` labels, for a picker that lists
+them; a 24-hour locale still returns its 12-hour labels.
+
+`DateSegment`, `DateSegmentType`, `TimeSegment`, `TimeSegmentType`, `DateTimeTryParseResult` and
+`IsoDayOfWeek` are exported alongside the values.
 
 ### `ZoneId`
 
@@ -641,3 +665,52 @@ import { type Clock, systemClock } from "@vipengele/ts-core-common";
 systemClock(); // e.g. 1704067200000.4
 const fixed: Clock = () => 0; // a stand-in for a test
 ```
+
+## Scheduler
+
+`Scheduler` is a source of delays: code that waits takes one instead of calling `setTimeout`
+directly, so a caller can substitute a scheduler it controls. `systemScheduler` is the default,
+backed by `setTimeout`. Both are exported from the package root.
+
+`sleep(ms, signal?)` resolves after `ms` milliseconds. An aborted `signal` rejects the promise with
+`signal.reason` and cancels the wait; a signal that is already aborted rejects without starting a
+timer. A negative or non-finite `ms` rejects with a `RangeError`.
+
+```ts
+import { type Scheduler, systemScheduler } from "@vipengele/ts-core-common";
+
+async function poll(scheduler: Scheduler = systemScheduler, signal?: AbortSignal) {
+  await scheduler.sleep(500, signal);
+}
+```
+
+## `./testing`
+
+`createManualTime(startMs?)` returns a virtual `Clock` and `Scheduler` over one timeline that moves
+only when `advance` is called. `startMs` is the starting epoch time (default `0`) and must be
+finite, or it throws a `RangeError`.
+
+```ts
+import { createManualTime } from "@vipengele/ts-core-common/testing";
+
+const { clock, scheduler, advance, pendingSleeps } = createManualTime(1_000);
+```
+
+- `clock()` returns the current virtual time.
+- `scheduler.sleep(ms, signal?)` follows the `Scheduler` contract above: a sleep registered at
+  virtual time `t` fires once an `advance` reaches `t + ms`.
+- `advance(ms)` moves virtual time forward by `ms`, firing every sleep due at or before the target,
+  earliest first and ties in registration order. Inside a fired sleep's continuation `clock()`
+  returns that sleep's deadline; once the last firing has drained, time settles at the target. A
+  sleep a continuation registers inside the window fires in the same call.
+- `pendingSleeps` counts the sleeps registered and neither fired nor aborted.
+
+`advance` rejects with a `RangeError` for a negative or non-finite `ms`, and with a `TypeError` when
+another `advance` is still in flight, including one called from a fired continuation.
+
+Manual time patches no globals. After each firing `advance` waits for one real `setTimeout(0)` so
+the continuation's microtasks run before the next deadline is checked, and a continuation can abort
+a sleep that is also due. Each hop costs real time, about 1ms in Node and about 4ms in Chromium once
+nested timers are clamped, so an `advance` that fires N sleeps takes roughly N times that. It replaces
+`vi.useFakeTimers()` rather than composing with it: under fake timers that hop never fires and
+`advance` never settles.

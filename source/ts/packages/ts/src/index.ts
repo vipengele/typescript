@@ -23,6 +23,8 @@ export type {
   DateTimeTryParseResult,
   Disambiguation,
   IsoDayOfWeek,
+  TimeSegment,
+  TimeSegmentType,
   ZonedDateTimeOptions,
 } from "@vipengele/ts-core-common/types/date-time";
 export { Scope } from "@vipengele/ts-core-common/scope";

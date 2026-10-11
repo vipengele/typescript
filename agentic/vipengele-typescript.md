@@ -23,7 +23,8 @@ Error Event, Scope, Breadcrumb, Transport) before naming things.
     `Locale` — a validated BCP 47 tag with month and weekday names, hour cycle and first day of the
     week — ADR-0013), `./types/date-time` (`LocalDate`, `LocalTime`, `LocalDateTime`: validated,
     immutable, zoneless civil values with ISO 8601 parse/format, arithmetic, `now()`, locale-aware
-    `format`/`parseLocalized`/`tryParseLocalized` and `LocalDate#segments`; `Instant`, a
+    `format`/`parseLocalized`/`tryParseLocalized`, `LocalDate#segments` and `LocalTime#segments`, with
+    an opt-in `{ seconds }` on the time's localized methods and `LocalTime.dayPeriods`; `Instant`, a
     nanosecond point on the UTC timeline; `ZoneId`, a named time zone with `offsetSecondsAt`; `ZonedDateTime`, a date and time of day in a
     zone, built by `LocalDateTime#atZone`, `LocalDate#atStartOfDay` and `Instant#atZone`, with a
     `disambiguation` option settling a skipped or repeated local time, a `ZoneResolutionError` for
@@ -44,7 +45,9 @@ Error Event, Scope, Breadcrumb, Transport) before naming things.
     `serializeError` is the one place a thrown value's whole `cause`/`errors` chain is walked into
     a `SerializedError`, the shape the logger and the error reporter share (ADR-0007); `Level`
     (`"trace"` through `"fatal"`) and `Threshold` (`Level | "off"`) are exported from the package
-    root, not a sub-path, since every package that logs or reports needs them.
+    root, not a sub-path, since every package that logs or reports needs them; so are `Clock` and
+    `Scheduler` (with `systemScheduler`). `./testing`'s `createManualTime` is a virtual clock and
+    scheduler on one timeline.
   - `packages/redaction` — `@vipengele/ts-core-redaction`: the reusable redaction library. A `RedactionPolicy` matches keys by exact string, regex or
     `{ segments }` (word-segment match), carves exceptions out with `except`, and composes through
     `composePolicies`; `secretKeys` is the frozen preset (ADR-0011). `redactUrl`,
@@ -76,7 +79,7 @@ Error Event, Scope, Breadcrumb, Transport) before naming things.
   from `@vipengele/ts-core-common`'s `./types/numeric` sub-path, `Locale` (with `HourCycle`,
   `IsoWeekday`, `NameStyle`) from its `./locale` sub-path, `LocalDate`, `LocalTime`,
   `LocalDateTime`, `Instant`, `ZoneId` and `ZonedDateTime` (with their errors, guards,
-  `ZoneResolutionError` and `DateSegment`, `DateSegmentType`, `DateTimeTryParseResult`,
+  `ZoneResolutionError` and `DateSegment`, `DateSegmentType`, `TimeSegment`, `TimeSegmentType`, `DateTimeTryParseResult`,
   `Disambiguation`, `IsoDayOfWeek`, `ZonedDateTimeOptions`) from its `./types/date-time` sub-path, and `redact`,
   `secretKeys`, `composePolicies`, `redactUrl`, `redactQueryString`, `redactHeaders`, `maskKeepLast` and `pseudonymize`, the value
   detectors `valueDetectors`, `jwt`, `bearerToken`, `creditCard`, `email`, `awsAccessKey`,

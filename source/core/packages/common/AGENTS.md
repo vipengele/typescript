@@ -1,7 +1,7 @@
 # @vipengele/ts-core-common
 
 Shared types and primitives the other framework packages agree on, shipped as tree-shakeable
-sub-paths (`./types/numeric`, `./types/date-time`, `./locale`, `./context`, `./scope`, `./runtime`, …).
+sub-paths (`./types/numeric`, `./types/date-time`, `./locale`, `./context`, `./scope`, `./runtime`, `./testing`, …).
 A sub-path is a slice of this one package, not a separate package.
 
 ## Commands (run from `source/core`)
@@ -57,10 +57,13 @@ A sub-path needs both a `tsup.config.ts` `entry` and a `package.json` `exports` 
   `isDateTimeParseError`, never `instanceof`.
 - Each has a locale-aware `format(locale)` and a `parseLocalized`/`tryParseLocalized(str, locale)`
   pair taking a `./locale` `Locale`; `LocalDate#segments(locale)` returns the formatted date as
-  typed `DateSegment`s (`year`, `month`, `day`, `literal`).
+  typed `DateSegment`s (`year`, `month`, `day`, `literal`) and `LocalTime#segments(locale, options)`
+  the formatted time as `TimeSegment`s (`hour`, `minute`, `second`, `dayPeriod`, `literal`);
+  `LocalTime.dayPeriods(locale)` returns the locale's AM and PM labels.
 - `src/types/date-time/locale-format.ts` derives each locale's numeric date and time patterns from
-  `Intl.DateTimeFormat` and caches them per `locale.tag`. Localized time is hour and minute only,
-  and a 12-hour pattern parses its day period. Parsing strips bidi marks; formatting keeps them.
+  `Intl.DateTimeFormat` and caches them per `locale.tag`. Localized time is hour and minute only
+  unless `LocalTime`'s opt-in `{ seconds: true }` adds the second, and a 12-hour pattern parses its
+  day period. Parsing strips bidi marks; formatting keeps them.
   The year is exactly four digits; month and day accept one or two.
 - `src/types/date-time/civil.ts` holds the shared civil-calendar arithmetic; `now.ts` reads the
   wall clock in the current time zone through `Intl.DateTimeFormat` and the `Clock` from `src/time/clock`.

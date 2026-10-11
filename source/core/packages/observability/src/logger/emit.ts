@@ -1,14 +1,15 @@
-import { type AttributesInput, type Level, normalizeAttributes, serializeError } from "@vipengele/ts-core-common";
-import type { Resource } from "@vipengele/ts-core-common/scope";
+import { type Attributes, type AttributesInput, type Level, normalizeAttributes, serializeError } from "@vipengele/ts-core-common";
+import { type Resource, Scope, snapshot } from "@vipengele/ts-core-common/scope";
+import { mergeAttributes } from "../merge-attributes";
 import { redactAttributes, redactError } from "../redaction";
 import type { EmitSettings, LogRecord } from "./record";
 
 /**
- * Freezes `value` and every object and array beneath it. A record holds only JSON-safe data that
- * `normalizeAttributes`, `serializeError` and `redact` built for it, bounded and acyclic, so the
- * walk ends and never reaches an object of the caller's.
+ * Freezes `value` and every object and array beneath it. A record and a Logger's bindings hold
+ * only JSON-safe data that `normalizeAttributes`, `serializeError` and `redact` built for them,
+ * bounded and acyclic, so the walk ends and never reaches an object of the caller's.
  */
-function freezeDeep<T>(value: T): T {
+export function freezeDeep<T>(value: T): T {
   if (typeof value === "object" && value !== null) {
     for (const entry of Object.values(value)) {
       freezeDeep(entry);
@@ -19,9 +20,25 @@ function freezeDeep<T>(value: T): T {
 }
 
 /**
- * The deeply frozen record for one call. Freezing the record, its attributes and every link of
- * its error lets every sink receive the same object without one sink's writes, at any depth,
- * changing what the next one sees.
+ * The current Scope's attributes, from the default scope inward, never the Resource. A throw while
+ * reading or normalizing them yields an empty record, so the record still goes out with the
+ * Logger's bindings and the call's own attributes instead of being dropped.
+ */
+function scopeAttributes(): Attributes {
+  try {
+    return normalizeAttributes(snapshot(Scope.current()));
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * The deeply frozen record for one call. Its attributes merge from least to most specific — the
+ * current Scope's, then the Logger's already normalized `bindings`, then the call's — each layer
+ * normalized on its own, so the call wins a shared key over the bindings and the bindings over the
+ * Scope. They are redacted as one record, so a secret key is masked whichever layer it came from. Freezing the record, its attributes and every link of its
+ * error lets every sink receive the same object without one sink's writes, at any depth, changing
+ * what the next one sees.
  */
 function createRecord(
   settings: EmitSettings,
@@ -30,9 +47,10 @@ function createRecord(
   message: string,
   attributes: AttributesInput | undefined,
   error: unknown,
+  bindings: Attributes,
 ): LogRecord {
   const time = settings.clock();
-  const normalized = normalizeAttributes(attributes ?? {});
+  const normalized = mergeAttributes([scopeAttributes(), bindings, normalizeAttributes(attributes ?? {})]);
   const serialized = error === undefined ? undefined : serializeError(error);
   const policy = settings.redaction;
   const record: { -readonly [K in keyof LogRecord]: LogRecord[K] } = {
@@ -61,9 +79,13 @@ function reportSinkError(settings: EmitSettings, thrown: unknown): void {
  * Turns one enabled Logger call into a {@link LogRecord} and writes it, with the Resource in
  * force, to every sink of `settings`. Never throws.
  *
+ * `bindings` are the attributes the Logger carries from `with`, already normalized and frozen.
+ * They lie over the current Scope's attributes, and the call's `attributes` win over both key by
+ * key. A throw while reading the Scope leaves its attributes out rather than dropping the record.
+ *
  * `error` is `undefined` when the call passed none; any other value, `null` included, is a thrown
  * value and is serialized into the record's `error`. With no sink configured nothing else is read:
- * neither the clock, nor the attributes, nor the error.
+ * neither the clock, nor the Scope, nor the attributes, nor the error.
  *
  * Building the record — the clock, normalizing the attributes, serializing the error, redacting
  * them, and asking for the Resource — runs inside one guard. A throw there drops the record: no
@@ -79,6 +101,7 @@ export function emitRecord(
   message: string,
   attributes: AttributesInput | undefined,
   error: unknown,
+  bindings: Attributes = {},
 ): void {
   const { sinks } = settings;
   if (sinks.length === 0) {
@@ -88,7 +111,7 @@ export function emitRecord(
   let record: LogRecord;
   let resource: Resource;
   try {
-    record = createRecord(settings, level, category, message, attributes, error);
+    record = createRecord(settings, level, category, message, attributes, error, bindings);
     resource = settings.resource();
   } catch {
     return;

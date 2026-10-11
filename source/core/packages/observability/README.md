@@ -66,7 +66,38 @@ log.error("save failed", caught, { documentId: 7 });
 A call below the level in force does nothing. One that passes the check becomes a `LogRecord`:
 `time` (epoch milliseconds with a sub-millisecond fraction), `level`, `category`, `message`,
 `attributes`, and, when the call passed one, `error`, the thrown value serialized with its whole
-`cause`/`errors` chain. The record carries the call's own attributes only.
+`cause`/`errors` chain.
+
+**Bindings** — `log.with(attributes)` returns a new `Logger` for the same category whose records
+carry those attributes:
+
+```ts
+const requestLog = log.with({ requestId: "abc" });
+
+requestLog.info("saved", { documentId: 7 }); // attributes: { requestId, documentId }
+requestLog.with({ requestId: "def" }); // overrides the parent's requestId
+```
+
+- **Bound once** — the attributes are normalized and deeply frozen when `with` is called, so later
+  changes to the object passed in do not reach the Logger. Redaction still runs when a record is
+  emitted, over the whole record.
+- **Detached and live** — the returned Logger is frozen and works detached from the object, so
+  `const { info } = requestLog` is safe. It shares the parent's level configuration and emit
+  settings, so a level change through `Logging.override` or `configure` reaches it.
+- **No attributes** — `with({})` returns the same Logger.
+
+**Scope attributes** — every record that passes the level check and has a sink also carries the
+attributes of the ambient `Scope` chain (`snapshot(Scope.current())`, from `./scope` of
+`@vipengele/ts-core-common`), never the Resource keys. Attributes merge from least to most
+specific: Scope, then the Logger's bindings, then the call's own attributes, the more specific layer
+winning a shared key. Each layer is normalized separately; the reporter merges its events with the
+same helper. If reading the Scope throws, the record is emitted without its Scope attributes.
+
+- **Browser** — without an async-context carrier, the Scope is lost after an `await` (ADR-0006), so
+  a record emitted after one carries no Scope attributes. Bind what must survive an `await` with
+  `with`.
+- **Cost** — the Scope is read on every record that passes the level check and has a sink; there is
+  no opt-out.
 
 **Sinks** — a `Sink` is an object with `write(record, resource)`, where `resource` is the `Resource`
 in force when the record was emitted; that `(record, resource)` arity is part of the
@@ -89,7 +120,8 @@ Logging.configure((b) => b.addSink({ write: (record) => records.push(record) }))
   record. The failure is reported once per failing sink per record through the warn target, which
   belongs to each copy of the package, like spec issues.
 - **A throwing clock or redaction policy** drops the record silently: no sink receives it, and the
-  caller does not see the throw.
+  caller does not see the throw. A throwing Scope read is the exception: the record is emitted
+  without its Scope attributes.
 - **An async `write`** — a promise returned by `write` is neither awaited nor observed, so a
   rejecting async `write` is the sink's own to handle.
 

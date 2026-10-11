@@ -2,8 +2,10 @@ import { Locale } from "../../locale";
 import type { Clock } from "../../time/clock";
 import { DateTimeParseError, type DateTimeTryParseResult, InvalidDateTimeError } from "./errors";
 import { formatFraction, parseFraction } from "./fraction";
-import { formatTime, parseTime } from "./locale-format";
+import { formatTime, parseTime, resolveTimePattern, type TimeOptions, type TimeSegment, timeSegments } from "./locale-format";
 import { civilNow } from "./now";
+
+export type { TimeSegment, TimeSegmentType } from "./locale-format";
 
 /**
  * `HH:mm`, `HH:mm:ss` or `HH:mm:ss.` followed by fraction digits, exactly: no zone designator, no
@@ -45,16 +47,16 @@ function parseValue(str: string): LocalTime | undefined {
 }
 
 /**
- * The time `str` writes in `locale`'s time pattern, at second 0 and nanosecond 0, or `undefined`
- * when it writes none.
+ * The time `str` writes in `locale`'s time pattern, at nanosecond 0 and at second 0 unless
+ * `options.seconds` has the pattern write one, or `undefined` when it writes none.
  */
-function parseLocalizedValue(str: string, locale: Locale): LocalTime | undefined {
-  const fields = parseTime(str, locale);
+function parseLocalizedValue(str: string, locale: Locale, options: TimeOptions): LocalTime | undefined {
+  const fields = parseTime(str, locale, options);
   if (fields === undefined) {
     return undefined;
   }
-  const { hour, minute } = fields;
-  return invalidReason(hour, minute, 0, 0) === undefined ? LocalTime.of(hour, minute) : undefined;
+  const { hour, minute, second = 0 } = fields;
+  return invalidReason(hour, minute, second, 0) === undefined ? LocalTime.of(hour, minute, second) : undefined;
 }
 
 /**
@@ -135,8 +137,14 @@ export class LocalTime {
   /**
    * Reads the hour and minute `str` writes in `locale`'s time pattern, or in `Locale.default()`
    * when `locale` is omitted: `01:30 PM` in `en-US`, `13:30` in `de-DE`, `午後01:30` in `ja-JP` on
-   * a 12-hour clock. The result's second and nanosecond are zero. The locale's separators,
+   * a 12-hour clock. The result's second and nanosecond are zero unless `options.seconds` says
+   * otherwise. The locale's separators,
    * day-period markers and hour cycle are read from `Intl`, matching {@link LocalTime#format}.
+   *
+   * With `options.seconds` the pattern also places a two-digit second after the minute
+   * (`01:30:45 PM` in `en-US`, `13:30:45` in `de-DE`) and the result carries it, so a string with
+   * no second is rejected. Without it a string that writes a second is rejected. The nanosecond is
+   * zero either way.
    *
    * On a 12-hour clock the hour is 1-12 and the day-period marker must be one of the locale's own,
    * in any letter case: `12:00 AM` is midnight and `12:00 PM` noon. On a 24-hour clock the hour is
@@ -151,8 +159,8 @@ export class LocalTime {
    * @throws {DateTimeParseError} when `str` does not follow the pattern, or its fields do not name
    *   a time (`13:00 PM`, `00:30 AM`, `25:00`, `12:60`).
    */
-  static parseLocalized(str: string, locale: Locale = Locale.default()): LocalTime {
-    const value = parseLocalizedValue(str, locale);
+  static parseLocalized(str: string, locale: Locale = Locale.default(), options: TimeOptions = {}): LocalTime {
+    const value = parseLocalizedValue(str, locale, options);
     if (value === undefined) {
       throw new DateTimeParseError(`Cannot parse ${JSON.stringify(str)} as a time in ${locale.tag}.`);
     }
@@ -161,11 +169,26 @@ export class LocalTime {
 
   /**
    * The non-throwing counterpart of {@link LocalTime.parseLocalized}: a string that does not
-   * write a time yields `{ success: false }` rather than a {@link DateTimeParseError}.
+   * write a time yields `{ success: false }` rather than a {@link DateTimeParseError}. With
+   * `options.seconds` a string with no second yields it too, and without it a string with one does.
    */
-  static tryParseLocalized(str: string, locale: Locale = Locale.default()): DateTimeTryParseResult<LocalTime> {
-    const value = parseLocalizedValue(str, locale);
+  static tryParseLocalized(str: string, locale: Locale = Locale.default(), options: TimeOptions = {}): DateTimeTryParseResult<LocalTime> {
+    const value = parseLocalizedValue(str, locale, options);
     return value === undefined ? { success: false } : { success: true, value };
+  }
+
+  /**
+   * The markers `locale`, or `Locale.default()` when `locale` is omitted, writes for the first
+   * (`am`) and second (`pm`) half of the day on a 12-hour clock: `AM` and `PM` in `en-US`, `오전`
+   * and `오후` in `ko-KR`. They are read from the same cached time pattern
+   * {@link LocalTime#format} and {@link LocalTime#segments} write with, so each equals the
+   * `dayPeriod` segment of a time in that half of the day. A locale on a 24-hour clock writes no
+   * marker, yet still has 12-hour ones (`de-DE` gives `AM` and `PM`), which are returned, so a
+   * time input can offer a 12-hour clock in any locale.
+   */
+  static dayPeriods(locale: Locale = Locale.default()): { am: string; pm: string } {
+    const { am, pm } = resolveTimePattern(locale, { hourCycle: "h12" });
+    return { am, pm };
   }
 
   /** A negative number when `a` is earlier in the day than `b`, a positive one when later, and `0` when they are equal. */
@@ -190,9 +213,29 @@ export class LocalTime {
    * the day period, and the locale's short time pattern writes no more. So
    * {@link LocalTime.parseLocalized} under the same locale reads back this time with its second
    * and nanosecond set to zero.
+   *
+   * With `options.seconds` the second is written after the minute, padded to two digits
+   * (`01:30:45 PM` in `en-US`, `13:30:45` in `de-DE`), and
+   * {@link LocalTime.parseLocalized} under the same locale and option reads it back. The
+   * nanosecond is still not written.
    */
-  format(locale: Locale = Locale.default()): string {
-    return formatTime(this, locale);
+  format(locale: Locale = Locale.default(), options: TimeOptions = {}): string {
+    return formatTime(this, locale, options);
+  }
+
+  /**
+   * The parts of {@link LocalTime#format}'s output under `locale`, or `Locale.default()` when
+   * `locale` is omitted, and `options`, in the order the locale writes them: `hour`, `minute`,
+   * with `options.seconds` `second`, on a 12-hour clock `dayPeriod`, and each `literal` between or
+   * around them. `13:30` in `en-US` is hour `01`, literal `:`, minute `30`, literal U+202F (or a
+   * space, by ICU version), day period `PM`; in `ko-KR` the day period comes first. The hour is
+   * 01-12 on a 12-hour clock (`12` at midnight and noon) and 00-23 on a 24-hour one, which has no
+   * `dayPeriod` segment. A literal the locale leaves empty is omitted, and the values joined are
+   * exactly {@link LocalTime#format}'s output, bidi marks and the locale's own space characters
+   * included.
+   */
+  segments(locale: Locale = Locale.default(), options: TimeOptions = {}): TimeSegment[] {
+    return timeSegments(this, locale, options);
   }
 
   /**

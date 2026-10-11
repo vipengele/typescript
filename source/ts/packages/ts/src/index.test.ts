@@ -33,6 +33,8 @@ import type {
   NormalizeAttributesOptions,
   PseudonymizeOptions,
   RedactStringOptions,
+  TimeSegment,
+  TimeSegmentType,
   ZonedDateTimeOptions,
 } from "./index";
 import {
@@ -130,6 +132,21 @@ test("LocalDate formats and segments a date in a locale", () => {
   expect(types).toEqual(["month", "literal", "day", "literal", "year"]);
   expect(parsed.success).toBe(true);
   expect(weekday).toBe(2);
+});
+
+test("LocalTime segments a time and names the day periods in a locale", () => {
+  const locale = new Locale("en-US");
+  const segments: TimeSegment[] = LocalTime.of(14, 5).segments(locale);
+  const types: TimeSegmentType[] = segments.map((segment) => segment.type);
+
+  const coreTypes = CoreLocalTime.of(14, 5)
+    .segments(locale)
+    .map((segment) => segment.type);
+
+  expect(types).toEqual(coreTypes);
+  expect(types).toContain("hour");
+  expect(LocalTime.dayPeriods(locale)).toEqual(CoreLocalTime.dayPeriods(locale));
+  expect(LocalTime.dayPeriods(locale)).toEqual({ am: "AM", pm: "PM" });
 });
 
 test("the date-time errors are raised and recognised through the umbrella guards", () => {

@@ -10,5 +10,7 @@ export { serializeError } from "./serialization/serialize-error";
 export type { SerializeErrorOptions, SerializedError } from "./serialization/serialize-error";
 export { systemClock } from "./time/clock";
 export type { Clock } from "./time/clock";
+export { systemScheduler } from "./time/scheduler";
+export type { Scheduler } from "./time/scheduler";
 export { toJsonSafe } from "./serialization/to-json-safe";
 export type { ToJsonSafeOptions } from "./serialization/to-json-safe";
