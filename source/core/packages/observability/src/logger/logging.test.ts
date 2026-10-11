@@ -59,6 +59,65 @@ describe("module load", () => {
   });
 });
 
+describe("protocol mismatch", () => {
+  const FOREIGN_SLOT = Symbol.for("vipengele.logger.provider.v2");
+
+  afterEach(() => {
+    delete registry[FOREIGN_SLOT];
+  });
+
+  let copies = 0;
+
+  /**
+   * A fresh copy of the module, so its once-per-copy check has not run yet. A distinct query string
+   * makes a distinct module instance under both runtimes, where `vi.resetModules` does not reach a
+   * module the browser has already evaluated.
+   */
+  async function freshCopy(): Promise<typeof import("./logging")> {
+    copies += 1;
+    const specifier = `./logging?copy=${copies}`;
+    return import(/* @vite-ignore */ specifier);
+  }
+
+  test("warns once per copy when another record protocol is present, and still creates the v1 provider", async () => {
+    registry[FOREIGN_SLOT] = {};
+    const copy = await freshCopy();
+    const issues: string[] = [];
+    copy.setWarnTarget((issue) => issues.push(issue));
+    copy.Logging.logger("app");
+    copy.Logging.override("app", "debug");
+    copy.Logging.reset();
+    copy.Logging.logger("other");
+    expect(issues).toEqual([
+      "Another copy of the logger in this realm speaks record protocol vipengele.logger.provider.v2; this copy speaks vipengele.logger.provider.v1. " +
+        "Levels are shared between them, but sinks configured on one do not receive the other's records.",
+    ]);
+    expect(Object.hasOwn(globalThis, PROVIDER_SLOT)).toBe(true);
+    copy.setWarnTarget(undefined);
+  });
+
+  test("does not warn when only this copy's protocol is present", async () => {
+    const copy = await freshCopy();
+    const issues: string[] = [];
+    copy.setWarnTarget((issue) => issues.push(issue));
+    copy.Logging.logger("app");
+    copy.Logging.logger("other");
+    expect(issues).toEqual([]);
+    copy.setWarnTarget(undefined);
+  });
+
+  test("checks when the default provider is first resolved, not on later calls", async () => {
+    const copy = await freshCopy();
+    const issues: string[] = [];
+    copy.setWarnTarget((issue) => issues.push(issue));
+    copy.Logging.logger("app");
+    registry[FOREIGN_SLOT] = {};
+    copy.Logging.logger("other");
+    expect(issues).toEqual([]);
+    copy.setWarnTarget(undefined);
+  });
+});
+
 describe("Logging", () => {
   test("configure, override and reset change what an existing Logger reports", () => {
     const logger = Logging.logger("app.db");

@@ -1,6 +1,14 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { entryFor, type LevelTable, OFF_SEVERITY, resolveEntry } from "./levels";
-import { getOrCreateDefaultProvider, normalizeEntry, normalizeTable, publishLevelTable, readLevelTable, resolveSharedEntry } from "./slots";
+import {
+  findForeignProviderProtocols,
+  getOrCreateDefaultProvider,
+  normalizeEntry,
+  normalizeTable,
+  publishLevelTable,
+  readLevelTable,
+  resolveSharedEntry,
+} from "./slots";
 
 const LEVELS_SLOT = Symbol.for("vipengele.logger.levels");
 const PROVIDER_SLOT = Symbol.for("vipengele.logger.provider.v1");
@@ -268,5 +276,40 @@ describe("getOrCreateDefaultProvider", () => {
       }),
     ).toThrow("boom");
     expect(Object.hasOwn(globalThis, PROVIDER_SLOT)).toBe(false);
+  });
+});
+
+describe("findForeignProviderProtocols", () => {
+  const planted: symbol[] = [];
+
+  function plant(key: symbol): void {
+    planted.push(key);
+    registry[key] = {};
+  }
+
+  afterEach(() => {
+    for (const key of planted.splice(0)) {
+      delete registry[key];
+    }
+  });
+
+  test("finds nothing when only this copy's protocol is present", () => {
+    getOrCreateDefaultProvider(() => ({}));
+    expect(findForeignProviderProtocols()).toEqual([]);
+  });
+
+  test("reports every other protocol's provider slot", () => {
+    plant(Symbol.for("vipengele.logger.provider.v2"));
+    plant(Symbol.for("vipengele.logger.provider.v3"));
+    expect(findForeignProviderProtocols().sort()).toEqual(["vipengele.logger.provider.v2", "vipengele.logger.provider.v3"]);
+  });
+
+  test("ignores the levels slot, other vipengele keys and symbols without the prefix or a description", () => {
+    readLevelTable();
+    plant(Symbol.for("vipengele:async-context-store:scope"));
+    plant(Symbol.for("vipengele.logger.providers"));
+    plant(Symbol.for("other.vipengele.logger.provider.v2"));
+    plant(Symbol());
+    expect(findForeignProviderProtocols()).toEqual([]);
   });
 });
