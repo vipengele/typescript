@@ -6,7 +6,7 @@ import { isLoggingConfigError } from "./config-error";
 import { entryFor } from "./levels";
 import { createLogger, type Logger } from "./logger";
 import { createLoggerProvider } from "./provider";
-import type { EmitSettings, Sink } from "./record";
+import type { EmitSettings, LogProcessor, Sink } from "./record";
 import type { LoggingSettings } from "./settings";
 
 vi.mock("./logger", { spy: true });
@@ -509,7 +509,7 @@ describe("emit settings", () => {
     });
     expect(Object.keys(emit.resource())).toHaveLength(11);
     expect(Object.isFrozen(emit.resource())).toBe(true);
-    expect(emit.onSinkError(new Error("lost"))).toBeUndefined();
+    expect(emit.onSinkError(new Error("lost"), sink())).toBeUndefined();
   });
 
   test("resource and onSinkError come from the options, called on the options object", () => {
@@ -538,11 +538,194 @@ describe("emit settings", () => {
       },
     };
     const failure = new Error("sink down");
+    const source = sink();
 
     const emit = emitOf(createLoggerProvider(undefined, options).logger("a"))();
-    emit.onSinkError(failure);
+    emit.onSinkError(failure, source);
 
     expect(emit.resource()).toBe(resource);
     expect(seen).toEqual([failure]);
+  });
+});
+
+/** A sink whose every `write` throws `failure`. */
+function throwing(failure: unknown): Sink {
+  return {
+    write() {
+      throw failure;
+    },
+  };
+}
+
+describe("failure reports", () => {
+  test("onSinkError receives every failure with its source, the same sink twice and a shared processor included", () => {
+    const onSinkError = vi.fn();
+    const failure = new Error("down");
+    const failing = throwing(failure);
+    const processorFailure = new Error("processor");
+    const processor: LogProcessor = () => {
+      throw processorFailure;
+    };
+    const provider = createLoggerProvider(
+      (b) =>
+        b
+          .addSink(failing)
+          .addSink(failing)
+          .addSink(sink(), { processors: [processor] }),
+      {
+        onSinkError,
+      },
+    );
+    const logger = provider.logger("a");
+
+    logger.error("first");
+    logger.error("second");
+
+    expect(onSinkError.mock.calls).toEqual([
+      [failure, failing],
+      [failure, failing],
+      [processorFailure, processor],
+      [failure, failing],
+      [failure, failing],
+      [processorFailure, processor],
+    ]);
+  });
+
+  test("with sinkErrorsOncePerSource, a sink added twice is reported once per configuration", () => {
+    const onSinkError = vi.fn();
+    const failure = new Error("down");
+    const failing = throwing(failure);
+    const provider = createLoggerProvider((b) => b.addSink(failing).addSink(failing), { onSinkError, sinkErrorsOncePerSource: true });
+    const logger = provider.logger("a");
+
+    logger.error("first");
+    logger.error("second");
+
+    expect(onSinkError.mock.calls).toEqual([[failure, failing]]);
+  });
+
+  test("with sinkErrorsOncePerSource, a processor in the global chain and a sink's chain is reported once", () => {
+    const onSinkError = vi.fn();
+    const failure = new Error("processor");
+    let calls = 0;
+    const shared: LogProcessor = (record) => {
+      calls += 1;
+      if (calls >= 2) {
+        throw failure;
+      }
+      return record;
+    };
+    const provider = createLoggerProvider((b) => b.addProcessor(shared).addSink(sink(), { processors: [shared] }), {
+      onSinkError,
+      sinkErrorsOncePerSource: true,
+    });
+    const logger = provider.logger("a");
+
+    logger.error("fails in the sink's chain");
+    logger.error("fails in the global chain");
+
+    expect(calls).toBe(3);
+    expect(onSinkError.mock.calls).toEqual([[failure, shared]]);
+  });
+
+  test("with sinkErrorsOncePerSource, distinct sources are each reported", () => {
+    const onSinkError = vi.fn();
+    const first = throwing(new Error("first"));
+    const second = throwing(new Error("second"));
+    const provider = createLoggerProvider((b) => b.addSink(first).addSink(second), { onSinkError, sinkErrorsOncePerSource: true });
+
+    provider.logger("a").error("m");
+
+    expect(onSinkError.mock.calls.map(([, source]) => source)).toEqual([first, second]);
+  });
+
+  test("with sinkErrorsOncePerSource, a successful configure reports a source again", () => {
+    const onSinkError = vi.fn();
+    const failing = throwing(new Error("down"));
+    const provider = createLoggerProvider((b) => b.addSink(failing), { onSinkError, sinkErrorsOncePerSource: true });
+    const logger = provider.logger("a");
+
+    logger.error("first");
+    provider.configure((b) => b.addSink(failing));
+    logger.error("second");
+
+    expect(onSinkError).toHaveBeenCalledTimes(2);
+  });
+
+  test("with sinkErrorsOncePerSource, a rejected configure does not report a source again", () => {
+    const onSinkError = vi.fn();
+    const failing = throwing(new Error("down"));
+    const provider = createLoggerProvider((b) => b.addSink(failing), { onSinkError, sinkErrorsOncePerSource: true });
+    const logger = provider.logger("a");
+
+    logger.error("first");
+    expect(() => provider.configure((b) => b.addLevels({ a: "loud" as Threshold }))).toThrow(isConfigError);
+    logger.error("second");
+
+    expect(onSinkError).toHaveBeenCalledOnce();
+  });
+
+  test("with sinkErrorsOncePerSource, reset reports a source again", () => {
+    const onSinkError = vi.fn();
+    const failure = new Error("down");
+    const failing = throwing(failure);
+    const provider = createLoggerProvider(undefined, { onSinkError, sinkErrorsOncePerSource: true });
+    const emit = emitOf(provider.logger("a"));
+
+    emit().onSinkError(failure, failing);
+    emit().onSinkError(failure, failing);
+    provider.reset();
+    emit().onSinkError(failure, failing);
+
+    expect(onSinkError.mock.calls).toEqual([
+      [failure, failing],
+      [failure, failing],
+    ]);
+  });
+
+  test("with sinkErrorsOncePerSource, override does not report a source again", () => {
+    const onSinkError = vi.fn();
+    const failing = throwing(new Error("down"));
+    const provider = createLoggerProvider((b) => b.addSink(failing), { onSinkError, sinkErrorsOncePerSource: true });
+    const logger = provider.logger("a");
+
+    logger.error("first");
+    provider.override("a", "info");
+    provider.override("a", null);
+    logger.error("second");
+
+    expect(onSinkError).toHaveBeenCalledOnce();
+  });
+
+  test("with sinkErrorsOncePerSource, onSinkError is still called on the options object", () => {
+    const seen: unknown[] = [];
+    const options = {
+      sinkErrorsOncePerSource: true,
+      onSinkError(error: unknown): void {
+        expect(this).toBe(options);
+        seen.push(error);
+      },
+    };
+    const failure = new Error("down");
+
+    createLoggerProvider((b) => b.addSink(throwing(failure)), options)
+      .logger("a")
+      .error("m");
+
+    expect(seen).toEqual([failure]);
+  });
+
+  test("the sources one provider reported are not shared with another", () => {
+    const onFirst = vi.fn();
+    const onSecond = vi.fn();
+    const failing = throwing(new Error("down"));
+    const first = createLoggerProvider((b) => b.addSink(failing), { onSinkError: onFirst, sinkErrorsOncePerSource: true });
+    const second = createLoggerProvider((b) => b.addSink(failing), { onSinkError: onSecond, sinkErrorsOncePerSource: true });
+
+    first.logger("a").error("m");
+    second.logger("a").error("m");
+
+    expect(onFirst).toHaveBeenCalledOnce();
+    expect(onSecond).toHaveBeenCalledOnce();
   });
 });

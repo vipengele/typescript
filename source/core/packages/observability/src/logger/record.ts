@@ -82,7 +82,7 @@ export type { RedactionSetting };
  * clock, serializing the error, redacting) happens inside one `try`/`catch`: a throwing clock or
  * redaction policy drops that record, delivers it to no sink and does not reach the caller. The
  * global processors run next, then delivery runs per sink: the sink's own processors, then its
- * `write` in its own `try`/`catch` that reports to `onSinkError`.
+ * `write` in its own `try`/`catch`. A failing processor or `write` is reported to `onSinkError`.
  */
 export interface EmitSettings {
   /**
@@ -108,9 +108,13 @@ export interface EmitSettings {
   readonly resource: () => Resource;
 
   /**
-   * Called with the thrown value of a `Sink.write` that failed, once per failing sink per
-   * record. It is itself guarded: a throw from `onSinkError` is swallowed, so reporting a sink
-   * failure can never break the call that emitted the record.
+   * Called with the thrown value of a `Sink.write` that failed, with that sink as `source`, and
+   * with the thrown value of a processor that failed — the `TypeError` for a return that is
+   * neither a record nor `null`, or the error freezing its return raised — with that processor as
+   * `source`. Each failure on each path is reported: a sink registered twice that throws twice is
+   * reported twice, and whether a source is reported again is the provider's decision. It is
+   * itself guarded: a throw from `onSinkError` is swallowed, so reporting a failure can never
+   * break the call that emitted the record.
    */
-  readonly onSinkError: (error: unknown) => void;
+  readonly onSinkError: (error: unknown, source: Sink | LogProcessor) => void;
 }

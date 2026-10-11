@@ -4,7 +4,7 @@ import { isLoggingConfigError } from "./config-error";
 import { createLogger, type Logger } from "./logger";
 import { Logging, setWarnTarget } from "./logging";
 import { createLoggerProvider, type LoggerProvider } from "./provider";
-import type { EmitSettings, Sink } from "./record";
+import type { EmitSettings, LogProcessor, Sink } from "./record";
 import { publishLevelTable, resolveSharedEntry } from "./slots";
 
 vi.mock("./logger", { spy: true });
@@ -286,6 +286,18 @@ describe("resource", () => {
   });
 });
 
+/** A sink whose every `write` throws `failure`. */
+function throwing(failure: unknown): Sink {
+  return {
+    write() {
+      throw failure;
+    },
+  };
+}
+
+/** One sink shared by the tests below, whose every `write` throws `Error: down`. */
+const failing = throwing(new Error("down"));
+
 describe("sink errors", () => {
   test.for([
     ["an Error", new TypeError("sink down"), "TypeError: sink down"],
@@ -297,21 +309,132 @@ describe("sink errors", () => {
     const target = vi.fn();
     setWarnTarget(target);
 
-    emitOf(Logging.logger("app"))().onSinkError(thrown);
+    emitOf(Logging.logger("app"))().onSinkError(thrown, sink());
 
     expect(target).toHaveBeenCalledTimes(1);
     expect(target).toHaveBeenCalledWith(`A log sink threw while writing a record: ${detail}`);
   });
 
-  test("are reported every time, not once", () => {
+  test("reach the warn target once per source per configuration, the same sink added twice included", () => {
+    const target = vi.fn();
+    setWarnTarget(target);
+    Logging.configure((b) =>
+      b
+        .addSink(throwing(new Error("first")))
+        .addSink(failing)
+        .addSink(failing),
+    );
+    const logger = Logging.logger("app");
+
+    logger.error("one");
+    logger.error("two");
+
+    expect(target.mock.calls).toEqual([
+      ["A log sink threw while writing a record: Error: first"],
+      ["A log sink threw while writing a record: Error: down"],
+    ]);
+  });
+
+  test("from a processor say that a processor failed", () => {
+    const target = vi.fn();
+    setWarnTarget(target);
+    const processor: LogProcessor = () => {
+      throw new Error("bad");
+    };
+    Logging.configure((b) => b.addProcessor(processor).addSink(sink()));
+
+    Logging.logger("app").error("m");
+
+    expect(target).toHaveBeenCalledWith("A log processor threw or returned a malformed record: Error: bad");
+  });
+
+  test("from a processor in the global chain and a sink's chain reach the warn target once", () => {
+    const target = vi.fn();
+    setWarnTarget(target);
+    let calls = 0;
+    const shared: LogProcessor = (record) => {
+      calls += 1;
+      if (calls >= 2) {
+        throw new Error("bad");
+      }
+      return record;
+    };
+    Logging.configure((b) => b.addProcessor(shared).addSink(sink(), { processors: [shared] }));
+    const logger = Logging.logger("app");
+
+    logger.error("fails in the sink's chain");
+    logger.error("fails in the global chain");
+
+    expect(calls).toBe(3);
+    expect(target).toHaveBeenCalledOnce();
+  });
+
+  test("reach the warn target again after configure", () => {
+    const target = vi.fn();
+    setWarnTarget(target);
+    Logging.configure((b) => b.addSink(failing));
+    Logging.logger("app").error("one");
+
+    Logging.configure((b) => b.addSink(failing));
+    Logging.logger("app").error("two");
+
+    expect(target).toHaveBeenCalledTimes(2);
+  });
+
+  test("reach the warn target again after reset", () => {
     const target = vi.fn();
     setWarnTarget(target);
     const emit = emitOf(Logging.logger("app"));
 
-    emit().onSinkError(new Error("again"));
-    emit().onSinkError(new Error("again"));
+    emit().onSinkError(new Error("down"), failing);
+    emit().onSinkError(new Error("down"), failing);
+    Logging.reset();
+    emit().onSinkError(new Error("down"), failing);
 
     expect(target).toHaveBeenCalledTimes(2);
+  });
+
+  test("do not reach the warn target again after override", () => {
+    const target = vi.fn();
+    setWarnTarget(target);
+    Logging.configure((b) => b.addSink(failing));
+    const logger = Logging.logger("app");
+
+    logger.error("one");
+    Logging.override("app", "info");
+    logger.error("two");
+
+    expect(target).toHaveBeenCalledOnce();
+  });
+
+  test("of a created provider reach the warn target once per source, apart from the default provider's", () => {
+    const target = vi.fn();
+    setWarnTarget(target);
+    Logging.configure((b) => b.addSink(failing));
+    const provider = Logging.createProvider((b) => b.addSink(failing));
+
+    Logging.logger("app").error("one");
+    provider.logger("app").error("one");
+    provider.logger("app").error("two");
+
+    expect(target).toHaveBeenCalledTimes(2);
+  });
+
+  test("reach a host's own onSinkError every time, with the source", () => {
+    const onSinkError = vi.fn();
+    const failure = new Error("down");
+    const own = throwing(failure);
+    const provider = createLoggerProvider((b) => b.addSink(own).addSink(own), { onSinkError });
+
+    provider.logger("app").error("one");
+    provider.logger("app").error("two");
+
+    expect(onSinkError.mock.calls).toEqual([
+      [failure, own],
+      [failure, own],
+      [failure, own],
+      [failure, own],
+    ]);
   });
 
   test("an Error whose message cannot be read is described by its type", () => {
@@ -324,7 +447,7 @@ describe("sink errors", () => {
       },
     });
 
-    emitOf(Logging.logger("app"))().onSinkError(thrown);
+    emitOf(Logging.logger("app"))().onSinkError(thrown, sink());
 
     expect(target).toHaveBeenCalledWith("A log sink threw while writing a record: a value of type object");
   });
@@ -333,7 +456,7 @@ describe("sink errors", () => {
     const target = vi.fn();
     setWarnTarget(target);
 
-    emitOf(Logging.createProvider().logger("app"))().onSinkError(new Error("down"));
+    emitOf(Logging.createProvider().logger("app"))().onSinkError(new Error("down"), sink());
 
     expect(target).toHaveBeenCalledWith("A log sink threw while writing a record: Error: down");
   });
@@ -341,7 +464,7 @@ describe("sink errors", () => {
   test("console.warn receives them when no target is injected", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
-    emitOf(Logging.logger("app"))().onSinkError(new Error("down"));
+    emitOf(Logging.logger("app"))().onSinkError(new Error("down"), sink());
 
     expect(warn).toHaveBeenCalledWith("A log sink threw while writing a record: Error: down");
   });

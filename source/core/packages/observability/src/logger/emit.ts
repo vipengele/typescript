@@ -2,7 +2,7 @@ import { type Attributes, type AttributesInput, type Level, normalizeAttributes,
 import { type Resource, Scope, snapshot } from "@vipengele/ts-core-common/scope";
 import { mergeAttributes } from "../merge-attributes";
 import { redactAttributes, redactError } from "../redaction";
-import type { EmitSettings, LogProcessor, LogRecord } from "./record";
+import type { EmitSettings, LogProcessor, LogRecord, Sink } from "./record";
 
 /**
  * Freezes `value` and every object and array beneath it. A record and a Logger's bindings hold
@@ -93,19 +93,29 @@ function acceptProcessorOutput(previous: LogRecord, next: unknown): LogRecord | 
   return freezeDeep({ ...candidate, attributes } as LogRecord);
 }
 
+/** Reports a failed sink or processor; a throw from the report itself is swallowed. */
+function reportFailure(settings: EmitSettings, thrown: unknown, source: Sink | LogProcessor): void {
+  try {
+    settings.onSinkError(thrown, source);
+  } catch {
+    // Reporting a failure never breaks the call that emitted the record.
+  }
+}
+
 /**
  * `record` passed through `processors` in order, each on what the previous one returned, or `null`
  * as soon as one of them drops it. A processor that throws, or returns something
- * {@link acceptProcessorOutput} rejects, also yields `null`: the stage fails closed, and never
- * throws itself.
+ * {@link acceptProcessorOutput} rejects, also yields `null` and is reported as the source of the
+ * failure: the stage fails closed, and never throws itself.
  */
-function runProcessors(processors: readonly LogProcessor[], record: LogRecord): LogRecord | null {
+function runProcessors(settings: EmitSettings, processors: readonly LogProcessor[], record: LogRecord): LogRecord | null {
   let current = record;
   for (const processor of processors) {
     let next: LogRecord | null;
     try {
       next = acceptProcessorOutput(current, processor(current));
-    } catch {
+    } catch (thrown) {
+      reportFailure(settings, thrown, processor);
       return null;
     }
     if (next === null) {
@@ -114,15 +124,6 @@ function runProcessors(processors: readonly LogProcessor[], record: LogRecord): 
     current = next;
   }
   return current;
-}
-
-/** Reports a failed `write`; a throw from the report itself is swallowed. */
-function reportSinkError(settings: EmitSettings, thrown: unknown): void {
-  try {
-    settings.onSinkError(thrown);
-  } catch {
-    // Reporting a sink failure never breaks the call that emitted the record.
-  }
 }
 
 /**
@@ -140,19 +141,21 @@ function reportSinkError(settings: EmitSettings, thrown: unknown): void {
  * Building the record — the clock, normalizing the attributes, serializing the error, redacting
  * them and asking for the Resource — runs inside one guard. A throw there drops the record: no
  * sink receives it, the caller does not see the throw, and nothing is reported, since
- * `onSinkError` is for sink failures alone.
+ * `onSinkError` is for sink and processor failures alone.
  *
  * The global processors run on the built record, then each sink's own processors on what the
  * global ones returned. The processor stage fails closed: a processor that throws, or returns
  * anything but `null` or an object with a numeric `time` and a string `level` and `category`,
  * drops the record exactly as a `null` does — for every sink when the processor is global, and
  * the Resource is then not asked for; for its own sink alone when it is a per-sink one. Either way
- * the drop is silent and the caller does not see the throw. A processor's returned attributes are
+ * the failure is reported to `onSinkError` with the processor as its source, and the caller does
+ * not see the throw. A processor's returned attributes are
  * normalized again and the record it returns is deeply frozen, so every processor and every sink
  * receives a frozen record with JSON-safe attributes. A returned record that freezing cannot walk,
  * such as one whose `error` refers to itself, is dropped as a throw is.
  *
- * Each `write` runs in its own guard that reports to `onSinkError`, so every sink is tried.
+ * Each `write` runs in its own guard that reports to `onSinkError` with the sink as its source, so
+ * every sink is tried.
  * Whatever `write` returns is ignored: a returned promise is neither awaited nor observed, and a
  * rejection of it is the sink's own to handle.
  */
@@ -173,7 +176,7 @@ export function emitRecord(
   let record: LogRecord | null;
   let resource: Resource;
   try {
-    record = runProcessors(settings.processors, createRecord(settings, level, category, message, attributes, error, bindings));
+    record = runProcessors(settings, settings.processors, createRecord(settings, level, category, message, attributes, error, bindings));
     if (record === null) {
       return;
     }
@@ -183,14 +186,14 @@ export function emitRecord(
   }
 
   for (const { sink, processors } of sinks) {
-    const delivered = runProcessors(processors, record);
+    const delivered = runProcessors(settings, processors, record);
     if (delivered === null) {
       continue;
     }
     try {
       sink.write(delivered, resource);
     } catch (thrown) {
-      reportSinkError(settings, thrown);
+      reportFailure(settings, thrown, sink);
     }
   }
 }

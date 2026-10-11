@@ -2,10 +2,14 @@ import type { Threshold } from "@vipengele/ts-core-common";
 import { Scope } from "@vipengele/ts-core-common/scope";
 import type { Logger } from "./logger";
 import { type ConfigureCallback, createLoggerProvider, type LoggerProvider } from "./provider";
+import type { LogProcessor, Sink } from "./record";
 import type { LoggingSettings } from "./settings";
 import { getOrCreateDefaultProvider, publishLevelTable, resolveSharedEntry } from "./slots";
 
-/** Receives one spec issue, as the sentence `parseSpec` wrote for it, or one sentence describing a failed sink write. */
+/**
+ * Receives one spec issue, as the sentence `parseSpec` wrote for it, or one sentence describing a
+ * failed sink write or log processor.
+ */
 export type WarnTarget = (issue: string) => void;
 
 /**
@@ -18,8 +22,8 @@ export type WarnTarget = (issue: string) => void;
 let warnTarget: WarnTarget | undefined;
 
 /**
- * Redirects where `Logging.configure` reports spec issues and where a failed sink write is
- * reported, or restores `console.warn` when given `undefined`. The target is read when something
+ * Redirects where `Logging.configure` reports spec issues and where a failed sink write or log
+ * processor is reported, or restores `console.warn` when given `undefined`. The target is read when something
  * is reported, never captured, so it governs the default provider whenever that provider was
  * created.
  */
@@ -55,17 +59,25 @@ function describeThrown(error: unknown): string {
   }
 }
 
-/** Reports one failed `Sink.write`, every time, through the current warn target. */
-function reportSinkError(error: unknown): void {
-  warn(`A log sink threw while writing a record: ${describeThrown(error)}`);
+/**
+ * Reports one failed `Sink.write` or log processor through the current warn target, naming which
+ * of the two failed. A source is a processor when it is a function, since a sink is an object with
+ * a `write` method. The providers below ask for each source to be reported once per configuration.
+ */
+function reportSinkError(error: unknown, source: Sink | LogProcessor): void {
+  if (typeof source === "function") {
+    warn(`A log processor threw or returned a malformed record: ${describeThrown(error)}`);
+  } else {
+    warn(`A log sink threw while writing a record: ${describeThrown(error)}`);
+  }
 }
 
 /**
  * The realm's default provider, created on first use behind the provider slot so importing this
  * module touches nothing on `globalThis`. Its Loggers resolve through the shared levels slot on
  * every call and every change is published to it, which is how copies of the package agree; only
- * the level table is published, never the sinks. Its records carry `Scope.resource()`, and a sink
- * failure is reported through the warn target.
+ * the level table is published, never the sinks. Its records carry `Scope.resource()`, and the
+ * first failure of each sink or processor per configuration is reported through the warn target.
  */
 function defaultProvider(): LoggerProvider {
   return getOrCreateDefaultProvider(() =>
@@ -77,6 +89,7 @@ function defaultProvider(): LoggerProvider {
       onIssues: reportIssues,
       resource: Scope.resource,
       onSinkError: reportSinkError,
+      sinkErrorsOncePerSource: true,
     }),
   );
 }
@@ -113,10 +126,16 @@ export const Logging = Object.freeze({
    * A provider of its own, started from the defaults and then `configure`. It reads and writes
    * neither shared slot, and its sinks are its own, shared with neither the default provider nor
    * any other. Its spec issues, from `configure` and from every later `configure` call, are
-   * reported once each per call through the warn target, as are its sink failures; its records
-   * carry `Scope.resource()`, as the default provider's do.
+   * reported once each per call through the warn target, as is the first failure of each of its
+   * sinks and processors per configuration; its records carry `Scope.resource()`, as the default
+   * provider's do.
    */
   createProvider(configure?: ConfigureCallback): LoggerProvider {
-    return createLoggerProvider(configure, { onIssues: reportIssues, resource: Scope.resource, onSinkError: reportSinkError });
+    return createLoggerProvider(configure, {
+      onIssues: reportIssues,
+      resource: Scope.resource,
+      onSinkError: reportSinkError,
+      sinkErrorsOncePerSource: true,
+    });
   },
 });

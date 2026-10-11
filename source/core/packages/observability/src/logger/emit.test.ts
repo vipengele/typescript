@@ -642,7 +642,7 @@ describe("emitRecord failure isolation", () => {
     expect(resource).not.toHaveBeenCalled();
   });
 
-  test("a throwing sink is reported once, and every other sink still receives the record", () => {
+  test("a throwing sink is reported with itself as the source on every failure, the same sink added twice included, and every other sink still receives the record", () => {
     const before = collector();
     const after = collector();
     const failure = new Error("disk full");
@@ -659,7 +659,10 @@ describe("emitRecord failure isolation", () => {
 
     expect(before.written).toHaveLength(1);
     expect(after.written).toHaveLength(1);
-    expect(onSinkError.mock.calls).toEqual([[failure], [failure]]);
+    expect(onSinkError.mock.calls).toEqual([
+      [failure, failing],
+      [failure, failing],
+    ]);
   });
 
   test("a throwing onSinkError is swallowed, and later sinks still receive the record", () => {
@@ -931,7 +934,9 @@ describe("emitRecord processor output", () => {
     expect(later).not.toHaveBeenCalled();
     expect(perSink).not.toHaveBeenCalled();
     expect(resource).not.toHaveBeenCalled();
-    expect(onSinkError).not.toHaveBeenCalled();
+    expect(onSinkError).toHaveBeenCalledOnce();
+    expect(onSinkError.mock.calls[0]?.[0]).toBeInstanceOf(TypeError);
+    expect(onSinkError.mock.calls[0]?.[1]).toBe(processor);
   });
 
   test.each(malformed)("a per-sink processor returning $name drops the record for that sink only", ({ value }) => {
@@ -957,35 +962,49 @@ describe("emitRecord processor output", () => {
     expect(dropped.written).toHaveLength(0);
     expect(after.written).toHaveLength(1);
     expect(later).not.toHaveBeenCalled();
-    expect(onSinkError).not.toHaveBeenCalled();
+    expect(onSinkError).toHaveBeenCalledOnce();
+    expect(onSinkError.mock.calls[0]?.[0]).toBeInstanceOf(TypeError);
+    expect(onSinkError.mock.calls[0]?.[1]).toBe(processor);
   });
 
-  test("a throwing global processor skips the processors after it and every sink's own", () => {
+  test("a throwing global processor skips the processors after it and every sink's own, and is reported as the source", () => {
     const sink = collector();
     const later = vi.fn((record: LogRecord) => record);
     const perSink = vi.fn((record: LogRecord) => record);
+    const failure = new Error("processor");
+    const onSinkError = vi.fn();
     const failing: LogProcessor = () => {
-      throw new Error("processor");
+      throw failure;
     };
 
-    emitRecord(settings({ sinks: [registered(sink, perSink)], processors: [failing, later] }), "info", "a", "m", undefined, undefined);
+    emitRecord(
+      settings({ sinks: [registered(sink, perSink)], processors: [failing, later], onSinkError }),
+      "info",
+      "a",
+      "m",
+      undefined,
+      undefined,
+    );
 
     expect(later).not.toHaveBeenCalled();
     expect(perSink).not.toHaveBeenCalled();
     expect(sink.written).toHaveLength(0);
+    expect(onSinkError.mock.calls).toEqual([[failure, failing]]);
   });
 
-  test("a per-sink processor that throws skips the processors after it in that sink's chain alone", () => {
+  test("a per-sink processor that throws skips the processors after it in that sink's chain alone, and is reported as the source", () => {
     const dropped = collector();
     const after = collector();
     const later = vi.fn((record: LogRecord) => record);
     const otherChain = vi.fn((record: LogRecord) => record);
+    const failure = new Error("processor");
+    const onSinkError = vi.fn();
     const failing: LogProcessor = () => {
-      throw new Error("processor");
+      throw failure;
     };
 
     emitRecord(
-      settings({ sinks: [registered(dropped, failing, later), registered(after, otherChain)] }),
+      settings({ sinks: [registered(dropped, failing, later), registered(after, otherChain)], onSinkError }),
       "info",
       "a",
       "m",
@@ -996,6 +1015,41 @@ describe("emitRecord processor output", () => {
     expect(later).not.toHaveBeenCalled();
     expect(otherChain).toHaveBeenCalledOnce();
     expect(dropped.written).toHaveLength(0);
+    expect(after.written).toHaveLength(1);
+    expect(onSinkError.mock.calls).toEqual([[failure, failing]]);
+  });
+
+  test("a processor shared by the global chain and a sink's chain is reported as the source when it fails in the sink's chain", () => {
+    const sink = collector();
+    const failure = new Error("processor");
+    const onSinkError = vi.fn();
+    let calls = 0;
+    const shared: LogProcessor = (record) => {
+      calls += 1;
+      if (calls === 2) {
+        throw failure;
+      }
+      return record;
+    };
+
+    emitRecord(settings({ sinks: [registered(sink, shared)], processors: [shared], onSinkError }), "info", "a", "m", undefined, undefined);
+
+    expect(sink.written).toHaveLength(0);
+    expect(onSinkError.mock.calls).toEqual([[failure, shared]]);
+  });
+
+  test("a throwing onSinkError for a failed processor is swallowed, and the other sinks still receive the record", () => {
+    const after = collector();
+    const onSinkError = (): never => {
+      throw new Error("report");
+    };
+    const failing: LogProcessor = () => {
+      throw new Error("processor");
+    };
+
+    expect(() =>
+      emitRecord(settings({ sinks: [registered(collector(), failing), after], onSinkError }), "info", "a", "m", undefined, undefined),
+    ).not.toThrow();
     expect(after.written).toHaveLength(1);
   });
 
@@ -1133,25 +1187,23 @@ describe("emitRecord processor output", () => {
     expect(Object.isFrozen(sink.written[0]?.record)).toBe(true);
   });
 
-  test("a processor's record that freezing cannot walk, a cyclic error, is dropped for that path", () => {
+  test("a processor's record that freezing cannot walk, a cyclic error, is dropped for that path and reported under the processor", () => {
     const dropped = collector();
     const after = collector();
+    const onSinkError = vi.fn();
     const cause: Record<string, unknown> = { type: "Error", message: "loop" };
     cause.cause = cause;
+    const cyclic: LogProcessor = (record) => ({ ...record, error: cause as unknown as SerializedError });
 
     expect(() =>
-      emitRecord(
-        settings({ sinks: [registered(dropped, (record) => ({ ...record, error: cause as unknown as SerializedError })), after] }),
-        "info",
-        "a",
-        "m",
-        undefined,
-        undefined,
-      ),
+      emitRecord(settings({ sinks: [registered(dropped, cyclic), after], onSinkError }), "info", "a", "m", undefined, undefined),
     ).not.toThrow();
 
     expect(dropped.written).toHaveLength(0);
     expect(after.written).toHaveLength(1);
+    expect(onSinkError).toHaveBeenCalledOnce();
+    expect(onSinkError.mock.calls[0]?.[0]).toBeInstanceOf(RangeError);
+    expect(onSinkError.mock.calls[0]?.[1]).toBe(cyclic);
   });
 
   test("a valid record from a per-sink processor reaches its sink alongside the other sinks' records", () => {
