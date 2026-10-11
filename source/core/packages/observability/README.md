@@ -148,7 +148,8 @@ interface Transport {
 
 `send` is fire-and-forget: it returns at once and never throws, and the reporter never awaits it —
 batching, retry and the decision to drop belong to the transport. `resource` is the `Resource` read
-from `Scope.resource()` once for that event at delivery, frozen, with every key present. `flush` resolves `true` once
+from `Scope.resource()` once per event at capture, before any stage runs, frozen, with every key
+present; the same `Resource` the environment gate read is the one `send` receives. `flush` resolves `true` once
 everything accepted so far is delivered or dropped, `false` if `timeoutMs` elapses first; `close`
 flushes, then turns every later `send` into a no-op.
 
@@ -174,8 +175,8 @@ resolve `true` in that case, since there is nothing to wait on.
 An Error Event's `attributes` carry the ambient `Scope` chain beneath the call's own attributes: the
 attributes of every Scope between the current one and the root, the innermost winning, then the
 `attributes` passed to the capture call, which win on a shared key. Each side is normalized
-separately and bounded by the reporter's limits (`maxBreadth`, 100 entries by default). The Resource (`service.name`, `service.version`,
-`deployment.environment.name`, `process.runtime.name`) is not copied into events; a `Transport`
+separately and bounded by the reporter's limits (`maxBreadth`, 100 entries by default). The Resource
+(see Release, environment and runtime context for its keys) is not copied into events; a `Transport`
 receives it as the second argument of `send`.
 
 `./errors` re-exports `Scope` and the `Resource`, `ScopeAttributes` and `ScopeUser` types from
@@ -227,9 +228,88 @@ const reporter = createReporter((builder) => builder.transport(createConsoleTran
 the event silently, as the logger drops a record.
 
 If reading the Scope throws, the event is delivered without its Scope attributes. If reading the
-Resource for `send` throws, the event is delivered with a Resource whose keys are all `undefined`;
-the logger drops the record on the same throw, since an event is worth more than its Resource. In
+Resource throws, the event is enabled by the environment gate and delivered with a Resource whose
+keys are all `undefined`; the logger drops the record on the same throw, since an event is worth
+more than its Resource. In
 the browser the synchronous-stack carrier loses the Scope after an `await` (ADR-0006).
+
+### Release, environment and runtime context
+
+A release, an environment and a build distinguisher are Resource keys, set once with
+`Scope.setResource`; none is a builder option, so the logger and every reporter read the same values
+(ADR-0016):
+
+| Bugsnag / Sentry | Resource key | Vocabulary |
+|------------------|--------------|------------|
+| `release` | `service.version` | OpenTelemetry |
+| `environment` | `deployment.environment.name` | OpenTelemetry |
+| `dist` | `service.dist` | vipengele extension |
+| `enabledReleaseStages` | `builder.enabledEnvironments(list)`, checked against `deployment.environment.name` | |
+
+```ts
+import { createConsoleTransport, createReporter, Scope } from "@vipengele/ts-core-observability/errors";
+
+Scope.setResource({
+  "service.name": "checkout",
+  "service.version": "1.4.2",
+  "service.dist": "2026-10-11.3",
+  "deployment.environment.name": "production",
+});
+
+const reporter = createReporter((builder) =>
+  builder.transport(createConsoleTransport()).enabledEnvironments(["production", "staging"]),
+);
+```
+
+**Detected keys** — `createReporter` detects the runtime once, synchronously and without
+dependencies, and fills these Resource keys:
+
+| Key | Vocabulary |
+|-----|------------|
+| `process.runtime.name` | OpenTelemetry |
+| `process.runtime.version` | OpenTelemetry |
+| `os.type` | OpenTelemetry |
+| `os.version` | OpenTelemetry |
+| `browser.name` | vipengele extension |
+| `browser.version` | vipengele extension |
+| `device.type` | vipengele extension |
+
+Together with `service.name`, `service.version`, `service.dist` and `deployment.environment.name`
+these are the eleven reserved Resource keys, all present in every `Resource` a `Transport` receives
+and none settable by a descendant Scope.
+
+- **Node, Bun, Deno and edge runtimes** — `process.runtime.version` is the runtime's own version
+  without a leading `v` (`Bun.version`, `Deno.version.deno`; their `process.version` names the Node
+  release they imitate). `os.type` is `process.platform` in OpenTelemetry's lowercase vocabulary
+  (`win32` is `windows`, `sunos` is `solaris`; `darwin`, `linux` and the other Node platform names
+  pass through). `os.version` is never set there.
+- **Browsers and workers** — `process` is never read. The browser, OS and device keys come from
+  `navigator.userAgent`, with the synchronous `navigator.userAgentData` hints outranking the string
+  where present. `os.type` is `windows`, `darwin`, `linux`, `ios`, `android` or `chromeos`;
+  `device.type` is `mobile`, `tablet` or `desktop`.
+- **Best-effort** — what a user agent cannot tell is not guessed at. Chromium and Safari freeze the OS
+  version they report (macOS is always `10.15.7`, Windows 10 and 11 are both `10`). iPadOS sends a Mac
+  user agent unless `navigator.maxTouchPoints` indicates touch. "Request Desktop Site" hides a mobile
+  device. A spoofed user agent is reported as claimed.
+- **Unset keys only** — detection writes a key only when the Resource holds no value for it, so an
+  explicit `Scope.setResource` wins whether it runs before `createReporter` or after. A second
+  reporter fills only the keys still unset. A throw in detection leaves the Resource as it was and the
+  reporter working.
+- **Reporter-only** — an application that only logs creates no reporter and gets no detected values.
+  There is no opt-out, and the detector is not exported; set a better value with `Scope.setResource`.
+
+**The environment gate** — `builder.enabledEnvironments(list)` is an allow-list checked first,
+against the Resource read at capture. An event whose `deployment.environment.name` the list does not
+hold is dropped before it is normalized, and the capture still returns its event `id`.
+
+- **Unset is enabled** — an unset environment is enabled, and so is a Resource whose read threw. The
+  empty string is a set environment, enabled only when the list holds it.
+- **Validation** — an empty list, a value that is not an array, or a non-string entry throws
+  `ReporterConfigError` and leaves the builder as it was. This differs from Bugsnag, where
+  `enabledReleaseStages: []` reports nowhere; to report nowhere, configure no transport.
+- **The gate drops the report, never the exit** — with `globalHandlers` and an `"exit"` policy, an
+  uncaught error in a disabled environment is still written to `console.error`, the transport is
+  still flushed for up to `flushTimeoutMs`, and the process still exits with code `1`.
 
 ### Limits
 
