@@ -117,13 +117,49 @@ Logging.configure((b) => b.addSink({ write: (record) => records.push(record) }))
 - **Clock** — `builder.clock(clock)` replaces the source of `time`; the default is `systemClock`
   from `@vipengele/ts-core-common`.
 - **A throwing sink** never reaches the caller and never stops another sink from receiving the
-  record. The failure is reported once per failing sink per record through the warn target, which
-  belongs to each copy of the package, like spec issues.
+  record. The default warn path reports each failing sink or processor once per configuration,
+  through the warn target, which belongs to each copy of the package, like spec issues. The set of
+  reported sources is cleared by `configure` and `Logging.reset()`, not by `override`; a sink added
+  twice, or a processor shared by the global chain and a sink's chain, is reported once. The warn
+  says whether a sink or a processor failed. A host that builds a provider with its own
+  `onSinkError(error, source)` receives every failure, with the failing sink or processor as
+  `source`, unless it also sets `sinkErrorsOncePerSource: true`.
+- **Another record protocol** — a copy that finds a `vipengele.logger.provider.<version>` slot other
+  than `v1` on `globalThis` warns once, the first time its default provider is resolved: sinks
+  configured on one protocol do not receive the other's records.
 - **A throwing clock or redaction policy** drops the record silently: no sink receives it, and the
   caller does not see the throw. A throwing Scope read is the exception: the record is emitted
   without its Scope attributes.
 - **An async `write`** — a promise returned by `write` is neither awaited nor observed, so a
   rejecting async `write` is the sink's own to handle.
+
+**Processors** — a `LogProcessor` is `(record: LogRecord) => LogRecord | null`: it returns the
+record to pass on, the one it was handed or another, or `null` to drop it. `builder.addProcessor(p)`
+runs ahead of every sink; `builder.addSink(sink, { processors: [p] })` runs ahead of that sink only,
+after the global chain. Each chain runs in the order added, each processor on what the previous one
+returned:
+
+```ts
+Logging.configure((b) =>
+  b
+    .addProcessor((record) => (record.category === "noisy" ? null : record))
+    .addSink(consoleSink)
+    .addSink(remoteSink, { processors: [redactionProcessor(strictPolicy)] }),
+);
+```
+
+- **Fail closed** — a processor that throws, or returns neither a record nor `null`, drops the
+  record. A global processor drops it for every sink; a per-sink processor drops it for that sink
+  alone. The failure is reported like a sink's. A returned value that is not an object, or lacks
+  `time`, `level` or `category`, counts as a failure.
+- **Output is re-normalized** — returned `attributes` go back through the attribute normalization
+  and the result is deeply frozen, so a sink only receives JSON-safe, frozen records.
+- **Validation** — `build()` throws `LoggingConfigError` for a processor that is not a function,
+  `addSink` options that are not an object, or `processors` that is not an array.
+- **Not the reporter's `Processor`** — `./errors` has an internal `Processor` stage that mutates an
+  Error Event in the reporter's pipeline and is not public. The logger's `LogProcessor` is a
+  different contract: it returns the record or `null`, and dropping is part of it, so the reporter
+  has no separate filter stage to mirror.
 
 **Redaction** — on by default, using the `secretKeys` preset from `@vipengele/ts-core-redaction`. A
 policy is applied to `attributes` and to every link of the error chain, when the record is created
@@ -138,6 +174,10 @@ disables it. A policy that carries `detectors` (for example `valueDetectors`) al
 spans in the string values of `attributes` and of an error's `data` and structured fields. A
 record's `message`, the `message` and `stack` of a real `Error`, and a thrown string that is not
 JSON are not scanned: a secret interpolated into one of those is the caller's to keep out.
+
+Built-in redaction is the first stage, ahead of every processor, so a processor sees a redacted
+record. `redactionProcessor(policy = secretKeys)` is the opt-in extra for a different policy on one
+sink: it redacts `attributes` and the error chain with that policy and does not scan `message`.
 
 **What the logger does not have:** formatters, and configuration sources (`VPG_LOG`, browser
 sources, files). A sink formats a record itself, and levels are set in code, with `configure`,
