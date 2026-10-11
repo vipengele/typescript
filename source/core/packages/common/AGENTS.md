@@ -22,9 +22,10 @@ A sub-path needs both a `tsup.config.ts` `entry` and a `package.json` `exports` 
 ## Scope (`src/scope`, `./scope`)
 
 - `Scope` is the ambient context tree: `current`, `propagate`, `inherit`, `isolated`, `resource`,
-  `setResource`, `setUser`, `setTag`, `setContext`, `useCarrier`. Its root holds the four reserved
-  Resource keys (`service.name`, `service.version`, `deployment.environment.name`,
-  `process.runtime.name`) and never changes except through `setResource`.
+  `setResource`, `setUser`, `setTag`, `setContext`, `useCarrier`. Its root holds the eleven reserved
+  Resource keys (`service.name`, `service.version`, `service.dist`, `deployment.environment.name`,
+  `process.runtime.name`, `process.runtime.version`, `os.type`, `os.version`, `browser.name`,
+  `browser.version`, `device.type`; ADR-0016) and never changes except through `setResource`.
 - `Scope.resource()` returns the `Resource` (exported type) read from the realm's one root,
   whatever scope is current, as a frozen per-call snapshot. The logger passes it to every Sink per
   record and the reporter to every Transport per event; it is a function, not a captured value,

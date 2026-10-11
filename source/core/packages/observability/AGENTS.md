@@ -50,10 +50,17 @@ Run commands from `source/core` (`pnpm build`, `pnpm type-check`, `pnpm test`, `
   passes it to `normalizeAttributes` and `serializeError`, cuts the event `message` at
   `maxStringLength` and each link's `frames` at `maxBreadth` (default 100, throw site first, no
   marker entry), so the limits also bound what redaction and processors see.
-- `Transport.send(event, resource)`: `eventResource()` reads `Scope.resource()` once per event at
-  delivery inside a guard. A throw yields a Resource with all four keys `undefined` and the event
-  still goes out — asymmetric with the logger, which drops the record, because an event is worth
-  more than its Resource. `send` stays synchronous and non-throwing (ADR-0010).
+- `Transport.send(event, resource)`: `eventResource()` reads `Scope.resource()` once per event,
+  before any stage, inside a guard; the same Resource gates the event and is handed to `send`. A throw
+  yields a Resource with all eleven keys `undefined` and the event still goes out — asymmetric with the
+  logger, which drops the record, because an event is worth more than its Resource. `send` stays
+  synchronous and non-throwing (ADR-0010).
+- `builder.enabledEnvironments(list)` is an allow-list checked first in capture, before normalize: an
+  event whose `deployment.environment.name` is set and not in the list is dropped. An unset
+  environment (including an unreadable Resource) is enabled; no list enables every environment.
+- `createReporter` calls `fillRuntimeContext` (`reporter.ts`), which writes the keys
+  `detectRuntimeContext` (`runtime-context.ts`, unexported, best effort) finds into Resource keys that
+  hold no value; a key already set is never overwritten and a throw is swallowed (ADR-0016).
 - `createTestTransport` records `events` and `resources` as parallel arrays; the console transport
   does not print the Resource.
 - `./errors` re-exports `Scope` and the `Resource`, `ScopeAttributes`, `ScopeUser` types, not
