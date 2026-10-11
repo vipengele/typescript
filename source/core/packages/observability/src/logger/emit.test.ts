@@ -880,3 +880,290 @@ describe("emitRecord processors", () => {
     expect(processor).not.toHaveBeenCalled();
   });
 });
+
+describe("emitRecord processor output", () => {
+  /** A processor that returns `value` whatever it is handed. */
+  function returning(value: unknown): LogProcessor {
+    return () => value as LogRecord;
+  }
+
+  /** A processor that keeps the record but replaces its attributes with `attributes`. */
+  function withAttributes(attributes: unknown): LogProcessor {
+    return (record) => ({ ...record, attributes }) as LogRecord;
+  }
+
+  const malformed: { readonly name: string; readonly value: (record: LogRecord) => unknown }[] = [
+    { name: "undefined", value: () => undefined },
+    { name: "a string", value: () => "record" },
+    { name: "a number", value: () => 42 },
+    { name: "a function", value: () => () => {} },
+    { name: "an array", value: () => [] },
+    { name: "a record without time", value: ({ time, ...rest }) => rest },
+    { name: "a record without level", value: ({ level, ...rest }) => rest },
+    { name: "a record without category", value: ({ category, ...rest }) => rest },
+    { name: "a record with a string time", value: (record) => ({ ...record, time: "now" }) },
+    { name: "a record with a numeric level", value: (record) => ({ ...record, level: 30 }) },
+    { name: "a record with a null category", value: (record) => ({ ...record, category: null }) },
+  ];
+
+  test.each(malformed)("a global processor returning $name drops the record for every sink, skipping the rest", ({ value }) => {
+    const first = collector();
+    const second = collector();
+    const later = vi.fn((record: LogRecord) => record);
+    const perSink = vi.fn((record: LogRecord) => record);
+    const resource = vi.fn(() => RESOURCE);
+    const onSinkError = vi.fn();
+    const processor: LogProcessor = (record) => value(record) as LogRecord;
+
+    expect(() =>
+      emitRecord(
+        settings({ sinks: [registered(first, perSink), second], processors: [processor, later], resource, onSinkError }),
+        "info",
+        "a",
+        "m",
+        undefined,
+        undefined,
+      ),
+    ).not.toThrow();
+
+    expect(first.written).toHaveLength(0);
+    expect(second.written).toHaveLength(0);
+    expect(later).not.toHaveBeenCalled();
+    expect(perSink).not.toHaveBeenCalled();
+    expect(resource).not.toHaveBeenCalled();
+    expect(onSinkError).not.toHaveBeenCalled();
+  });
+
+  test.each(malformed)("a per-sink processor returning $name drops the record for that sink only", ({ value }) => {
+    const before = collector();
+    const dropped = collector();
+    const after = collector();
+    const later = vi.fn((record: LogRecord) => record);
+    const onSinkError = vi.fn();
+    const processor: LogProcessor = (record) => value(record) as LogRecord;
+
+    expect(() =>
+      emitRecord(
+        settings({ sinks: [before, registered(dropped, processor, later), after], onSinkError }),
+        "info",
+        "a",
+        "m",
+        undefined,
+        undefined,
+      ),
+    ).not.toThrow();
+
+    expect(before.written).toHaveLength(1);
+    expect(dropped.written).toHaveLength(0);
+    expect(after.written).toHaveLength(1);
+    expect(later).not.toHaveBeenCalled();
+    expect(onSinkError).not.toHaveBeenCalled();
+  });
+
+  test("a throwing global processor skips the processors after it and every sink's own", () => {
+    const sink = collector();
+    const later = vi.fn((record: LogRecord) => record);
+    const perSink = vi.fn((record: LogRecord) => record);
+    const failing: LogProcessor = () => {
+      throw new Error("processor");
+    };
+
+    emitRecord(settings({ sinks: [registered(sink, perSink)], processors: [failing, later] }), "info", "a", "m", undefined, undefined);
+
+    expect(later).not.toHaveBeenCalled();
+    expect(perSink).not.toHaveBeenCalled();
+    expect(sink.written).toHaveLength(0);
+  });
+
+  test("a per-sink processor that throws skips the processors after it in that sink's chain alone", () => {
+    const dropped = collector();
+    const after = collector();
+    const later = vi.fn((record: LogRecord) => record);
+    const otherChain = vi.fn((record: LogRecord) => record);
+    const failing: LogProcessor = () => {
+      throw new Error("processor");
+    };
+
+    emitRecord(
+      settings({ sinks: [registered(dropped, failing, later), registered(after, otherChain)] }),
+      "info",
+      "a",
+      "m",
+      undefined,
+      undefined,
+    );
+
+    expect(later).not.toHaveBeenCalled();
+    expect(otherChain).toHaveBeenCalledOnce();
+    expect(dropped.written).toHaveLength(0);
+    expect(after.written).toHaveLength(1);
+  });
+
+  test("cyclic attributes a processor returns reach the sink as a JSON-safe, frozen record", () => {
+    const sink = collector();
+    const cyclic: Record<string, unknown> = { name: "loop" };
+    cyclic.self = cyclic;
+
+    emitRecord(settings({ sinks: [sink], processors: [withAttributes({ cyclic })] }), "info", "a", "m", undefined, undefined);
+
+    const record = sink.written[0]?.record as LogRecord;
+    expect(record.attributes).toEqual({ cyclic: { name: "loop", self: "[Circular]" } });
+    expect(() => JSON.stringify(record)).not.toThrow();
+    expect(Object.isFrozen(record.attributes.cyclic)).toBe(true);
+    expect(Object.isFrozen(cyclic)).toBe(false);
+  });
+
+  test("attributes a processor returns are normalized into their JSON-safe shape", () => {
+    const plain = collector();
+    const renamed = collector();
+    const date = new Date("2024-01-02T03:04:05.000Z");
+
+    emitRecord(
+      settings({
+        sinks: [plain, registered(renamed, withAttributes({ at: date, big: 10n, tags: new Set(["y"]), skipped: undefined }))],
+        processors: [withAttributes({ map: new Map([["k", 1]]), fn: undefined })],
+      }),
+      "info",
+      "a",
+      "m",
+      undefined,
+      undefined,
+    );
+
+    expect(plain.written[0]?.record.attributes).toEqual({ map: { k: 1 } });
+    expect(renamed.written[0]?.record.attributes).toEqual({ at: date.toISOString(), big: "10n", tags: ["y"] });
+  });
+
+  test("attributes a processor leaves out, or returns as something no record can hold, become an empty record", () => {
+    const missing = collector();
+    const empty = collector();
+
+    emitRecord(
+      settings({
+        sinks: [registered(missing, ({ attributes, ...rest }) => rest as LogRecord), registered(empty, withAttributes(null))],
+      }),
+      "info",
+      "a",
+      "m",
+      { kept: "no" },
+      undefined,
+    );
+
+    expect(missing.written[0]?.record.attributes).toEqual({});
+    expect(empty.written[0]?.record.attributes).toEqual({});
+  });
+
+  test("attributes a processor passes through unchanged are not normalized a second time", () => {
+    const sink = collector();
+    const long = "x".repeat(10_000);
+    let built: LogRecord | undefined;
+    const capture: LogProcessor = (record) => {
+      built = record;
+      return record;
+    };
+
+    emitRecord(
+      settings({ sinks: [sink], processors: [capture, (record) => ({ ...record, message: "renamed" })] }),
+      "info",
+      "a",
+      "m",
+      { long },
+      undefined,
+    );
+
+    const record = sink.written[0]?.record as LogRecord;
+    expect(record.message).toBe("renamed");
+    expect(record.attributes).toBe(built?.attributes);
+  });
+
+  test("a processor returning the record it was handed passes that same frozen record on", () => {
+    const sink = collector();
+    let handed: LogRecord | undefined;
+    const identity: LogProcessor = (record) => {
+      handed = record;
+      return record;
+    };
+
+    emitRecord(settings({ sinks: [registered(sink, identity)], processors: [identity] }), "info", "a", "m", undefined, undefined);
+
+    expect(sink.written[0]?.record).toBe(handed);
+    expect(Object.isFrozen(handed)).toBe(true);
+  });
+
+  test("the record a processor returns is deeply frozen, and the processor's own object is not", () => {
+    const sink = collector();
+    const onSinkError = vi.fn();
+    const returned: LogRecord[] = [];
+    const rebuild: LogProcessor = (record) => {
+      const next = { ...record, attributes: { nested: { value: "v" }, list: [{ value: "w" }] } };
+      returned.push(next);
+      return next;
+    };
+    const tamper: Sink = {
+      write(record) {
+        (record.attributes.nested as Record<string, unknown>).value = "tampered";
+      },
+    };
+
+    emitRecord(settings({ sinks: [tamper, sink], processors: [rebuild], onSinkError }), "info", "a", "m", undefined, undefined);
+
+    const record = sink.written[0]?.record as LogRecord;
+    expect(Object.isFrozen(record)).toBe(true);
+    expect(Object.isFrozen(record.attributes.nested)).toBe(true);
+    expect(Object.isFrozen((record.attributes.list as unknown[])[0])).toBe(true);
+    expect(record.attributes).toEqual({ nested: { value: "v" }, list: [{ value: "w" }] });
+    expect(onSinkError).toHaveBeenCalledOnce();
+    expect(onSinkError.mock.calls[0]?.[0]).toBeInstanceOf(TypeError);
+    expect(returned[0]).not.toBe(record);
+    expect(Object.isFrozen(returned[0])).toBe(false);
+  });
+
+  test("each processor in a chain, global then per-sink, is handed a frozen record", () => {
+    const sink = collector();
+    const frozen: boolean[] = [];
+    const step: LogProcessor = (record) => {
+      frozen.push(Object.isFrozen(record), Object.isFrozen(record.attributes));
+      return { ...record, attributes: { ...record.attributes, step: frozen.length } };
+    };
+
+    emitRecord(settings({ sinks: [registered(sink, step, step)], processors: [step, step] }), "info", "a", "m", undefined, undefined);
+
+    expect(frozen).toEqual([true, true, true, true, true, true, true, true]);
+    expect(sink.written[0]?.record.attributes).toEqual({ step: 8 });
+    expect(Object.isFrozen(sink.written[0]?.record)).toBe(true);
+  });
+
+  test("a processor's record that freezing cannot walk, a cyclic error, is dropped for that path", () => {
+    const dropped = collector();
+    const after = collector();
+    const cause: Record<string, unknown> = { type: "Error", message: "loop" };
+    cause.cause = cause;
+
+    expect(() =>
+      emitRecord(
+        settings({ sinks: [registered(dropped, (record) => ({ ...record, error: cause as unknown as SerializedError })), after] }),
+        "info",
+        "a",
+        "m",
+        undefined,
+        undefined,
+      ),
+    ).not.toThrow();
+
+    expect(dropped.written).toHaveLength(0);
+    expect(after.written).toHaveLength(1);
+  });
+
+  test("a valid record from a per-sink processor reaches its sink alongside the other sinks' records", () => {
+    const plain = collector();
+    const replaced = collector();
+    const replacement = { time: 1, level: "error", category: "b", message: "other", attributes: { k: "v" } };
+
+    emitRecord(settings({ sinks: [plain, registered(replaced, returning(replacement))] }), "info", "a", "m", undefined, undefined);
+
+    expect(plain.written[0]?.record).toMatchObject({ time: 1_700_000_000_000.25, level: "info", category: "a", message: "m" });
+    expect(replaced.written[0]?.record).toEqual(replacement);
+    expect(Object.isFrozen(replaced.written[0]?.record)).toBe(true);
+    expect(Object.isFrozen(replacement)).toBe(false);
+  });
+});

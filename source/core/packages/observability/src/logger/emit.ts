@@ -66,11 +66,48 @@ function createRecord(
   return freezeDeep(record);
 }
 
-/** `record` passed through `processors` in order, or `null` as soon as one of them drops it. */
+/**
+ * What a processor handed `previous` returned, made safe for the next processor or a sink. `null`
+ * passes through as a drop, and `previous` itself is returned as it is, already frozen. Anything
+ * else must be an object carrying a numeric `time` and a string `level` and `category`, or this
+ * throws a `TypeError`. Its attributes go back through `normalizeAttributes` unless they are
+ * `previous`'s own, so a cycle or a value that is not JSON-safe never reaches `freezeDeep`, and a
+ * shallow copy of the result is frozen deeply, leaving the processor's own top-level object as it
+ * was.
+ */
+function acceptProcessorOutput(previous: LogRecord, next: unknown): LogRecord | null {
+  if (next === null) {
+    return null;
+  }
+  if (next === previous) {
+    return previous;
+  }
+  if (typeof next !== "object") {
+    throw new TypeError(`A log processor returned ${typeof next} instead of a record or null`);
+  }
+  const candidate = next as Partial<LogRecord>;
+  if (typeof candidate.time !== "number" || typeof candidate.level !== "string" || typeof candidate.category !== "string") {
+    throw new TypeError("A log processor returned a record without a numeric time and a string level and category");
+  }
+  const attributes = candidate.attributes === previous.attributes ? previous.attributes : normalizeAttributes(candidate.attributes ?? {});
+  return freezeDeep({ ...candidate, attributes } as LogRecord);
+}
+
+/**
+ * `record` passed through `processors` in order, each on what the previous one returned, or `null`
+ * as soon as one of them drops it. A processor that throws, or returns something
+ * {@link acceptProcessorOutput} rejects, also yields `null`: the stage fails closed, and never
+ * throws itself.
+ */
 function runProcessors(processors: readonly LogProcessor[], record: LogRecord): LogRecord | null {
   let current = record;
   for (const processor of processors) {
-    const next = processor(current);
+    let next: LogRecord | null;
+    try {
+      next = acceptProcessorOutput(current, processor(current));
+    } catch {
+      return null;
+    }
     if (next === null) {
       return null;
     }
@@ -101,16 +138,23 @@ function reportSinkError(settings: EmitSettings, thrown: unknown): void {
  * neither the clock, nor the Scope, nor the attributes, nor the error.
  *
  * Building the record — the clock, normalizing the attributes, serializing the error, redacting
- * them, running the global processors and asking for the Resource — runs inside one guard. A throw
- * there drops the record: no sink receives it, the caller does not see the throw, and nothing is
- * reported, since `onSinkError` is for sink failures alone. A `null` from a global processor drops
- * the record for every sink, and the Resource is not asked for.
+ * them and asking for the Resource — runs inside one guard. A throw there drops the record: no
+ * sink receives it, the caller does not see the throw, and nothing is reported, since
+ * `onSinkError` is for sink failures alone.
  *
- * Each sink then runs its own processors on what the global ones returned, in a guard of their
- * own: a throw or a `null` there drops the record for that sink alone, unreported. Each `write`
- * runs in its own guard that reports to `onSinkError`, so every sink is tried. Whatever `write`
- * returns is ignored: a returned promise is neither awaited nor observed, and a rejection of it is
- * the sink's own to handle.
+ * The global processors run on the built record, then each sink's own processors on what the
+ * global ones returned. The processor stage fails closed: a processor that throws, or returns
+ * anything but `null` or an object with a numeric `time` and a string `level` and `category`,
+ * drops the record exactly as a `null` does — for every sink when the processor is global, and
+ * the Resource is then not asked for; for its own sink alone when it is a per-sink one. Either way
+ * the drop is silent and the caller does not see the throw. A processor's returned attributes are
+ * normalized again and the record it returns is deeply frozen, so every processor and every sink
+ * receives a frozen record with JSON-safe attributes. A returned record that freezing cannot walk,
+ * such as one whose `error` refers to itself, is dropped as a throw is.
+ *
+ * Each `write` runs in its own guard that reports to `onSinkError`, so every sink is tried.
+ * Whatever `write` returns is ignored: a returned promise is neither awaited nor observed, and a
+ * rejection of it is the sink's own to handle.
  */
 export function emitRecord(
   settings: EmitSettings,
@@ -139,12 +183,7 @@ export function emitRecord(
   }
 
   for (const { sink, processors } of sinks) {
-    let delivered: LogRecord | null;
-    try {
-      delivered = runProcessors(processors, record);
-    } catch {
-      continue;
-    }
+    const delivered = runProcessors(processors, record);
     if (delivered === null) {
       continue;
     }
