@@ -26,6 +26,15 @@ components:
       - sh -c 'cd "$(git rev-parse --show-toplevel)/source/core" && pnpm --filter @vipengele/ts-core-common run build'
       - sh -c 'cd "$(git rev-parse --show-toplevel)/source/core" && pnpm --filter @vipengele/ts-core-redaction run build'
 
+  - name: core-resilience
+    dir: source/core/packages/resilience
+    runner: vitest
+    # resilience imports @vipengele/ts-core-common through its package.json `exports`, which
+    # point at dist/; lydite's vitest runner has no build graph, so the build runs here.
+    depends_on: [core-common]
+    setup:
+      - sh -c 'cd "$(git rev-parse --show-toplevel)/source/core" && pnpm --filter @vipengele/ts-core-common run build'
+
 # Each project's own vitest.shared.ts (source/<project>/vitest.shared.ts) is the
 # Node+Chromium preset every package under that project imports — real TypeScript,
 # but a workspace-root file no package's own `dir` contains, so it is an orphan

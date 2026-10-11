@@ -207,6 +207,12 @@ importers:
 
   packages/redaction: {}
 
+  packages/resilience:
+    dependencies:
+      '@vipengele/ts-core-common':
+        specifier: workspace:*
+        version: link:../common
+
 packages:
 
   '@babel/helper-string-parser@7.29.7':

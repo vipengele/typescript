@@ -7,7 +7,7 @@ Every project is released together, at one version, by one tag `vX.Y.Z`
 
 | Project | Packages |
 |---------|----------|
-| [`source/core`](source/core) | [`@vipengele/ts-core-common`](source/core/packages/common), [`@vipengele/ts-core-redaction`](source/core/packages/redaction), [`@vipengele/ts-core-observability`](source/core/packages/observability) |
+| [`source/core`](source/core) | [`@vipengele/ts-core-common`](source/core/packages/common), [`@vipengele/ts-core-redaction`](source/core/packages/redaction), [`@vipengele/ts-core-observability`](source/core/packages/observability), [`@vipengele/ts-core-resilience`](source/core/packages/resilience) |
 
 Packages publish to the public npm registry under the `@vipengele` scope, ESM only, and run in the
 browser and in Node 24+.
