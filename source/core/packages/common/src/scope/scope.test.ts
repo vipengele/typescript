@@ -28,10 +28,17 @@ describe("Scope.current", () => {
 });
 
 describe("Scope.resource", () => {
-  test("holds the root's four reserved keys", () => {
+  test("holds the root's eleven reserved keys", () => {
     expect(Object.keys(Scope.resource()).sort()).toEqual([
+      "browser.name",
+      "browser.version",
       "deployment.environment.name",
+      "device.type",
+      "os.type",
+      "os.version",
       "process.runtime.name",
+      "process.runtime.version",
+      "service.dist",
       "service.name",
       "service.version",
     ]);

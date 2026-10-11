@@ -18,8 +18,15 @@ function anEvent(level: Level): ErrorEvent {
 const RESOURCE: Resource = Object.freeze({
   "service.name": "checkout",
   "service.version": "1.2.3",
+  "service.dist": "web",
   "deployment.environment.name": "production",
   "process.runtime.name": "node",
+  "process.runtime.version": "24.0.0",
+  "os.type": "linux",
+  "os.version": "6.1",
+  "browser.name": "chrome",
+  "browser.version": "126.0",
+  "device.type": "desktop",
 });
 
 function aConsole(): ConsoleLike {

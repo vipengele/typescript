@@ -8,8 +8,15 @@ const TREE = Symbol.for("vipengele:scope:tree");
 const RESOURCE: Resource = {
   "service.name": "checkout",
   "service.version": "1.2.3",
+  "service.dist": "web",
   "deployment.environment.name": "production",
   "process.runtime.name": "nodejs",
+  "process.runtime.version": "24.0.0",
+  "os.type": "linux",
+  "os.version": "6.1",
+  "browser.name": "chrome",
+  "browser.version": "126.0",
+  "device.type": "desktop",
 };
 
 type Slotted = Record<symbol, unknown>;
@@ -88,12 +95,25 @@ describe("Scope.setResource", () => {
       "service.version": 2 as unknown as string,
       "deployment.environment.name": null as unknown as string,
       "process.runtime.name": { toString: () => "deno" } as unknown as string,
+      "service.dist": 7 as unknown as string,
+      "os.type": null as unknown as string,
+      "device.type": undefined,
     });
 
     expect(ScopeApi.resource()).toEqual(RESOURCE);
   });
 
-  test("ignores a key outside the four", () => {
+  test.for(["service.dist", "process.runtime.version", "os.type", "os.version", "browser.name", "browser.version", "device.type"] as const)(
+    "round-trips %s through setResource and resource",
+    (key) => {
+      ScopeApi.setResource({ [key]: "value" });
+
+      expect(ScopeApi.resource()[key]).toBe("value");
+      expect(() => ScopeApi.current().set(key, "x")).toThrow(ReservedScopeKeyError);
+    },
+  );
+
+  test("ignores a key outside the Resource", () => {
     ScopeApi.setResource({ "service.name": "checkout", "user.id": "u-1" } as Partial<Resource>);
 
     expect(ScopeApi.resource()["service.name"]).toBe("checkout");

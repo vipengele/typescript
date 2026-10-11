@@ -4,14 +4,24 @@ import { VipengeleError } from "../errors/vipengele-error";
 export type ScopeAttributes = Record<string, unknown>;
 
 /**
- * The environment the root scope holds: which service, release, environment and runtime is
- * emitting. Every key is reserved from the moment the root exists, whether or not it has a value.
+ * The environment the root scope holds: which service, release, environment, runtime, operating
+ * system, browser and device is emitting. Every key is reserved from the moment the root exists,
+ * whether or not it has a value. The keys follow OpenTelemetry's semantic conventions except
+ * `service.dist`, `browser.name`, `browser.version` and `device.type`, which are vipengele
+ * extensions.
  */
 export interface Resource {
   readonly "service.name": string | undefined;
   readonly "service.version": string | undefined;
+  readonly "service.dist": string | undefined;
   readonly "deployment.environment.name": string | undefined;
   readonly "process.runtime.name": string | undefined;
+  readonly "process.runtime.version": string | undefined;
+  readonly "os.type": string | undefined;
+  readonly "os.version": string | undefined;
+  readonly "browser.name": string | undefined;
+  readonly "browser.version": string | undefined;
+  readonly "device.type": string | undefined;
 }
 
 /** A node of the scope tree, as the rest of the framework and an application see it. */
@@ -72,8 +82,15 @@ interface ScopeNode extends Scope {
 const UNKNOWN_RESOURCE: Resource = {
   "service.name": undefined,
   "service.version": undefined,
+  "service.dist": undefined,
   "deployment.environment.name": undefined,
   "process.runtime.name": undefined,
+  "process.runtime.version": undefined,
+  "os.type": undefined,
+  "os.version": undefined,
+  "browser.name": undefined,
+  "browser.version": undefined,
+  "device.type": undefined,
 };
 
 function rootOf(node: ScopeNode): ScopeNode {
@@ -137,7 +154,7 @@ export function assertSettable(scope: Scope, key: string): void {
 }
 
 /**
- * Builds a root holding exactly `resource`'s four keys, and a default scope beneath it. The root's
+ * Builds a root holding exactly `resource`'s keys, and a default scope beneath it. The root's
  * attributes are frozen, and only {@link setResource} replaces them; the default scope is mutable
  * like any other non-root scope.
  */
@@ -146,23 +163,37 @@ export function createScopeTree(resource: Resource): ScopeTree {
   const attributes = root[ATTRIBUTES];
   attributes["service.name"] = resource["service.name"];
   attributes["service.version"] = resource["service.version"];
+  attributes["service.dist"] = resource["service.dist"];
   attributes["deployment.environment.name"] = resource["deployment.environment.name"];
   attributes["process.runtime.name"] = resource["process.runtime.name"];
+  attributes["process.runtime.version"] = resource["process.runtime.version"];
+  attributes["os.type"] = resource["os.type"];
+  attributes["os.version"] = resource["os.version"];
+  attributes["browser.name"] = resource["browser.name"];
+  attributes["browser.version"] = resource["browser.version"];
+  attributes["device.type"] = resource["device.type"];
   Object.freeze(attributes);
 
   return { root, defaultScope: new TreeScope(root, undefined) };
 }
 
-/** The four keys a root holds, and the only ones {@link setResource} reads from its argument. */
+/** The keys a root holds, and the only ones {@link setResource} reads from its argument. */
 const RESOURCE_KEYS = [
   "service.name",
   "service.version",
+  "service.dist",
   "deployment.environment.name",
   "process.runtime.name",
+  "process.runtime.version",
+  "os.type",
+  "os.version",
+  "browser.name",
+  "browser.version",
+  "device.type",
 ] as const satisfies readonly (keyof Resource)[];
 
 /**
- * Merges `resource` into the Resource `root` holds. Each of the four keys whose value in `resource`
+ * Merges `resource` into the Resource `root` holds. Each key whose value in `resource`
  * is a string replaces the root's value; a key that is absent, `undefined` or not a string leaves
  * the root's value as it is, and any other key is ignored.
  *

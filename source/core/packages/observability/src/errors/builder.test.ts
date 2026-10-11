@@ -5,19 +5,30 @@ import { ReporterBuilder } from "./builder";
 import type { Integration } from "./integration";
 import { isReporterConfigError } from "./reporter-config-error";
 
+/** `[<hole>, "production"]`: an array whose first index holds nothing at all. */
+function sparse(): string[] {
+  const environments: string[] = [];
+  environments[1] = "production";
+  return environments;
+}
+
 function anIntegration(name: string): Integration {
   return { name, setup: () => undefined };
 }
 
 describe("ReporterBuilder", () => {
-  it("starts with no transport, the system clock, no integrations, the secretKeys redaction and no limits", () => {
-    expect(new ReporterBuilder().build()).toEqual({
+  it("starts with no transport, the system clock, no integrations, the secretKeys redaction, no limits and no enabled environments", () => {
+    const settings = new ReporterBuilder().build();
+
+    expect(settings).toEqual({
       transport: undefined,
       clock: systemClock,
       integrations: [],
       redaction: secretKeys,
       limits: {},
+      enabledEnvironments: undefined,
     });
+    expect(settings).toHaveProperty("enabledEnvironments", undefined);
   });
 
   it("keeps the redaction set last, null included", () => {
@@ -141,6 +152,82 @@ describe("ReporterBuilder", () => {
 
       expect(() => builder.limits({ maxDepth: 9, maxBreadth: 9, maxErrors: 0 })).toThrow(expect.toSatisfy(isReporterConfigError));
       expect(builder.build().limits).toEqual({ maxDepth: 3 });
+    });
+  });
+
+  describe("enabledEnvironments", () => {
+    it("keeps the list set, and returns the builder", () => {
+      const builder = new ReporterBuilder();
+
+      expect(builder.enabledEnvironments(["production", "staging"])).toBe(builder);
+      expect(builder.build().enabledEnvironments).toEqual(["production", "staging"]);
+    });
+
+    it("keeps the empty string as an environment of its own", () => {
+      expect(new ReporterBuilder().enabledEnvironments([""]).build().enabledEnvironments).toEqual([""]);
+    });
+
+    it("replaces an earlier list with a later one", () => {
+      const { enabledEnvironments } = new ReporterBuilder().enabledEnvironments(["production"]).enabledEnvironments(["staging"]).build();
+
+      expect(enabledEnvironments).toEqual(["staging"]);
+    });
+
+    it("builds a frozen copy a later change to the caller's array does not reach", () => {
+      const environments = ["production"];
+      const builder = new ReporterBuilder().enabledEnvironments(environments);
+
+      environments.push("staging");
+      environments[0] = "development";
+      const { enabledEnvironments } = builder.build();
+
+      expect(enabledEnvironments).toEqual(["production"]);
+      expect(enabledEnvironments).not.toBe(environments);
+      expect(Object.isFrozen(enabledEnvironments)).toBe(true);
+    });
+
+    it.for([
+      ["an empty list", []],
+      ["a number entry", ["production", 5]],
+      ["an undefined entry", [undefined]],
+      ["a null entry", ["production", null]],
+      ["a hole", sparse()],
+      ["an object entry", [{ toString: (): string => "production" }]],
+    ] as const)("rejects %s", ([, value]) => {
+      expect(() => new ReporterBuilder().enabledEnvironments(value as never)).toThrow(expect.toSatisfy(isReporterConfigError));
+    });
+
+    it.for([null, undefined, "production", { 0: "production", length: 1 }])("rejects %o in place of an array", (value) => {
+      expect(() => new ReporterBuilder().enabledEnvironments(value as never)).toThrow(expect.toSatisfy(isReporterConfigError));
+    });
+
+    it("names what it rejects", () => {
+      expect(() => new ReporterBuilder().enabledEnvironments([])).toThrow(
+        "Invalid reporter enabled environments: expected at least one environment.",
+      );
+      expect(() => new ReporterBuilder().enabledEnvironments(["production", 7 as never])).toThrow(
+        "Invalid reporter enabled environment at index 1 7: expected a string.",
+      );
+      expect(() => new ReporterBuilder().enabledEnvironments(null as never)).toThrow(
+        "Invalid reporter enabled environments of type null: expected an array of strings.",
+      );
+    });
+
+    it("leaves the builder unchanged when the list is rejected, and still takes a valid one afterwards", () => {
+      const builder = new ReporterBuilder().enabledEnvironments(["production"]);
+
+      expect(() => builder.enabledEnvironments([])).toThrow(expect.toSatisfy(isReporterConfigError));
+      expect(() => builder.enabledEnvironments(["staging", 1 as never])).toThrow(expect.toSatisfy(isReporterConfigError));
+      expect(builder.build().enabledEnvironments).toEqual(["production"]);
+
+      expect(builder.enabledEnvironments(["staging"]).build().enabledEnvironments).toEqual(["staging"]);
+    });
+
+    it("leaves an unset list unset when the first call is rejected", () => {
+      const builder = new ReporterBuilder();
+
+      expect(() => builder.enabledEnvironments([])).toThrow(expect.toSatisfy(isReporterConfigError));
+      expect(builder.build().enabledEnvironments).toBeUndefined();
     });
   });
 });

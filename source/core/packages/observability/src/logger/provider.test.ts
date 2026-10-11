@@ -491,16 +491,23 @@ describe("emit settings", () => {
     expect(Object.isFrozen(emitOf(createLoggerProvider().logger("a"))())).toBe(true);
   });
 
-  test("without options, the resource is frozen with all four keys undefined and a sink error is dropped", () => {
+  test("without options, the resource is frozen with every key undefined and a sink error is dropped", () => {
     const emit = emitOf(createLoggerProvider().logger("a"))();
 
     expect(emit.resource()).toEqual({
       "service.name": undefined,
       "service.version": undefined,
+      "service.dist": undefined,
       "deployment.environment.name": undefined,
       "process.runtime.name": undefined,
+      "process.runtime.version": undefined,
+      "os.type": undefined,
+      "os.version": undefined,
+      "browser.name": undefined,
+      "browser.version": undefined,
+      "device.type": undefined,
     });
-    expect(Object.keys(emit.resource())).toHaveLength(4);
+    expect(Object.keys(emit.resource())).toHaveLength(11);
     expect(Object.isFrozen(emit.resource())).toBe(true);
     expect(emit.onSinkError(new Error("lost"))).toBeUndefined();
   });
@@ -509,8 +516,15 @@ describe("emit settings", () => {
     const resource: Resource = {
       "service.name": "checkout",
       "service.version": "1.2.3",
+      "service.dist": undefined,
       "deployment.environment.name": "production",
       "process.runtime.name": "node",
+      "process.runtime.version": undefined,
+      "os.type": undefined,
+      "os.version": undefined,
+      "browser.name": undefined,
+      "browser.version": undefined,
+      "device.type": undefined,
     };
     const seen: unknown[] = [];
     const options = {

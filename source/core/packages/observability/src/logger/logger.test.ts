@@ -64,8 +64,15 @@ describe("createLogger", () => {
 const RESOURCE: Resource = Object.freeze({
   "service.name": "checkout",
   "service.version": "1.2.3",
+  "service.dist": undefined,
   "deployment.environment.name": undefined,
   "process.runtime.name": undefined,
+  "process.runtime.version": undefined,
+  "os.type": undefined,
+  "os.version": undefined,
+  "browser.name": undefined,
+  "browser.version": undefined,
+  "device.type": undefined,
 });
 
 /** A sink that keeps every record it is handed, and the emit settings that deliver to it. */

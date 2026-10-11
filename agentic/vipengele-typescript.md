@@ -37,8 +37,9 @@ Error Event, Scope, Breadcrumb, Transport) before naming things.
     consumer imports only the sub-path it needs. `./scope` is one such sub-path: `Scope`
     (`current`/`propagate`/`inherit`/`isolated`/`useCarrier`), the ambient context tree the logger
     and the error reporter both read attributes from, built on `./context`'s store; its root holds
-    the four reserved `Resource` keys (`service.name`, `service.version`,
-    `deployment.environment.name`, `process.runtime.name`) and which `Scope.resource()` reads back as a
+    the eleven reserved `Resource` keys (`service.name`, `service.version`, `service.dist`,
+    `deployment.environment.name`, `process.runtime.name`, `process.runtime.version`, `os.type`,
+    `os.version`, `browser.name`, `browser.version`, `device.type`; ADR-0016) and which `Scope.resource()` reads back as a
     `Resource`, the value handed to every Sink; `@isolatedScope`/`@scoped` wrap a
     method body in `Scope.isolated`/`Scope.inherit` under either decorator dialect
     (`agentic/rules/method-decorator-supports-both-dialects.md`, ADR-0006). `./serialization`'s
@@ -66,9 +67,11 @@ Error Event, Scope, Breadcrumb, Transport) before naming things.
     `secretKeys` unless the builder's `redaction` says otherwise) and write it with the Resource to
     every `Sink` the builder's `addSink` added, `clock` supplying `time`; a throwing sink goes to
     the provider's `onSinkError` and never reaches the caller (ADR-0007, ADR-0011). `./errors`'s `createReporter`
-    builds a `Reporter` from a `ReporterBuilder`; `captureException`/`captureMessage` run every
-    event through a five-stage pipeline (normalize, enrich, processors, filter, transport) and hand
-    the survivor to a `Transport`, the fire-and-forget delivery contract (ADR-0010;
+    builds a `Reporter` from a `ReporterBuilder`, filling any runtime-context Resource key (runtime,
+    OS, browser, device) the Resource holds no value for; `captureException`/`captureMessage` read the
+    Resource once, drop the event when `enabledEnvironments` is set and excludes its environment, then run it
+    through a five-stage pipeline (normalize, enrich, processors, filter, transport) and hand
+    the survivor, with that Resource, to a `Transport`, the fire-and-forget delivery contract (ADR-0010;
     `agentic/rules/transport-send-is-fire-and-forget.md`) every transport — the built-in
     `createConsoleTransport` and `createTestTransport` included — implements.
 - `source/ts/` — `@vipengele/ts`, the framework's batteries-included umbrella package

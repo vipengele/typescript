@@ -1,13 +1,50 @@
 import type { Level } from "@vipengele/ts-core-common";
-import { describe, expect, it, vi } from "vitest";
+import { type Resource, Scope } from "@vipengele/ts-core-common/scope";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ErrorEvent, Mechanism } from "./event";
 import type { Integration, IntegrationHost } from "./integration";
 import { createCapture, type Pipeline } from "./pipeline";
 import { createReporter } from "./reporter";
+import type { RuntimeContext } from "./runtime-context";
 import type { Transport } from "./transport";
 import { createTestTransport } from "./transports/test-transport";
 
+const { detect } = vi.hoisted(() => ({ detect: vi.fn<() => RuntimeContext>() }));
+
+// The detector runs for real unless a test gives `detect` another implementation.
+vi.mock("./runtime-context", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./runtime-context")>();
+  detect.mockImplementation(() => actual.detectRuntimeContext());
+  return { ...actual, detectRuntimeContext: () => detect() };
+});
+
 const EVENT_ID = /^[0-9a-f]{32}$/;
+
+const DETECTED: RuntimeContext = {
+  "process.runtime.name": "node",
+  "process.runtime.version": "24.1.0",
+  "os.type": "linux",
+};
+
+// The realm's root is the default scope's parent. Its attribute bag is put back after every test,
+// so a Resource a test fills or sets never reaches the next one.
+const ATTRIBUTES = Symbol.for("vipengele:scope:attributes");
+const realmRoot = (Scope.current() as unknown as Record<symbol, unknown>)[Symbol.for("vipengele:scope:parent")] as Record<symbol, unknown>;
+const originalAttributes = realmRoot[ATTRIBUTES];
+
+/** Gives the realm's root a Resource with every key unset. */
+function clearResource(): void {
+  const bag = Object.create(null) as Record<string, unknown>;
+  for (const key of Object.keys(Scope.resource())) {
+    bag[key] = undefined;
+  }
+  realmRoot[ATTRIBUTES] = Object.freeze(bag);
+}
+
+afterEach(() => {
+  realmRoot[ATTRIBUTES] = originalAttributes;
+  vi.restoreAllMocks();
+});
 
 function onlyEvent(events: readonly ErrorEvent[]): ErrorEvent {
   expect(events).toHaveLength(1);
@@ -439,6 +476,108 @@ describe("createReporter", () => {
       expect(teardown).toHaveBeenCalledOnce();
       await second.close();
       expect(teardown).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe("runtime context in the Resource", () => {
+    let real: (() => RuntimeContext) | undefined;
+
+    beforeEach(() => {
+      clearResource();
+      real = detect.getMockImplementation();
+      detect.mockClear();
+      detect.mockImplementation(() => DETECTED);
+    });
+
+    afterEach(() => {
+      detect.mockImplementation(real as () => RuntimeContext);
+    });
+
+    it("writes every detected key the Resource holds no value for, detecting once per reporter", () => {
+      const transport = createTestTransport();
+      const reporter = createReporter((b) => b.transport(transport));
+      reporter.captureMessage("one");
+      reporter.captureMessage("two");
+
+      expect(detect).toHaveBeenCalledTimes(1);
+      expect(Scope.resource()).toMatchObject(DETECTED);
+      expect(Scope.resource()["os.version"]).toBeUndefined();
+      expect(transport.resources[1]).toMatchObject(DETECTED);
+    });
+
+    it("keeps each key a caller set before the reporter existed and fills only the unset ones", () => {
+      Scope.setResource({ "process.runtime.name": "bun", "service.name": "checkout" });
+
+      createReporter();
+
+      expect(Scope.resource()).toMatchObject({
+        "process.runtime.name": "bun",
+        "process.runtime.version": "24.1.0",
+        "os.type": "linux",
+        "service.name": "checkout",
+      });
+    });
+
+    it("lets a caller's Scope.setResource after the reporter exists replace a detected value", () => {
+      createReporter();
+
+      Scope.setResource({ "os.type": "darwin" });
+
+      expect(Scope.resource()["os.type"]).toBe("darwin");
+      expect(Scope.resource()["process.runtime.name"]).toBe("node");
+    });
+
+    it("fills, in a second reporter, only the keys still unset, never a value set in between", () => {
+      detect.mockImplementation(() => ({ "process.runtime.name": "node" }));
+      createReporter();
+      Scope.setResource({ "process.runtime.name": "deno" });
+      detect.mockImplementation(() => DETECTED);
+
+      createReporter();
+
+      expect(Scope.resource()).toMatchObject({ "process.runtime.name": "deno", "process.runtime.version": "24.1.0", "os.type": "linux" });
+    });
+
+    it("still builds a working reporter, leaving the Resource as it was, when detection throws", () => {
+      detect.mockImplementation(() => {
+        throw new Error("detection failed");
+      });
+      const before = Scope.resource();
+      const transport = createTestTransport();
+
+      const reporter = createReporter((b) => b.transport(transport));
+      reporter.captureMessage("hello");
+
+      expect(Scope.resource()).toEqual(before);
+      expect(transport.events).toHaveLength(1);
+    });
+
+    it.each([
+      [
+        "reading",
+        "resource",
+        (): Resource => {
+          throw new Error("resource unreadable");
+        },
+      ],
+      [
+        "writing",
+        "setResource",
+        (): void => {
+          throw new Error("resource unwritable");
+        },
+      ],
+    ] as const)("still builds a working reporter when %s the Resource throws", (_, method, implementation) => {
+      const spy = vi.spyOn(Scope, method).mockImplementation(implementation as never);
+      const transport = createTestTransport();
+
+      const reporter = createReporter((b) => b.transport(transport));
+      reporter.captureMessage("hello");
+
+      expect(spy).toHaveBeenCalled();
+      expect(transport.events).toHaveLength(1);
+      spy.mockRestore();
+      expect(Scope.resource()["os.type"]).toBeUndefined();
     });
   });
 });

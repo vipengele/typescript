@@ -5,8 +5,8 @@ read it from one place: the current `Scope`, a class in `@vipengele/ts-core-comm
 Java's MDC. Scopes form a tree.
 
 - **The root** holds the environment — service name and version, environment name, runtime — and
-  never changes except through `Scope.setResource(partial)`, which merges the four reserved
-  Resource keys into the realm's one root in place, so every scope, Logger and Reporter already
+  never changes except through `Scope.setResource(partial)`, which merges the reserved
+  Resource keys (`0016-release-environment-and-runtime-context-are-resource.md`) into the realm's one root in place, so every scope, Logger and Reporter already
   built reads the merged values on its next read. A key that is `undefined` or not a string is
   skipped, never cleared or coerced; an unknown key is ignored; the call never throws.
   `Scope.resource()` stays a frozen snapshot of the root per call. No other scope may `set` a key the root already holds; the root's keys are

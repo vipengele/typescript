@@ -136,8 +136,26 @@ _Avoid_: context (see Scope's own _Avoid_ — the same OpenTelemetry collision a
 **Resource**:
 The root Scope seen from outside the process: which service, release, environment and runtime is
 emitting. Set through `Scope.setResource`, and sent once alongside Log Records and Error Events
-(a Sink's and a Transport's second argument), never repeated inside each one.
+(a Sink's and a Transport's second argument), never repeated inside each one. It holds eleven
+reserved keys: the service's name, version, dist and deployment environment, which the application
+sets, and the runtime, operating system, browser and device, which a Reporter detects into any key
+still unset.
 _Avoid_: global tags, global context
+
+**Release**:
+The version of the application that is running, held in the Resource as `service.version`. Set once
+through `Scope.setResource`, so the Logger and every Reporter report the same one. Bugsnag and Sentry
+call it `release`.
+
+**Environment**:
+The deployment an application runs in (`production`, `staging`), held in the Resource as
+`deployment.environment.name`. A Reporter can be limited to an allow-list of them. Bugsnag calls it a
+release stage.
+_Avoid_: Runtime (the Runtimes are Node and the browser), stage
+
+**Dist**:
+A build distinguisher within one Release, held in the Resource as `service.dist`. A vipengele
+extension to OpenTelemetry's names; Sentry calls it `dist`.
 
 **Unit of Work**:
 One request, job or message handled end to end — the span of work whose Breadcrumbs belong

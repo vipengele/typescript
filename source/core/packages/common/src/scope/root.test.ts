@@ -14,8 +14,15 @@ import {
 const RESOURCE: Resource = {
   "service.name": "checkout",
   "service.version": "1.2.3",
+  "service.dist": "web",
   "deployment.environment.name": "production",
   "process.runtime.name": "nodejs",
+  "process.runtime.version": "24.0.0",
+  "os.type": "linux",
+  "os.version": "6.1",
+  "browser.name": "chrome",
+  "browser.version": "126.0",
+  "device.type": "desktop",
 };
 
 const RESERVED_KEYS = Object.keys(RESOURCE);
@@ -30,7 +37,7 @@ function reservedKeyErrorOf(fn: () => void): unknown {
 }
 
 describe("the root", () => {
-  test("holds the resource's four keys", () => {
+  test("holds the resource's keys", () => {
     const { root } = createScopeTree(RESOURCE);
 
     for (const key of RESERVED_KEYS) {
@@ -244,7 +251,7 @@ describe(getScopeTree.name, () => {
     expect(() => defaultScope.set("service.name", "x")).toThrow(ReservedScopeKeyError);
   });
 
-  test("builds, when nothing supplied a resource, a root whose four keys are reserved and undefined", () => {
+  test("builds, when nothing supplied a resource, a root whose keys are reserved and undefined", () => {
     registry[slot] = undefined;
 
     const { root, defaultScope } = getScopeTree();

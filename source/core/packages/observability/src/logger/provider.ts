@@ -41,7 +41,7 @@ export interface LoggerProviderOptions {
 
   /**
    * The Resource handed to every sink, asked once per record. When omitted, every record carries
-   * a frozen Resource whose four keys are `undefined`.
+   * a frozen Resource whose keys are `undefined`.
    */
   resource?(): Resource;
 
@@ -93,8 +93,15 @@ function emptyResource(): Resource {
   return Object.freeze({
     "service.name": undefined,
     "service.version": undefined,
+    "service.dist": undefined,
     "deployment.environment.name": undefined,
     "process.runtime.name": undefined,
+    "process.runtime.version": undefined,
+    "os.type": undefined,
+    "os.version": undefined,
+    "browser.name": undefined,
+    "browser.version": undefined,
+    "device.type": undefined,
   });
 }
 

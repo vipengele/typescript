@@ -66,15 +66,22 @@ function resource(): Resource {
   return Object.freeze({
     "service.name": root.get("service.name") as string | undefined,
     "service.version": root.get("service.version") as string | undefined,
+    "service.dist": root.get("service.dist") as string | undefined,
     "deployment.environment.name": root.get("deployment.environment.name") as string | undefined,
     "process.runtime.name": root.get("process.runtime.name") as string | undefined,
+    "process.runtime.version": root.get("process.runtime.version") as string | undefined,
+    "os.type": root.get("os.type") as string | undefined,
+    "os.version": root.get("os.version") as string | undefined,
+    "browser.name": root.get("browser.name") as string | undefined,
+    "browser.version": root.get("browser.version") as string | undefined,
+    "device.type": root.get("device.type") as string | undefined,
   });
 }
 
 /**
  * Merges `resource` into the Resource the realm's one root holds, from whichever copy of the
  * package calls it. A key whose value is `undefined` or not a string is skipped — never cleared,
- * never coerced — and a key outside the four is ignored. Every scope already in flight, and every
+ * never coerced — and a key outside the Resource is ignored. Every scope already in flight, and every
  * Logger and Reporter already built, reads the merged values from then on; a Resource
  * {@link resource} returned earlier keeps the values it was read with. It never throws.
  */

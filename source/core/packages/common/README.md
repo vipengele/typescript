@@ -58,7 +58,9 @@ store.propagate(captured, () => afterTheGap());
 `Scope` is the ambient context tree a log record or an error event reads its attributes from: a
 node holds attributes of its own, and `get` walks up to the nearest ancestor holding a key when
 the node itself doesn't. The realm has one tree — a root built once from a `Resource` (`service.name`,
-`service.version`, `deployment.environment.name`, `process.runtime.name`), and a default scope
+`service.version`, `service.dist`, `deployment.environment.name`, `process.runtime.name`,
+`process.runtime.version`, `os.type`, `os.version`, `browser.name`, `browser.version`,
+`device.type`), and a default scope
 beneath it that's current until something propagates a different one.
 
 ```ts
@@ -87,7 +89,7 @@ Scope.isolated("http-request", { requestId: "abc" }, () => {
   start of a Unit of Work that reads nothing any other Unit of Work's scopes hold, only the root's
   Resource.
 - `Scope.resource()` — a frozen snapshot of the root's Resource, read per call.
-- `Scope.setResource(partial)` — merges the four Resource keys into the realm's one root, in place,
+- `Scope.setResource(partial)` — merges the eleven Resource keys into the realm's one root, in place,
   from whichever copy of the package calls it; Loggers and Reporters already built read the merged
   values. A key that is `undefined` or not a string is skipped, never cleared or coerced; an
   unknown key is ignored; it never throws.
@@ -117,7 +119,7 @@ Scope.setContext("cart", { id: "c-9", items: 3 }); // cart.id, cart.items
 call in `Scope.isolated`/`Scope.inherit` respectively, usable under either the standard decorator
 dialect or `experimentalDecorators`.
 
-The root's four Resource keys, and the root scope itself, are reserved: `Scope.current().set(...)`
+The root's eleven Resource keys, and the root scope itself, are reserved: `Scope.current().set(...)`
 throws a `ReservedScopeKeyError` when the target is the root, or the key is one the root holds.
 Check for it with `isReservedScopeKeyError`, never `instanceof ReservedScopeKeyError`:
 

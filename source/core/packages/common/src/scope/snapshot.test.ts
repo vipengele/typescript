@@ -8,8 +8,15 @@ const ATTRIBUTES = Symbol.for("vipengele:scope:attributes");
 const RESOURCE: Resource = {
   "service.name": "checkout",
   "service.version": "1.2.3",
+  "service.dist": "web",
   "deployment.environment.name": "production",
   "process.runtime.name": "nodejs",
+  "process.runtime.version": "24.0.0",
+  "os.type": "linux",
+  "os.version": "6.1",
+  "browser.name": "chrome",
+  "browser.version": "126.0",
+  "device.type": "desktop",
 };
 
 /** A scope node built by hand from the `Symbol.for` slots, as another copy of the package would build one. */
@@ -61,7 +68,7 @@ describe(snapshot.name, () => {
     });
   });
 
-  test("leaves out the root's four Resource keys", () => {
+  test("leaves out the root's Resource keys", () => {
     const { defaultScope } = createScopeTree(RESOURCE);
     const child = createChildScope(defaultScope, "request", { "user.id": "u-1" });
 

@@ -1,6 +1,9 @@
 import { detectCapability } from "@vipengele/ts-core-common/runtime";
+import { Scope } from "@vipengele/ts-core-common/scope";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { IntegrationHost } from "../integration";
+import { createReporter } from "../reporter";
+import { createTestTransport } from "../transports/test-transport";
 import { type GlobalEventTarget, type GlobalHandlersOptions, type GlobalProcess, globalHandlers } from "./global-handlers";
 
 vi.mock("@vipengele/ts-core-common/runtime", async (importOriginal) => {
@@ -79,7 +82,14 @@ async function settle() {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
+// The realm's root is the default scope's parent. Its attribute bag is put back after every test,
+// so a Resource a test sets never reaches the next one.
+const ATTRIBUTES = Symbol.for("vipengele:scope:attributes");
+const realmRoot = (Scope.current() as unknown as Record<symbol, unknown>)[Symbol.for("vipengele:scope:parent")] as Record<symbol, unknown>;
+const originalAttributes = realmRoot[ATTRIBUTES];
+
 afterEach(() => {
+  realmRoot[ATTRIBUTES] = originalAttributes;
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -341,6 +351,30 @@ describe("globalHandlers in Node", () => {
     expect(consoleError).toHaveBeenLastCalledWith(second);
     expect(host.flush).toHaveBeenCalledOnce();
     expect(process.exit).toHaveBeenCalledExactlyOnceWith(1);
+  });
+
+  it("still writes to the console, flushes and exits under exit when the reporter's environment gate drops the event", async () => {
+    Scope.setResource({ "deployment.environment.name": "development" });
+    const { process, emit } = aProcess();
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const transport = createTestTransport();
+    const flush = vi.spyOn(transport, "flush");
+    const reporter = createReporter((b) =>
+      b
+        .transport(transport)
+        .enabledEnvironments(["production"])
+        .add(globalHandlers({ ...exitPolicies, flushTimeoutMs: 50, process })),
+    );
+    const error = new Error("boom");
+
+    emit("uncaughtException", error);
+    await settle();
+
+    expect(transport.events).toEqual([]);
+    expect(consoleError).toHaveBeenCalledExactlyOnceWith(error);
+    expect(flush).toHaveBeenCalledExactlyOnceWith(50);
+    expect(process.exit).toHaveBeenCalledExactlyOnceWith(1);
+    await reporter.close();
   });
 
   it("removes both listeners on teardown, and captures nothing afterwards", () => {

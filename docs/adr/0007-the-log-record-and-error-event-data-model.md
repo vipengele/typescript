@@ -131,11 +131,12 @@ exception, and the logger bridge only adds frames rather than translating.
 ## The Resource is sent once
 
 The root Scope (ADR-0006) is the Resource — `service.name`, `service.version`,
-`deployment.environment.name`, `process.runtime.name` — and is not copied into records or events.
-`attributes` is the chain from the default scope inward. Sinks receive the Resource alongside each
-record, as `write(record, resource)`, and Transports receive it as the second argument of
-`send(event, resource)` (ADR-0010), read once per event at delivery; each attaches it once per
-payload.
+`deployment.environment.name`, `process.runtime.name` and the other reserved keys listed in
+`0016-release-environment-and-runtime-context-are-resource.md` — and is not copied into records or
+events. `attributes` is the chain from the default scope inward. Sinks receive the Resource
+alongside each record, as `write(record, resource)`, and Transports receive it as the second
+argument of `send(event, resource)` (ADR-0010), read once per event at capture, before any stage,
+and handed to the Transport unchanged; each attaches it once per payload.
 
 ## What an Error Event adds
 
