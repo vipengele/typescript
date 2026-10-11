@@ -65,8 +65,12 @@ Error Event, Scope, Breadcrumb, Transport) before naming things.
     resolves to `warn`. A `Logger`'s `trace`..`fatal` calls that pass the level check build a
     `LogRecord` (attributes normalized, errors through `serializeError`, both redacted with
     `secretKeys` unless the builder's `redaction` says otherwise) and write it with the Resource to
-    every `Sink` the builder's `addSink` added, `clock` supplying `time`; a throwing sink goes to
-    the provider's `onSinkError` and never reaches the caller (ADR-0007, ADR-0011). `./errors`'s `createReporter`
+    every `Sink` the builder's `addSink` added, `clock` supplying `time`. Log Processors
+    (`addProcessor` for every sink, `addSink(sink, { processors })` for one, `redactionProcessor`)
+    run after the built-in redaction and fail closed: a throwing processor drops the record for its
+    sink(s). A throwing sink or processor goes to the provider's `onSinkError(error, source)` and
+    never reaches the caller; the default warn path reports each failing sink or processor once per
+    configuration (ADR-0007, ADR-0011, ADR-0017). `./errors`'s `createReporter`
     builds a `Reporter` from a `ReporterBuilder`, filling any runtime-context Resource key (runtime,
     OS, browser, device) the Resource holds no value for; `captureException`/`captureMessage` read the
     Resource once, drop the event when `enabledEnvironments` is set and excludes its environment, then run it
