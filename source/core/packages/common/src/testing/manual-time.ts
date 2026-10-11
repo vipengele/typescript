@@ -21,7 +21,13 @@ export interface ManualTime {
    *
    * After each firing, `advance` waits for one real `setTimeout(0)` so the continuation's
    * microtasks run before the next deadline is checked. The queue is read live, so a sleep a
-   * continuation registers inside the window, `sleep(0)` included, fires in the same call.
+   * continuation registers inside the window, `sleep(0)` included, fires in the same call. The
+   * hop follows every firing, not every deadline, so that a continuation can abort a sleep that
+   * is also due before it fires.
+   *
+   * Each hop costs real time, about 1ms in Node and, once nested timers are clamped, about 4ms
+   * in Chromium. An `advance` that fires N sleeps takes roughly N times that, so a test that
+   * drives a loop through hundreds of iterations in one call should size for it.
    *
    * Manual time patches no globals and replaces fake timers rather than composing with them:
    * under `vi.useFakeTimers()` the `setTimeout(0)` hop never fires and `advance` never settles.

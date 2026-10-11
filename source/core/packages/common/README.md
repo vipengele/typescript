@@ -685,6 +685,8 @@ const { clock, scheduler, advance, pendingSleeps } = createManualTime(1_000);
 another `advance` is still in flight, including one called from a fired continuation.
 
 Manual time patches no globals. After each firing `advance` waits for one real `setTimeout(0)` so
-the continuation's microtasks run before the next deadline is checked. It replaces
+the continuation's microtasks run before the next deadline is checked, and a continuation can abort
+a sleep that is also due. Each hop costs real time, about 1ms in Node and about 4ms in Chromium once
+nested timers are clamped, so an `advance` that fires N sleeps takes roughly N times that. It replaces
 `vi.useFakeTimers()` rather than composing with it: under fake timers that hop never fires and
 `advance` never settles.
