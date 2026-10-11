@@ -80,7 +80,8 @@ const CIRCULAR_LINK: SerializedError = { type: "[Circular]", message: "an error 
 
 /**
  * `serializeError`'s default `maxLinks` and `maxErrors`, the limits {@link createRecord} serializes
- * a thrown value under, so a processor's error is bounded exactly as the record's own error is.
+ * a thrown value under, so a processor's error has the same link and error-count limits as the
+ * record's own error.
  */
 const MAX_LINKS = 5;
 const MAX_ERRORS = 100;
@@ -114,8 +115,9 @@ function chainParts(error: SerializedError | undefined, parts: Set<object> = new
 
 /**
  * A fresh copy of one link of a processor's error, `links` links from the outermost one, holding
- * only the fields a {@link SerializedError} has and bounded as `serializeError` bounds a thrown
- * value's chain. A link from `known` is kept as it is. A link already on `path`, the links from the
+ * only the fields a {@link SerializedError} has. Its `message` and `stack` are cut and the link and
+ * error-count limits apply, as for a thrown error; its `type` and `code` are cut as well, because a
+ * processor's strings are arbitrary. A link from `known` is kept as it is. A link already on `path`, the links from the
  * outermost one down to this one, becomes a `"[Circular]"` link, and one further than
  * {@link MAX_LINKS} links out a `"[Truncated]"` link, read no further, so the walk ends however deep
  * the processor's chain goes. Anything else must be an object with a string `type` and `message`,
@@ -179,8 +181,9 @@ function acceptErrorLink(link: unknown, links: number, known: ReadonlySet<object
  *
  * The accepted record is rebuilt from the {@link LogRecord} fields alone, so any other key the
  * processor set is left out. Its attributes go back through `normalizeAttributes` and its error
- * through {@link acceptErrorLink}, which bounds it as `serializeError` bounds a thrown value,
- * except where they are `previous`'s own, which are kept rather than bounded a second time.
+ * through {@link acceptErrorLink}, which cuts `message` and `stack` and applies the link and
+ * error-count limits as for a thrown error, and also cuts `type` and `code`, because a processor's
+ * strings are arbitrary. Parts that are `previous`'s own are kept rather than bounded a second time.
  * Nothing that is cyclic, unbounded or not JSON-safe reaches `freezeDeep`, and
  * the deep freeze walks only fresh copies and `previous`'s already frozen parts, never an object
  * of the processor's.
@@ -276,8 +279,9 @@ function runProcessors(settings: EmitSettings, processors: readonly LogProcessor
  * the failure is reported to `onSinkError` with the processor as its source, and the caller does
  * not see the throw. A record a processor returns is rebuilt from the {@link LogRecord} fields
  * alone, its attributes and every link's `data` normalized again, its error chain bounded by
- * `serializeError`'s default string length, link and `errors` limits and a link that recurs on its
- * own chain replaced by a `"[Circular]"` link, then deeply frozen, so every processor and every sink
+ * `serializeError`'s link and `errors` limits, each link's `message` and `stack` cut as for a thrown
+ * error and its `type` and `code` cut as well because a processor's strings are arbitrary, and a
+ * link that recurs on its own chain replaced by a `"[Circular]"` link, then deeply frozen, so every processor and every sink
  * receives a frozen, JSON-safe record and the processor's own objects stay unfrozen.
  *
  * Each `write` runs in its own guard that reports to `onSinkError` with the sink as its source, so

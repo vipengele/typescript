@@ -155,8 +155,9 @@ Logging.configure((b) =>
   `type` and `message`, counts as a failure.
 - **Output is re-normalized** — a returned record is rebuilt from the `LogRecord` fields alone, so
   any other key is dropped. Its `attributes` and each error link's `data` go back through the
-  attribute normalization, and its error chain is bounded as a thrown error's is: each link's
-  `type`, `message`, `code` and `stack` are cut at 8192 characters, a link more than 5 links from
+  attribute normalization, and its error chain is bounded by the same limits as a thrown error's:
+  each link's `message` and `stack` are cut at 8192 characters, as for a thrown error, and its
+  `type` and `code` are cut as well because a processor's strings are arbitrary, a link more than 5 links from
   the outermost one becomes a `"[Truncated]"` link, an `errors` array keeps 100 entries and
   summarises the rest in one `"[Truncated]"` entry, and an error link that recurs on its own chain
   becomes a `"[Circular]"` link. Links passed on from the record the processor was handed are kept
