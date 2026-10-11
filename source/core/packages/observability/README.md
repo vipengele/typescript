@@ -148,7 +148,7 @@ interface Transport {
 
 `send` is fire-and-forget: it returns at once and never throws, and the reporter never awaits it —
 batching, retry and the decision to drop belong to the transport. `resource` is the `Resource` read
-from `Scope.resource()` once for that event at delivery, frozen, with all four keys present. `flush` resolves `true` once
+from `Scope.resource()` once for that event at delivery, frozen, with every key present. `flush` resolves `true` once
 everything accepted so far is delivered or dropped, `false` if `timeoutMs` elapses first; `close`
 flushes, then turns every later `send` into a no-op.
 
@@ -198,7 +198,7 @@ Scope.isolated("http-request", { requestId: "abc" }, () => {
 });
 ```
 
-- **`Scope.setResource(partial)`** merges the four Resource keys into the realm's one root, in
+- **`Scope.setResource(partial)`** merges the Resource keys into the realm's one root, in
   place: Loggers and Reporters already built read the merged values. A key that is `undefined` or
   not a string is skipped, never cleared or coerced; an unknown key is ignored; it never throws.
   `Scope.resource()` returns a frozen snapshot per call.
@@ -227,7 +227,7 @@ const reporter = createReporter((builder) => builder.transport(createConsoleTran
 the event silently, as the logger drops a record.
 
 If reading the Scope throws, the event is delivered without its Scope attributes. If reading the
-Resource for `send` throws, the event is delivered with a Resource whose four keys are `undefined`;
+Resource for `send` throws, the event is delivered with a Resource whose keys are all `undefined`;
 the logger drops the record on the same throw, since an event is worth more than its Resource. In
 the browser the synchronous-stack carrier loses the Scope after an `await` (ADR-0006).
 

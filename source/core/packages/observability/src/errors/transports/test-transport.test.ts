@@ -18,8 +18,15 @@ function aResource(name: string): Resource {
   return Object.freeze({
     "service.name": name,
     "service.version": undefined,
+    "service.dist": "web",
     "deployment.environment.name": undefined,
     "process.runtime.name": undefined,
+    "process.runtime.version": "24.0.0",
+    "os.type": "linux",
+    "os.version": "6.1",
+    "browser.name": "chrome",
+    "browser.version": "126.0",
+    "device.type": "desktop",
   });
 }
 

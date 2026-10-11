@@ -151,7 +151,7 @@ function enrich(payload: NormalizedPayload, input: CaptureInput, mechanism: Mech
 
 /**
  * The Resource an event is sent with, read from `Scope.resource()` once per event. A throw while
- * reading it yields a Resource whose four keys are all `undefined`, and the event still goes out:
+ * reading it yields a Resource whose keys are all `undefined`, and the event still goes out:
  * an event is worth more than its Resource. The logger drops a record on the same throw instead.
  */
 function eventResource(): Resource {
@@ -161,8 +161,15 @@ function eventResource(): Resource {
     return Object.freeze({
       "service.name": undefined,
       "service.version": undefined,
+      "service.dist": undefined,
       "deployment.environment.name": undefined,
       "process.runtime.name": undefined,
+      "process.runtime.version": undefined,
+      "os.type": undefined,
+      "os.version": undefined,
+      "browser.name": undefined,
+      "browser.version": undefined,
+      "device.type": undefined,
     });
   }
 }

@@ -8,7 +8,19 @@ import { createTestTransport } from "./transports/test-transport";
 // biome-ignore lint/security/noSecrets: a fixed marker string, flagged only for its entropy
 const CUT = "…[truncated]";
 
-const RESOURCE_KEYS = ["service.name", "service.version", "deployment.environment.name", "process.runtime.name"];
+const RESOURCE_KEYS = [
+  "service.name",
+  "service.version",
+  "service.dist",
+  "deployment.environment.name",
+  "process.runtime.name",
+  "process.runtime.version",
+  "os.type",
+  "os.version",
+  "browser.name",
+  "browser.version",
+  "device.type",
+];
 
 function onlyEvent(events: readonly ErrorEvent[]): ErrorEvent {
   expect(events).toHaveLength(1);
