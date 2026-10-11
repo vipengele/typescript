@@ -1,7 +1,7 @@
 # @vipengele/ts-core-common
 
 Shared types and primitives the other framework packages agree on, shipped as tree-shakeable
-sub-paths (`./types/numeric`, `./types/date-time`, `./locale`, `./context`, `./scope`, `./runtime`, …).
+sub-paths (`./types/numeric`, `./types/date-time`, `./locale`, `./context`, `./scope`, `./runtime`, `./testing`, …).
 A sub-path is a slice of this one package, not a separate package.
 
 ## Commands (run from `source/core`)

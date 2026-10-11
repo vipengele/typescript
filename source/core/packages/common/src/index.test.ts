@@ -31,6 +31,17 @@ test("systemClock is reachable through the entry point", () => {
   expect(clock()).toBeTypeOf("number");
 });
 
+test("systemScheduler is reachable through the entry point", () => {
+  const scheduler: entry.Scheduler = entry.systemScheduler;
+
+  expect(scheduler.sleep).toBeTypeOf("function");
+});
+
+test("the testing helpers are not reachable through the entry point", () => {
+  expect(entry).not.toHaveProperty("testing");
+  expect(entry).not.toHaveProperty("createManualTime");
+});
+
 test("toJsonSafe is reachable through the entry point", () => {
   const options: entry.ToJsonSafeOptions = { maxDepth: 6 };
 

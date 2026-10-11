@@ -45,7 +45,9 @@ Error Event, Scope, Breadcrumb, Transport) before naming things.
     `serializeError` is the one place a thrown value's whole `cause`/`errors` chain is walked into
     a `SerializedError`, the shape the logger and the error reporter share (ADR-0007); `Level`
     (`"trace"` through `"fatal"`) and `Threshold` (`Level | "off"`) are exported from the package
-    root, not a sub-path, since every package that logs or reports needs them.
+    root, not a sub-path, since every package that logs or reports needs them; so are `Clock` and
+    `Scheduler` (with `systemScheduler`). `./testing`'s `createManualTime` is a virtual clock and
+    scheduler on one timeline.
   - `packages/redaction` — `@vipengele/ts-core-redaction`: the reusable redaction library. A `RedactionPolicy` matches keys by exact string, regex or
     `{ segments }` (word-segment match), carves exceptions out with `except`, and composes through
     `composePolicies`; `secretKeys` is the frozen preset (ADR-0011). `redactUrl`,
