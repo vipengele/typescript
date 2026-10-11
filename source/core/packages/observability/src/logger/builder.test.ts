@@ -3,13 +3,17 @@ import { composePolicies, secretKeys } from "@vipengele/ts-core-redaction";
 import { describe, expect, test } from "vitest";
 import { createLoggingBuilder } from "./builder";
 import { isLoggingConfigError } from "./config-error";
-import type { Sink } from "./record";
+import type { LogProcessor, Sink } from "./record";
 import { createSettings } from "./settings";
 
 const proto = "__proto__";
 
 function sink(): Sink {
   return { write: () => {} };
+}
+
+function processor(): LogProcessor {
+  return (record) => record;
 }
 
 describe("createLoggingBuilder", () => {
@@ -19,6 +23,7 @@ describe("createLoggingBuilder", () => {
     expect({ ...build.defaults }).toEqual({ "*": "warn" });
     expect(Object.keys(build.builder)).toEqual([]);
     expect(build.sinks).toEqual([]);
+    expect(build.processors).toEqual([]);
     expect(build.clock).toBe(systemClock);
     expect(build.redaction).toBe(secretKeys);
     expect(build.issues).toEqual([]);
@@ -31,6 +36,8 @@ describe("createLoggingBuilder", () => {
     expect(builder.addLevels({ a: "info" })).toBe(builder);
     expect(builder.addSpec("b:debug")).toBe(builder);
     expect(builder.addSink(sink())).toBe(builder);
+    expect(builder.addSink(sink(), { processors: [processor()] })).toBe(builder);
+    expect(builder.addProcessor(processor())).toBe(builder);
     expect(builder.clock(() => 0)).toBe(builder);
     expect(builder.redaction(null)).toBe(builder);
     expect({ ...builder.build().builder }).toEqual({ a: "info", b: "debug" });
@@ -44,6 +51,7 @@ describe("createLoggingBuilder", () => {
     expect(Object.getPrototypeOf(build.builder)).toBeNull();
     expect(Object.isFrozen(build.issues)).toBe(true);
     expect(Object.isFrozen(build.sinks)).toBe(true);
+    expect(Object.isFrozen(build.processors)).toBe(true);
   });
 });
 
@@ -162,10 +170,82 @@ describe("addSink", () => {
 
     const build = createLoggingBuilder().addSink(first).addSink(second).addSink(first).build();
 
-    expect(build.sinks).toHaveLength(3);
-    expect(build.sinks[0]).toBe(first);
-    expect(build.sinks[1]).toBe(second);
-    expect(build.sinks[2]).toBe(first);
+    expect(build.sinks).toEqual([
+      { sink: first, processors: [] },
+      { sink: second, processors: [] },
+      { sink: first, processors: [] },
+    ]);
+    expect(build.sinks[0]?.sink).toBe(first);
+    expect(build.sinks[1]?.sink).toBe(second);
+    expect(build.sinks[2]?.sink).toBe(first);
+  });
+
+  test("registers each sink's processors with it, in order, the registration and its list frozen", () => {
+    const first = sink();
+    const second = sink();
+    const a = processor();
+    const b = processor();
+
+    const build = createLoggingBuilder()
+      .addSink(first, { processors: [a, b] })
+      .addSink(second, {})
+      .build();
+
+    expect(build.sinks).toEqual([
+      { sink: first, processors: [a, b] },
+      { sink: second, processors: [] },
+    ]);
+    expect(Object.isFrozen(build.sinks[0])).toBe(true);
+    expect(Object.isFrozen(build.sinks[0]?.processors)).toBe(true);
+  });
+
+  test("copies the processor list when called, so a later change to it has no effect", () => {
+    const only = processor();
+    const processors = [only];
+    const builder = createLoggingBuilder().addSink(sink(), { processors });
+
+    processors.push(processor());
+
+    expect(builder.build().sinks[0]?.processors).toEqual([only]);
+  });
+
+  test.for([null, "x", 5, () => {}])("build throws a LoggingConfigError for the non-object options %o", (options) => {
+    const builder = createLoggingBuilder().addSink(sink(), options as never);
+
+    expect(() => builder.build()).toThrow(expect.toSatisfy(isLoggingConfigError));
+  });
+
+  test.for([null, "x", { 0: processor(), length: 1 }, processor()])(
+    "build throws a LoggingConfigError for processors %o that are not an array",
+    (processors) => {
+      const builder = createLoggingBuilder().addSink(sink(), { processors: processors as never });
+
+      expect(() => builder.build()).toThrow(expect.toSatisfy(isLoggingConfigError));
+    },
+  );
+
+  test.for([null, undefined, "x", {}])("build throws a LoggingConfigError for the per-sink processor %o", (value) => {
+    const builder = createLoggingBuilder().addSink(sink(), { processors: [processor(), value as never] });
+
+    expect(() => builder.build()).toThrow(expect.toSatisfy(isLoggingConfigError));
+  });
+
+  test("names what is wrong in the message", () => {
+    expect(() =>
+      createLoggingBuilder()
+        .addSink(sink(), null as never)
+        .build(),
+    ).toThrow("Invalid logger sink options of type null: expected an object.");
+    expect(() =>
+      createLoggingBuilder()
+        .addSink(sink(), { processors: "x" as never })
+        .build(),
+    ).toThrow("Invalid logger sink processors of type string: expected an array.");
+    expect(() =>
+      createLoggingBuilder()
+        .addSink(sink(), { processors: [5 as never] })
+        .build(),
+    ).toThrow("Invalid logger sink processor of type number: expected a function.");
   });
 
   test("a build's sink list is unaffected by a later addSink", () => {
@@ -206,12 +286,64 @@ describe("addSink", () => {
     ).toThrow("Invalid logger sink of type string");
   });
 
+  test("an invalid sink is reported before an invalid global processor, whatever the order they were added in", () => {
+    const builder = createLoggingBuilder()
+      .addProcessor(null as unknown as LogProcessor)
+      .addSink(sink(), { processors: "x" as never });
+
+    expect(() => builder.build()).toThrow("Invalid logger sink processors");
+  });
+
   test("an invalid level is reported before an invalid sink, whatever the order they were added in", () => {
     const builder = createLoggingBuilder()
       .addSink(null as unknown as Sink)
       .addLevels({ a: "loud" as Threshold });
 
     expect(() => builder.build()).toThrow('Invalid logger level "loud"');
+  });
+});
+
+describe("addProcessor", () => {
+  test("keeps every processor in the order it was added, the same processor twice included", () => {
+    const first = processor();
+    const second = processor();
+
+    const build = createLoggingBuilder().addProcessor(first).addProcessor(second).addProcessor(first).build();
+
+    expect(build.processors).toEqual([first, second, first]);
+  });
+
+  test("a build's processor list is unaffected by a later addProcessor", () => {
+    const builder = createLoggingBuilder().addProcessor(processor());
+    const first = builder.build();
+
+    builder.addProcessor(processor());
+
+    expect(first.processors).toHaveLength(1);
+    expect(builder.build().processors).toHaveLength(2);
+  });
+
+  test("defers validation to build", () => {
+    const builder = createLoggingBuilder();
+
+    expect(() => builder.addProcessor(null as unknown as LogProcessor)).not.toThrow();
+    expect(() => builder.build()).toThrow(expect.toSatisfy(isLoggingConfigError));
+  });
+
+  test.for([null, undefined, "x", 5, {}])("build throws a LoggingConfigError for the non-function %o", (value) => {
+    const builder = createLoggingBuilder()
+      .addProcessor(processor())
+      .addProcessor(value as unknown as LogProcessor);
+
+    expect(() => builder.build()).toThrow(expect.toSatisfy(isLoggingConfigError));
+  });
+
+  test("names the type of a non-function in the message", () => {
+    expect(() =>
+      createLoggingBuilder()
+        .addProcessor(null as unknown as LogProcessor)
+        .build(),
+    ).toThrow("Invalid logger processor of type null: expected a function.");
   });
 });
 
@@ -301,13 +433,21 @@ describe("build", () => {
     expect(settings.levels.a?.level).toBe("debug");
   });
 
-  test("feeds a settings snapshot its sinks, clock and redaction", () => {
+  test("feeds a settings snapshot its sinks, processors, clock and redaction", () => {
     const only = sink();
+    const perSink = processor();
+    const global = processor();
     const clock = () => 7;
-    const build = createLoggingBuilder().addSink(only).clock(clock).redaction(null).build();
+    const build = createLoggingBuilder()
+      .addSink(only, { processors: [perSink] })
+      .addProcessor(global)
+      .clock(clock)
+      .redaction(null)
+      .build();
     const settings = createSettings({ defaults: build.defaults, builder: build.builder, overrides: {} }, build);
 
-    expect(settings.sinks).toEqual([only]);
+    expect(settings.sinks).toEqual([{ sink: only, processors: [perSink] }]);
+    expect(settings.processors).toEqual([global]);
     expect(settings.clock).toBe(clock);
     expect(settings.redaction).toBeNull();
   });

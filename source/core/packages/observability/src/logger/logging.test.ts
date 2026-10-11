@@ -248,11 +248,11 @@ describe("sinks", () => {
     const emit = emitOf(Logging.logger("app"));
 
     Logging.configure((b) => b.addSink(first));
-    expect(emit().sinks).toEqual([first]);
+    expect(emit().sinks.map(({ sink }) => sink)).toEqual([first]);
 
     const settings = Logging.configure((b) => b.addSink(second));
-    expect(settings.sinks).toEqual([second]);
-    expect(emit().sinks).toEqual([second]);
+    expect(settings.sinks.map(({ sink }) => sink)).toEqual([second]);
+    expect(emit().sinks.map(({ sink }) => sink)).toEqual([second]);
   });
 
   test("a created provider's sinks are shared with neither the default provider nor another created provider", () => {
@@ -263,9 +263,9 @@ describe("sinks", () => {
 
     other.configure((b) => b.addSink(theirs));
 
-    expect(emitOf(Logging.logger("app"))().sinks).toEqual([defaults]);
-    expect(emitOf(one.logger("app"))().sinks).toEqual([mine]);
-    expect(emitOf(other.logger("app"))().sinks).toEqual([theirs]);
+    expect(emitOf(Logging.logger("app"))().sinks.map(({ sink }) => sink)).toEqual([defaults]);
+    expect(emitOf(one.logger("app"))().sinks.map(({ sink }) => sink)).toEqual([mine]);
+    expect(emitOf(other.logger("app"))().sinks.map(({ sink }) => sink)).toEqual([theirs]);
   });
 });
 

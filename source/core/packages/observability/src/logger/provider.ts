@@ -133,7 +133,14 @@ export function createLoggerProvider(configure?: ConfigureCallback, options: Log
 
   /** What the provider's Loggers emit through under `current`; it cannot throw, so it never splits a commit. */
   function emitSettingsOf(current: LoggingSettings): EmitSettings {
-    return Object.freeze({ sinks: current.sinks, clock: current.clock, redaction: current.redaction, resource, onSinkError });
+    return Object.freeze({
+      sinks: current.sinks,
+      processors: current.processors,
+      clock: current.clock,
+      redaction: current.redaction,
+      resource,
+      onSinkError,
+    });
   }
 
   function emit(): EmitSettings {

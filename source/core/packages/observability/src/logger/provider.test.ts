@@ -374,7 +374,7 @@ describe("sinks, clock and redaction", () => {
 
     const emit = emitOf(provider.logger("a"))();
 
-    expect(emit.sinks).toEqual([only]);
+    expect(emit.sinks.map(({ sink }) => sink)).toEqual([only]);
     expect(emit.clock).toBe(clock);
     expect(emit.redaction).toBeNull();
   });
@@ -392,9 +392,9 @@ describe("sinks, clock and redaction", () => {
     );
     const after = provider.configure((b) => b.addSink(third));
 
-    expect(before.sinks).toEqual([first, second]);
+    expect(before.sinks.map(({ sink }) => sink)).toEqual([first, second]);
     expect(before.redaction).toBeNull();
-    expect(after.sinks).toEqual([third]);
+    expect(after.sinks.map(({ sink }) => sink)).toEqual([third]);
     expect(after.clock).toBe(systemClock);
     expect(after.redaction).toBe(secretKeys);
   });
@@ -406,7 +406,7 @@ describe("sinks, clock and redaction", () => {
 
     const settings = provider.configure((b) => b.addLevels({ a: "debug" }).addSink(second));
 
-    expect(settings.sinks).toEqual([second]);
+    expect(settings.sinks.map(({ sink }) => sink)).toEqual([second]);
     expect({ ...settings.layers.builder }).toEqual({ a: "debug" });
     expect(publish).toHaveBeenCalledTimes(1);
     expect(publish.mock.calls[0]?.[0]).toBe(settings);
@@ -418,7 +418,7 @@ describe("sinks, clock and redaction", () => {
     const provider = createLoggerProvider((b) => b.addSink(only).clock(clock).redaction(null));
 
     const overridden = provider.override("a", "trace");
-    expect(overridden.sinks).toEqual([only]);
+    expect(overridden.sinks.map(({ sink }) => sink)).toEqual([only]);
     expect(overridden.clock).toBe(clock);
     expect(overridden.redaction).toBeNull();
 
@@ -453,10 +453,10 @@ describe("sinks, clock and redaction", () => {
     ).toThrow("boom");
 
     expect(emit()).toBe(inForce);
-    expect(emit().sinks).toEqual([only]);
+    expect(emit().sinks.map(({ sink }) => sink)).toEqual([only]);
     expect(emit().clock).toBe(clock);
     expect(emit().redaction).toBeNull();
-    expect(provider.override("a", null).sinks).toEqual([only]);
+    expect(provider.override("a", null).sinks.map(({ sink }) => sink)).toEqual([only]);
   });
 
   test("an invalid starting sink throws a LoggingConfigError", () => {
@@ -470,7 +470,7 @@ describe("sinks, clock and redaction", () => {
 
     one.configure((b) => b.addSink(only));
 
-    expect(emitOf(one.logger("a"))().sinks).toEqual([only]);
+    expect(emitOf(one.logger("a"))().sinks.map(({ sink }) => sink)).toEqual([only]);
     expect(emitOf(other.logger("a"))().sinks).toEqual([]);
   });
 });
@@ -483,7 +483,7 @@ describe("emit settings", () => {
 
     expect(emit().sinks).toEqual([]);
     provider.configure((b) => b.addSink(only));
-    expect(emit().sinks).toEqual([only]);
+    expect(emit().sinks.map(({ sink }) => sink)).toEqual([only]);
     expect(emitOf(provider.logger("b"))()).toBe(emit());
   });
 

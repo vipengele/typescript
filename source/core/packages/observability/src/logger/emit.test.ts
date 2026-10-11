@@ -3,7 +3,7 @@ import { type Resource, Scope } from "@vipengele/ts-core-common/scope";
 import { type RedactionPolicy, secretKeys } from "@vipengele/ts-core-redaction";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { emitRecord } from "./emit";
-import type { EmitSettings, LogRecord, Sink } from "./record";
+import type { EmitSettings, LogProcessor, LogRecord, Sink, SinkRegistration } from "./record";
 
 const RESOURCE: Resource = Object.freeze({
   "service.name": "checkout",
@@ -35,9 +35,20 @@ function collector(): Sink & { readonly written: Written[] } {
   };
 }
 
-function settings(overrides: Partial<EmitSettings> = {}): EmitSettings {
+/** `sink` registered with `processors` running ahead of it alone. */
+function registered(sink: Sink, ...processors: LogProcessor[]): SinkRegistration {
+  return { sink, processors };
+}
+
+type SettingsOverrides = Partial<Omit<EmitSettings, "sinks">> & {
+  /** A plain sink is registered with no processors of its own. */
+  readonly sinks?: readonly (Sink | SinkRegistration)[];
+};
+
+function settings({ sinks = [], ...overrides }: SettingsOverrides = {}): EmitSettings {
   return {
-    sinks: [],
+    sinks: sinks.map((entry) => ("write" in entry ? registered(entry) : entry)),
+    processors: [],
     clock: () => 1_700_000_000_000.25,
     redaction: null,
     resource: () => RESOURCE,
@@ -727,5 +738,145 @@ describe("emitRecord failure isolation", () => {
     expect(result).toBeUndefined();
     expect(after.written).toHaveLength(1);
     expect(onSinkError).not.toHaveBeenCalled();
+  });
+});
+
+describe("emitRecord processors", () => {
+  /** A processor that replaces the record's message with `message`. */
+  function rename(message: string): LogProcessor {
+    return (record) => ({ ...record, message });
+  }
+
+  test("global processors run in order, ahead of every sink, each on what the previous returned", () => {
+    const first = collector();
+    const second = collector();
+    const seen: string[] = [];
+    const tag =
+      (name: string): LogProcessor =>
+      (record) => {
+        seen.push(`${name}:${record.message}`);
+        return { ...record, message: `${record.message}+${name}` };
+      };
+
+    emitRecord(settings({ sinks: [first, second], processors: [tag("a"), tag("b")] }), "info", "a", "m", undefined, undefined);
+
+    expect(seen).toEqual(["a:m", "b:m+a"]);
+    expect(first.written[0]?.record.message).toBe("m+a+b");
+    expect(second.written[0]?.record).toBe(first.written[0]?.record);
+    expect(first.written[0]?.resource).toBe(RESOURCE);
+  });
+
+  test("a global processor sees the record after built-in redaction", () => {
+    const sink = collector();
+    const seen = vi.fn((record: LogRecord) => record);
+
+    emitRecord(settings({ sinks: [sink], processors: [seen], redaction: secretKeys }), "info", "a", "m", { password: "p" }, undefined);
+
+    expect(seen.mock.calls[0]?.[0].attributes).toEqual({ password: "[REDACTED]" });
+  });
+
+  test("a null from a global processor drops the record for every sink, skipping later processors and the resource", () => {
+    const first = collector();
+    const second = collector();
+    const later = vi.fn((record: LogRecord) => record);
+    const perSink = vi.fn((record: LogRecord) => record);
+    const resource = vi.fn(() => RESOURCE);
+
+    emitRecord(
+      settings({ sinks: [registered(first, perSink), second], processors: [() => null, later], resource }),
+      "info",
+      "a",
+      "m",
+      undefined,
+      undefined,
+    );
+
+    expect(first.written).toHaveLength(0);
+    expect(second.written).toHaveLength(0);
+    expect(later).not.toHaveBeenCalled();
+    expect(perSink).not.toHaveBeenCalled();
+    expect(resource).not.toHaveBeenCalled();
+  });
+
+  test("per-sink processors run after the global ones, in order, ahead of their own sink alone", () => {
+    const plain = collector();
+    const renamed = collector();
+    const order: string[] = [];
+    const step =
+      (name: string, next: LogProcessor): LogProcessor =>
+      (record) => {
+        order.push(name);
+        return next(record);
+      };
+
+    emitRecord(
+      settings({
+        sinks: [
+          plain,
+          registered(
+            renamed,
+            step("sink-1", rename("one")),
+            step("sink-2", (record) => ({ ...record, category: "b" })),
+          ),
+        ],
+        processors: [step("global", rename("global"))],
+      }),
+      "info",
+      "a",
+      "m",
+      undefined,
+      undefined,
+    );
+
+    expect(order).toEqual(["global", "sink-1", "sink-2"]);
+    expect(plain.written[0]?.record).toMatchObject({ message: "global", category: "a" });
+    expect(renamed.written[0]?.record).toMatchObject({ message: "one", category: "b" });
+    expect(renamed.written[0]?.resource).toBe(RESOURCE);
+  });
+
+  test("a null from a per-sink processor drops the record for that sink only", () => {
+    const before = collector();
+    const dropped = collector();
+    const after = collector();
+    const later = vi.fn((record: LogRecord) => record);
+
+    emitRecord(settings({ sinks: [before, registered(dropped, () => null, later), after] }), "info", "a", "m", undefined, undefined);
+
+    expect(before.written).toHaveLength(1);
+    expect(dropped.written).toHaveLength(0);
+    expect(after.written).toHaveLength(1);
+    expect(later).not.toHaveBeenCalled();
+  });
+
+  test("a throwing global processor drops the record for every sink without reaching the caller", () => {
+    const sink = collector();
+    const failing: LogProcessor = () => {
+      throw new Error("processor");
+    };
+
+    expect(() => emitRecord(settings({ sinks: [sink], processors: [failing] }), "info", "a", "m", undefined, undefined)).not.toThrow();
+    expect(sink.written).toHaveLength(0);
+  });
+
+  test("a throwing per-sink processor drops the record for that sink only, without reaching the caller", () => {
+    const dropped = collector();
+    const after = collector();
+    const failing: LogProcessor = () => {
+      throw new Error("processor");
+    };
+
+    expect(() =>
+      emitRecord(settings({ sinks: [registered(dropped, failing), after] }), "info", "a", "m", undefined, undefined),
+    ).not.toThrow();
+    expect(dropped.written).toHaveLength(0);
+    expect(after.written).toHaveLength(1);
+  });
+
+  test("with no sink no processor runs", () => {
+    const processor = vi.fn((record: LogRecord) => record);
+
+    emitRecord(settings({ sinks: [], processors: [processor] }), "info", "a", "m", undefined, undefined);
+
+    expect(processor).not.toHaveBeenCalled();
   });
 });

@@ -3,7 +3,7 @@ import { secretKeys } from "@vipengele/ts-core-redaction";
 import { describe, expect, test } from "vitest";
 import { isLoggingConfigError } from "./config-error";
 import { entryFor, resolveEntry } from "./levels";
-import type { Sink } from "./record";
+import type { LogProcessor, Sink, SinkRegistration } from "./record";
 import {
   createSettings,
   DEFAULT_LEVELS,
@@ -12,6 +12,7 @@ import {
   EMPTY_LAYER,
   flattenLayers,
   freezeLayer,
+  freezeRegistration,
   LAYER_ORDER,
   type LevelLayer,
 } from "./settings";
@@ -161,27 +162,45 @@ describe("createSettings", () => {
 });
 
 describe("createSettings output", () => {
-  test("defaults to no sinks, the system clock and the secretKeys redaction", () => {
+  test("defaults to no sinks, no processors, the system clock and the secretKeys redaction", () => {
     const settings = createSettings({ defaults: DEFAULT_LEVELS, builder: {}, overrides: {} });
 
     expect(settings.sinks).toEqual([]);
     expect(Object.isFrozen(settings.sinks)).toBe(true);
+    expect(settings.processors).toEqual([]);
+    expect(Object.isFrozen(settings.processors)).toBe(true);
     expect(settings.clock).toBe(systemClock);
     expect(settings.redaction).toBe(secretKeys);
   });
 
-  test("copies the sink list into a frozen array and holds the clock and policy by reference", () => {
+  test("copies the sink registrations and processor lists into frozen arrays and holds the clock and policy by reference", () => {
     const sink: Sink = { write: () => {} };
-    const sinks = [sink];
+    const perSink: LogProcessor = (record) => record;
+    const global: LogProcessor = (record) => record;
+    const sinkProcessors = [perSink];
+    const registration: SinkRegistration = { sink, processors: sinkProcessors };
+    const sinks = [registration];
+    const processors = [global];
     const clock = () => 1;
     const policy = { keys: ["ssn"] };
 
-    const settings = createSettings({ defaults: DEFAULT_LEVELS, builder: {}, overrides: {} }, { sinks, clock, redaction: policy });
-    sinks.push({ write: () => {} });
+    const settings = createSettings(
+      { defaults: DEFAULT_LEVELS, builder: {}, overrides: {} },
+      { sinks, processors, clock, redaction: policy },
+    );
+    sinks.push({ sink: { write: () => {} }, processors: [] });
+    sinkProcessors.push(global);
+    processors.push(perSink);
 
-    expect(settings.sinks).toEqual([sink]);
+    expect(settings.sinks).toEqual([{ sink, processors: [perSink] }]);
     expect(settings.sinks).not.toBe(sinks);
     expect(Object.isFrozen(settings.sinks)).toBe(true);
+    expect(settings.sinks[0]).not.toBe(registration);
+    expect(settings.sinks[0]?.sink).toBe(sink);
+    expect(Object.isFrozen(settings.sinks[0])).toBe(true);
+    expect(Object.isFrozen(settings.sinks[0]?.processors)).toBe(true);
+    expect(settings.processors).toEqual([global]);
+    expect(Object.isFrozen(settings.processors)).toBe(true);
     expect(settings.clock).toBe(clock);
     expect(settings.redaction).toBe(policy);
   });
@@ -194,12 +213,30 @@ describe("createSettings output", () => {
 });
 
 describe("defaultOutput", () => {
-  test("is frozen, with a frozen empty sink list", () => {
+  test("is frozen, with frozen empty sink and processor lists", () => {
     const output = defaultOutput();
 
     expect(Object.isFrozen(output)).toBe(true);
     expect(Object.isFrozen(output.sinks)).toBe(true);
     expect(output.sinks).toEqual([]);
+    expect(Object.isFrozen(output.processors)).toBe(true);
+    expect(output.processors).toEqual([]);
+  });
+});
+
+describe("freezeRegistration", () => {
+  test("is a frozen copy holding the sink by reference and a frozen copy of its processors", () => {
+    const sink: Sink = { write: () => {} };
+    const processor: LogProcessor = (record) => record;
+    const processors = [processor];
+
+    const frozen = freezeRegistration({ sink, processors });
+    processors.push(processor);
+
+    expect(Object.isFrozen(frozen)).toBe(true);
+    expect(frozen.sink).toBe(sink);
+    expect(frozen.processors).toEqual([processor]);
+    expect(Object.isFrozen(frozen.processors)).toBe(true);
   });
 });
 

@@ -2,7 +2,7 @@ import { type Attributes, type AttributesInput, type Level, normalizeAttributes,
 import { type Resource, Scope, snapshot } from "@vipengele/ts-core-common/scope";
 import { mergeAttributes } from "../merge-attributes";
 import { redactAttributes, redactError } from "../redaction";
-import type { EmitSettings, LogRecord } from "./record";
+import type { EmitSettings, LogProcessor, LogRecord } from "./record";
 
 /**
  * Freezes `value` and every object and array beneath it. A record and a Logger's bindings hold
@@ -66,6 +66,19 @@ function createRecord(
   return freezeDeep(record);
 }
 
+/** `record` passed through `processors` in order, or `null` as soon as one of them drops it. */
+function runProcessors(processors: readonly LogProcessor[], record: LogRecord): LogRecord | null {
+  let current = record;
+  for (const processor of processors) {
+    const next = processor(current);
+    if (next === null) {
+      return null;
+    }
+    current = next;
+  }
+  return current;
+}
+
 /** Reports a failed `write`; a throw from the report itself is swallowed. */
 function reportSinkError(settings: EmitSettings, thrown: unknown): void {
   try {
@@ -88,11 +101,16 @@ function reportSinkError(settings: EmitSettings, thrown: unknown): void {
  * neither the clock, nor the Scope, nor the attributes, nor the error.
  *
  * Building the record — the clock, normalizing the attributes, serializing the error, redacting
- * them, and asking for the Resource — runs inside one guard. A throw there drops the record: no
- * sink receives it, the caller does not see the throw, and nothing is reported, since
- * `onSinkError` is for sink failures alone. Each `write` then runs in its own guard that reports
- * to `onSinkError`, so every sink is tried. Whatever `write` returns is ignored: a returned
- * promise is neither awaited nor observed, and a rejection of it is the sink's own to handle.
+ * them, running the global processors and asking for the Resource — runs inside one guard. A throw
+ * there drops the record: no sink receives it, the caller does not see the throw, and nothing is
+ * reported, since `onSinkError` is for sink failures alone. A `null` from a global processor drops
+ * the record for every sink, and the Resource is not asked for.
+ *
+ * Each sink then runs its own processors on what the global ones returned, in a guard of their
+ * own: a throw or a `null` there drops the record for that sink alone, unreported. Each `write`
+ * runs in its own guard that reports to `onSinkError`, so every sink is tried. Whatever `write`
+ * returns is ignored: a returned promise is neither awaited nor observed, and a rejection of it is
+ * the sink's own to handle.
  */
 export function emitRecord(
   settings: EmitSettings,
@@ -108,18 +126,30 @@ export function emitRecord(
     return;
   }
 
-  let record: LogRecord;
+  let record: LogRecord | null;
   let resource: Resource;
   try {
-    record = createRecord(settings, level, category, message, attributes, error, bindings);
+    record = runProcessors(settings.processors, createRecord(settings, level, category, message, attributes, error, bindings));
+    if (record === null) {
+      return;
+    }
     resource = settings.resource();
   } catch {
     return;
   }
 
-  for (const sink of sinks) {
+  for (const { sink, processors } of sinks) {
+    let delivered: LogRecord | null;
     try {
-      sink.write(record, resource);
+      delivered = runProcessors(processors, record);
+    } catch {
+      continue;
+    }
+    if (delivered === null) {
+      continue;
+    }
+    try {
+      sink.write(delivered, resource);
     } catch (thrown) {
       reportSinkError(settings, thrown);
     }
