@@ -907,6 +907,16 @@ describe("emitRecord processor output", () => {
     { name: "a record with a string time", value: (record) => ({ ...record, time: "now" }) },
     { name: "a record with a numeric level", value: (record) => ({ ...record, level: 30 }) },
     { name: "a record with a null category", value: (record) => ({ ...record, category: null }) },
+    { name: "a record without message", value: ({ message, ...rest }) => rest },
+    { name: "a record with a numeric message", value: (record) => ({ ...record, message: 42 }) },
+    { name: "a record with a string error", value: (record) => ({ ...record, error: "boom" }) },
+    { name: "a record with a null error", value: (record) => ({ ...record, error: null }) },
+    { name: "a record whose error has no type", value: (record) => ({ ...record, error: { message: "boom" } }) },
+    { name: "a record whose error has a numeric message", value: (record) => ({ ...record, error: { type: "Error", message: 1 } }) },
+    {
+      name: "a record whose error has a cause that is not an object",
+      value: (record) => ({ ...record, error: { type: "Error", message: "boom", cause: 1 } }),
+    },
   ];
 
   test.each(malformed)("a global processor returning $name drops the record for every sink, skipping the rest", ({ value }) => {
@@ -1187,23 +1197,131 @@ describe("emitRecord processor output", () => {
     expect(Object.isFrozen(sink.written[0]?.record)).toBe(true);
   });
 
-  test("a processor's record that freezing cannot walk, a cyclic error, is dropped for that path and reported under the processor", () => {
-    const dropped = collector();
-    const after = collector();
+  test("a cyclic error a processor returns reaches the sink with each recurring link as a circular marker", () => {
+    const sink = collector();
     const onSinkError = vi.fn();
-    const cause: Record<string, unknown> = { type: "Error", message: "loop" };
-    cause.cause = cause;
-    const cyclic: LogProcessor = (record) => ({ ...record, error: cause as unknown as SerializedError });
+    const loop: Record<string, unknown> = { type: "Error", message: "loop" };
+    loop.cause = loop;
+    loop.errors = [{ type: "Error", message: "sibling" }, loop];
+    const cyclic: LogProcessor = (record) => ({ ...record, error: loop as unknown as SerializedError });
 
-    expect(() =>
-      emitRecord(settings({ sinks: [registered(dropped, cyclic), after], onSinkError }), "info", "a", "m", undefined, undefined),
-    ).not.toThrow();
+    emitRecord(settings({ sinks: [registered(sink, cyclic)], onSinkError }), "info", "a", "m", undefined, undefined);
 
-    expect(dropped.written).toHaveLength(0);
-    expect(after.written).toHaveLength(1);
-    expect(onSinkError).toHaveBeenCalledOnce();
-    expect(onSinkError.mock.calls[0]?.[0]).toBeInstanceOf(RangeError);
-    expect(onSinkError.mock.calls[0]?.[1]).toBe(cyclic);
+    const circular = { type: "[Circular]", message: "an error already on this chain" };
+    const record = sink.written[0]?.record as LogRecord;
+    expect(record.error).toEqual({
+      type: "Error",
+      message: "loop",
+      cause: circular,
+      errors: [{ type: "Error", message: "sibling" }, circular],
+    });
+    expect(() => JSON.stringify(record)).not.toThrow();
+    expect(Object.isFrozen(record.error?.cause)).toBe(true);
+    expect(Object.isFrozen(loop)).toBe(false);
+    expect(onSinkError).not.toHaveBeenCalled();
+  });
+
+  test("an error a processor returns is rebuilt with only JSON-safe SerializedError fields", () => {
+    const sink = collector();
+    const fn = function handler(): void {};
+    const error = {
+      type: "Error",
+      message: "outer",
+      code: 7,
+      stack: { frames: [] },
+      synthetic: "yes",
+      data: { big: 10n, map: new Map([["k", 1]]), fn },
+      extra: "dropped",
+      errors: "not an array",
+      cause: { type: "TypeError", message: "inner", code: "E_INNER", stack: "at x", synthetic: true, data: null },
+    };
+
+    emitRecord(
+      settings({ sinks: [registered(sink, (record) => ({ ...record, error: error as unknown as SerializedError }))] }),
+      "info",
+      "a",
+      "m",
+      undefined,
+      undefined,
+    );
+
+    const record = sink.written[0]?.record as LogRecord;
+    expect(record.error).toEqual({
+      type: "Error",
+      message: "outer",
+      data: { big: "10n", map: { k: 1 }, fn: expect.any(String) },
+      cause: { type: "TypeError", message: "inner", code: "E_INNER", stack: "at x", synthetic: true, data: {} },
+    });
+    expect(JSON.parse(JSON.stringify(record))).toEqual(record);
+    expect(Object.isFrozen(record.error?.data)).toBe(true);
+  });
+
+  test("keys a processor adds outside the LogRecord fields are left out of the record", () => {
+    const sink = collector();
+
+    emitRecord(
+      settings({ sinks: [registered(sink, (record) => ({ ...record, extra: 10n, nested: { k: "v" } }) as LogRecord)] }),
+      "info",
+      "a",
+      "m",
+      { kept: "yes" },
+      undefined,
+    );
+
+    const record = sink.written[0]?.record as LogRecord;
+    expect(Object.keys(record).sort()).toEqual(["attributes", "category", "level", "message", "time"]);
+    expect(record.attributes).toEqual({ kept: "yes" });
+  });
+
+  test("the objects a processor returns its attributes and error in stay unfrozen", () => {
+    const sink = collector();
+    const attributes = { nested: { value: "v" } };
+    const data = { inner: { value: "d" } };
+    const cause = { type: "Error", message: "cause" };
+    const error = { type: "Error", message: "outer", data, cause, errors: [cause] };
+    const returned = { time: 1, level: "info", category: "a", message: "m", attributes, error };
+
+    emitRecord(settings({ sinks: [registered(sink, () => returned as LogRecord)] }), "info", "a", "m", undefined, undefined);
+
+    const record = sink.written[0]?.record as LogRecord;
+    expect(record).toEqual(returned);
+    expect(Object.isFrozen(record.error?.data?.inner)).toBe(true);
+    for (const own of [returned, attributes, attributes.nested, error, data, data.inner, cause, error.errors]) {
+      expect(Object.isFrozen(own)).toBe(false);
+    }
+  });
+
+  test("an error a processor passes on, whole or as part of a new chain, is not normalized a second time", () => {
+    const whole = collector();
+    const wrapped = collector();
+    const long = "x".repeat(10_000);
+    const thrown = Object.assign(new AggregateError([new Error("entry")], "inner"), { long });
+    let built: LogRecord | undefined;
+    const capture: LogProcessor = (record) => {
+      built = record;
+      return record;
+    };
+    const wrap: LogProcessor = (record) => ({
+      ...record,
+      error: { type: "Error", message: "outer", data: record.error?.data, cause: record.error },
+    });
+
+    emitRecord(
+      settings({
+        sinks: [registered(whole, (record) => ({ ...record, message: "renamed" })), registered(wrapped, wrap)],
+        processors: [capture],
+      }),
+      "info",
+      "a",
+      "m",
+      undefined,
+      thrown,
+    );
+
+    expect(whole.written[0]?.record.error).toBe(built?.error);
+    const error = wrapped.written[0]?.record.error;
+    expect(error?.cause).toBe(built?.error);
+    expect(error?.data).toBe(built?.error?.data);
   });
 
   test("a valid record from a per-sink processor reaches its sink alongside the other sinks' records", () => {

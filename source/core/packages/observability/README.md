@@ -150,10 +150,14 @@ Logging.configure((b) =>
 
 - **Fail closed** — a processor that throws, or returns neither a record nor `null`, drops the
   record. A global processor drops it for every sink; a per-sink processor drops it for that sink
-  alone. The failure is reported like a sink's. A returned value that is not an object, or lacks
-  `time`, `level` or `category`, counts as a failure.
-- **Output is re-normalized** — returned `attributes` go back through the attribute normalization
-  and the result is deeply frozen, so a sink only receives JSON-safe, frozen records.
+  alone. The failure is reported like a sink's. A returned value that is not an object, lacks
+  `time`, `level`, `category` or a string `message`, or carries an `error` link without a string
+  `type` and `message`, counts as a failure.
+- **Output is re-normalized** — a returned record is rebuilt from the `LogRecord` fields alone, so
+  any other key is dropped. Its `attributes` and each error link's `data` go back through the
+  attribute normalization, an error link that recurs on its own chain becomes a `"[Circular]"`
+  link, and the rebuilt copy is deeply frozen, so a sink only receives JSON-safe, frozen records
+  and the processor's own objects stay unfrozen.
 - **Validation** — `build()` throws `LoggingConfigError` for a processor that is not a function,
   `addSink` options that are not an object, or `processors` that is not an array.
 - **Not the reporter's `Processor`** — `./errors` has an internal `Processor` stage that mutates an

@@ -1,4 +1,11 @@
-import { type Attributes, type AttributesInput, type Level, normalizeAttributes, serializeError } from "@vipengele/ts-core-common";
+import {
+  type Attributes,
+  type AttributesInput,
+  type Level,
+  normalizeAttributes,
+  type SerializedError,
+  serializeError,
+} from "@vipengele/ts-core-common";
 import { type Resource, Scope, snapshot } from "@vipengele/ts-core-common/scope";
 import { mergeAttributes } from "../merge-attributes";
 import { redactAttributes, redactError } from "../redaction";
@@ -6,8 +13,9 @@ import type { EmitSettings, LogProcessor, LogRecord, Sink } from "./record";
 
 /**
  * Freezes `value` and every object and array beneath it. A record and a Logger's bindings hold
- * only JSON-safe data that `normalizeAttributes`, `serializeError` and `redact` built for them,
- * bounded and acyclic, so the walk ends and never reaches an object of the caller's.
+ * only JSON-safe data that `normalizeAttributes`, `serializeError`, `redact` and
+ * {@link acceptProcessorOutput} built for them, acyclic, so the walk ends and never reaches an
+ * object of the caller's or of a processor's.
  */
 export function freezeDeep<T>(value: T): T {
   if (typeof value === "object" && value !== null) {
@@ -66,14 +74,87 @@ function createRecord(
   return freezeDeep(record);
 }
 
+/** Rebuilt in place of a link that is already on the path from the outermost error, as `serializeError` does. */
+const CIRCULAR_LINK: SerializedError = { type: "[Circular]", message: "an error already on this chain" };
+
+/**
+ * Every link of `error`'s chain and every link's `data`. They were built by `serializeError` or
+ * accepted here earlier and are frozen, so a processor's error that reuses one of them keeps it as
+ * it is rather than normalizing, and truncating, it a second time.
+ */
+function chainParts(error: SerializedError | undefined, parts: Set<object> = new Set()): Set<object> {
+  if (error !== undefined) {
+    parts.add(error);
+    if (error.data !== undefined) {
+      parts.add(error.data);
+    }
+    chainParts(error.cause, parts);
+    for (const entry of error.errors ?? []) {
+      chainParts(entry, parts);
+    }
+  }
+  return parts;
+}
+
+/**
+ * A fresh copy of one link of a processor's error, holding only the fields a
+ * {@link SerializedError} has. A link from `known` is kept as it is. Anything else must be an
+ * object with a string `type` and `message`, or this throws a `TypeError`; a `code` or `stack`
+ * that is not a string and a `synthetic` that is not `true` are left out, `data` goes through
+ * `normalizeAttributes` and `errors` is kept only when it is an array. A link already on `path`,
+ * the links from the outermost one down to this one, becomes a `"[Circular]"` link, so the copy
+ * is acyclic, JSON-safe and shares no object with the processor's.
+ */
+function acceptErrorLink(link: unknown, known: ReadonlySet<object>, path: Set<unknown>): SerializedError {
+  if (known.has(link as object)) {
+    return link as SerializedError;
+  }
+  if (path.has(link)) {
+    return { ...CIRCULAR_LINK };
+  }
+  if (typeof link !== "object" || link === null) {
+    throw new TypeError("A log processor returned an error link that is not an object");
+  }
+  const candidate = link as Partial<SerializedError>;
+  if (typeof candidate.type !== "string" || typeof candidate.message !== "string") {
+    throw new TypeError("A log processor returned an error link without a string type and message");
+  }
+  const accepted: SerializedError = { type: candidate.type, message: candidate.message };
+  if (typeof candidate.code === "string") {
+    accepted.code = candidate.code;
+  }
+  if (typeof candidate.stack === "string") {
+    accepted.stack = candidate.stack;
+  }
+  if (candidate.synthetic === true) {
+    accepted.synthetic = true;
+  }
+  if (candidate.data !== undefined) {
+    accepted.data = known.has(candidate.data) ? candidate.data : normalizeAttributes(candidate.data ?? {});
+  }
+  path.add(link);
+  if (candidate.cause !== undefined) {
+    accepted.cause = acceptErrorLink(candidate.cause, known, path);
+  }
+  if (Array.isArray(candidate.errors)) {
+    accepted.errors = candidate.errors.map((entry: unknown) => acceptErrorLink(entry, known, path));
+  }
+  path.delete(link);
+  return accepted;
+}
+
 /**
  * What a processor handed `previous` returned, made safe for the next processor or a sink. `null`
  * passes through as a drop, and `previous` itself is returned as it is, already frozen. Anything
- * else must be an object carrying a numeric `time` and a string `level` and `category`, or this
- * throws a `TypeError`. Its attributes go back through `normalizeAttributes` unless they are
- * `previous`'s own, so a cycle or a value that is not JSON-safe never reaches `freezeDeep`, and a
- * shallow copy of the result is frozen deeply, leaving the processor's own top-level object as it
- * was.
+ * else must be an object carrying a numeric `time` and a string `level`, `category` and `message`,
+ * or this throws a `TypeError`.
+ *
+ * The accepted record is rebuilt from the {@link LogRecord} fields alone, so any other key the
+ * processor set is left out. Its attributes go back through `normalizeAttributes` and its error
+ * through {@link acceptErrorLink}, except where they are `previous`'s own, which are kept rather
+ * than bounded a second time. Nothing that is cyclic or not JSON-safe reaches `freezeDeep`, and
+ * the deep freeze walks only fresh copies and `previous`'s already frozen parts, never an object
+ * of the processor's.
  */
 function acceptProcessorOutput(previous: LogRecord, next: unknown): LogRecord | null {
   if (next === null) {
@@ -86,11 +167,25 @@ function acceptProcessorOutput(previous: LogRecord, next: unknown): LogRecord | 
     throw new TypeError(`A log processor returned ${typeof next} instead of a record or null`);
   }
   const candidate = next as Partial<LogRecord>;
-  if (typeof candidate.time !== "number" || typeof candidate.level !== "string" || typeof candidate.category !== "string") {
-    throw new TypeError("A log processor returned a record without a numeric time and a string level and category");
+  if (
+    typeof candidate.time !== "number" ||
+    typeof candidate.level !== "string" ||
+    typeof candidate.category !== "string" ||
+    typeof candidate.message !== "string"
+  ) {
+    throw new TypeError("A log processor returned a record without a numeric time and a string level, category and message");
   }
-  const attributes = candidate.attributes === previous.attributes ? previous.attributes : normalizeAttributes(candidate.attributes ?? {});
-  return freezeDeep({ ...candidate, attributes } as LogRecord);
+  const record: { -readonly [K in keyof LogRecord]: LogRecord[K] } = {
+    time: candidate.time,
+    level: candidate.level,
+    category: candidate.category,
+    message: candidate.message,
+    attributes: candidate.attributes === previous.attributes ? previous.attributes : normalizeAttributes(candidate.attributes ?? {}),
+  };
+  if (candidate.error !== undefined) {
+    record.error = acceptErrorLink(candidate.error, chainParts(previous.error), new Set());
+  }
+  return freezeDeep(record);
 }
 
 /** Reports a failed sink or processor; a throw from the report itself is swallowed. */
@@ -145,14 +240,15 @@ function runProcessors(settings: EmitSettings, processors: readonly LogProcessor
  *
  * The global processors run on the built record, then each sink's own processors on what the
  * global ones returned. The processor stage fails closed: a processor that throws, or returns
- * anything but `null` or an object with a numeric `time` and a string `level` and `category`,
+ * anything but `null` or an object with a numeric `time` and a string `level`, `category` and
+ * `message`, or an `error` with a link that is not an object with a string `type` and `message`,
  * drops the record exactly as a `null` does — for every sink when the processor is global, and
  * the Resource is then not asked for; for its own sink alone when it is a per-sink one. Either way
  * the failure is reported to `onSinkError` with the processor as its source, and the caller does
- * not see the throw. A processor's returned attributes are
- * normalized again and the record it returns is deeply frozen, so every processor and every sink
- * receives a frozen record with JSON-safe attributes. A returned record that freezing cannot walk,
- * such as one whose `error` refers to itself, is dropped as a throw is.
+ * not see the throw. A record a processor returns is rebuilt from the {@link LogRecord} fields
+ * alone, its attributes and every link's `data` normalized again and a link that recurs on its own
+ * chain replaced by a `"[Circular]"` link, then deeply frozen, so every processor and every sink
+ * receives a frozen, JSON-safe record and the processor's own objects stay unfrozen.
  *
  * Each `write` runs in its own guard that reports to `onSinkError` with the sink as its source, so
  * every sink is tried.

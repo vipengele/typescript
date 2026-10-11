@@ -13,12 +13,16 @@ previous one returned.
 
 ## Fail closed
 
-A processor that throws, or returns something that is not an object carrying `time`, `level` and
-`category`, drops the record: a filter that fails open would deliver the very record it exists to
-withhold. A global processor's failure drops the record for every Sink, a per-sink processor's for
-that Sink only. Returned `attributes` go back through `normalizeAttributes`, so a cycle never
-reaches the deep freeze, and the result is deeply frozen. A Sink only ever receives a JSON-safe,
-frozen record. `build()` throws `LoggingConfigError` for a processor that is not a function, for
+A processor that throws, or returns something that is not an object carrying `time`, `level`,
+`category` and a string `message`, or an `error` link that is not an object with a string `type`
+and `message`, drops the record: a filter that fails open would deliver the very record it exists
+to withhold. A global processor's failure drops the record for every Sink, a per-sink processor's
+for that Sink only. A returned record is rebuilt from the `LogRecord` fields alone, dropping any
+other key. Its `attributes` and every error link's `data` go back through `normalizeAttributes`,
+an error link that recurs on its own chain becomes a `"[Circular]"` link as `serializeError` gives
+it, and the parts the processor passed on from the record it was handed are kept as they are
+rather than bounded twice. The rebuilt copy is deeply frozen, never the processor's own objects. A
+Sink only ever receives a JSON-safe, frozen record. `build()` throws `LoggingConfigError` for a processor that is not a function, for
 `addSink` options that are not an object and for `processors` that is not an array (ADR-0002).
 
 ## Built-in redaction is the fixed first stage
