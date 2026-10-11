@@ -1,8 +1,10 @@
 import type { AttributesInput, Level } from "@vipengele/ts-core-common";
+import { type Resource, Scope } from "@vipengele/ts-core-common/scope";
 import { ReporterBuilder } from "./builder";
 import type { Mechanism } from "./event";
 import { setupIntegrations } from "./integration";
 import { createCapture } from "./pipeline";
+import { detectRuntimeContext } from "./runtime-context";
 
 /** What {@link Reporter.captureException} accepts beside the error itself. */
 export interface CaptureContext {
@@ -34,17 +36,44 @@ export interface Reporter {
 const CAPTURED: Mechanism = { handled: true, source: "capture" };
 
 /**
+ * Writes each detected runtime-context key the Resource holds no value for, leaving every key that
+ * already has one as it is. A throw anywhere — detecting, reading or writing the Resource — leaves
+ * the Resource with whatever it holds and never reaches the caller.
+ */
+function fillRuntimeContext(): void {
+  try {
+    const current = Scope.resource();
+    const unset: Partial<Record<keyof Resource, string>> = {};
+    for (const [key, value] of Object.entries(detectRuntimeContext()) as [keyof Resource, string][]) {
+      if (current[key] === undefined) {
+        unset[key] = value;
+      }
+    }
+    Scope.setResource(unset);
+  } catch {
+    // The Resource keeps what it holds; a reporter is worth more than its detected runtime context.
+  }
+}
+
+/**
  * Creates a {@link Reporter} from a builder that starts from the defaults — no transport, the
  * high-resolution epoch clock, no integrations, the `secretKeys` redaction preset — and that
- * `configure` adds to. Without integrations, creating one installs nothing: every piece of state
- * lives in the returned object. Each integration is set up here, and whatever global state it installs belongs to the reporter
+ * `configure` adds to. Without integrations, creating one installs nothing beyond the runtime
+ * context it fills into the Resource: every other piece of state lives in the returned object. Each integration is set up here, and whatever global state it installs belongs to the reporter
  * until `close()` removes it.
+ *
+ * Creating one detects the runtime, operating system, browser and device once and writes each
+ * detected key to the Resource only when the Resource holds no value for it, so a value an
+ * application sets through `Scope.setResource` — before or after — always wins, and a second
+ * reporter fills only the keys still unset when it is created. Detection that fails leaves the
+ * Resource as it is and the reporter working.
  */
 export function createReporter(configure?: (builder: ReporterBuilder) => ReporterBuilder): Reporter {
   const initial = new ReporterBuilder();
   const { transport, clock, projectRoot, integrations, redaction, limits } = (
     configure === undefined ? initial : configure(initial)
   ).build();
+  fillRuntimeContext();
   const capture = createCapture({ clock, transport, projectRoot, redaction, limits, processors: [], filters: [] });
   const flush = async (timeoutMs?: number): Promise<boolean> => (transport === undefined ? true : transport.flush(timeoutMs));
   const teardown = setupIntegrations(integrations, {
