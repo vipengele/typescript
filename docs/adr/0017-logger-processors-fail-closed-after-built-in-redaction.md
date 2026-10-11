@@ -19,8 +19,11 @@ and `message`, drops the record: a filter that fails open would deliver the very
 to withhold. A global processor's failure drops the record for every Sink, a per-sink processor's
 for that Sink only. A returned record is rebuilt from the `LogRecord` fields alone, dropping any
 other key. Its `attributes` and every error link's `data` go back through `normalizeAttributes`,
-an error link that recurs on its own chain becomes a `"[Circular]"` link as `serializeError` gives
-it, and the parts the processor passed on from the record it was handed are kept as they are
+and its error chain is bounded by the limits `serializeError` applies to a thrown value, with the
+same markers: each link's `type`, `message`, `code` and `stack` are cut at the default string
+length, a link past `maxLinks` becomes a `"[Truncated]"` link, an `errors` array past `maxErrors`
+is summarised by one `"[Truncated]"` entry, and an error link that recurs on its own chain becomes
+a `"[Circular]"` link. The parts the processor passed on from the record it was handed are kept as they are
 rather than bounded twice. The rebuilt copy is deeply frozen, never the processor's own objects. A
 Sink only ever receives a JSON-safe, frozen record. `build()` throws `LoggingConfigError` for a processor that is not a function, for
 `addSink` options that are not an object and for `processors` that is not an array (ADR-0002).

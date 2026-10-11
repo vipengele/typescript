@@ -1324,6 +1324,129 @@ describe("emitRecord processor output", () => {
     expect(error?.data).toBe(built?.error?.data);
   });
 
+  /** A processor that keeps the record but replaces its error with `error`. */
+  function withError(error: unknown): LogProcessor {
+    return (record) => ({ ...record, error: error as SerializedError });
+  }
+
+  /** `length` characters of `"x"`, cut as `serializeError` cuts a string past the default length. */
+  function truncated(length: number): string {
+    return length > 8192 ? `${"x".repeat(8192)}…[truncated]` : "x".repeat(length);
+  }
+
+  test("the type, message, code and stack of each link of a processor's error are cut at the default string length", () => {
+    const sink = collector();
+    const long = "x".repeat(10_000);
+    const link = { type: long, message: long, code: long, stack: long };
+
+    emitRecord(
+      settings({ sinks: [registered(sink, withError({ ...link, cause: link, errors: [link] }))] }),
+      "info",
+      "a",
+      "m",
+      undefined,
+      undefined,
+    );
+
+    const cut = { type: truncated(10_000), message: truncated(10_000), code: truncated(10_000), stack: truncated(10_000) };
+    expect(sink.written[0]?.record.error).toEqual({ ...cut, cause: cut, errors: [cut] });
+  });
+
+  test("a processor's error chain is cut with a truncation marker past five links, however deep it goes", () => {
+    const sink = collector();
+    const onSinkError = vi.fn();
+    let deep: Record<string, unknown> = { type: "Error", message: "0" };
+    for (let index = 1; index <= 100_000; index++) {
+      deep = { type: "Error", message: String(index), cause: deep };
+    }
+
+    emitRecord(settings({ sinks: [registered(sink, withError(deep))], onSinkError }), "info", "a", "m", undefined, undefined);
+
+    const messages: string[] = [];
+    let link = sink.written[0]?.record.error;
+    while (link !== undefined) {
+      messages.push(link.message);
+      link = link.cause;
+    }
+    expect(messages).toEqual(["100000", "99999", "99998", "99997", "99996", "99995", "the chain continues past 5 links"]);
+    expect(onSinkError).not.toHaveBeenCalled();
+  });
+
+  test("a link of a processor's errors array past five links is cut with the same truncation marker", () => {
+    const sink = collector();
+    let nested: Record<string, unknown> = { type: "Error", message: "leaf" };
+    for (let index = 0; index < 6; index++) {
+      nested = { type: "AggregateError", message: String(index), errors: [nested] };
+    }
+
+    emitRecord(settings({ sinks: [registered(sink, withError(nested))] }), "info", "a", "m", undefined, undefined);
+
+    let link = sink.written[0]?.record.error;
+    for (let index = 0; index < 5; index++) {
+      link = link?.errors?.[0];
+    }
+    expect(link?.errors).toEqual([{ type: "[Truncated]", message: "the chain continues past 5 links" }]);
+  });
+
+  test("an errors array a processor returns keeps its first 100 entries and summarises the rest", () => {
+    const sink = collector();
+    const entries = Array.from({ length: 250 }, (_, index) => ({ type: "Error", message: String(index) }));
+
+    emitRecord(
+      settings({ sinks: [registered(sink, withError({ type: "AggregateError", message: "many", errors: entries }))] }),
+      "info",
+      "a",
+      "m",
+      undefined,
+      undefined,
+    );
+
+    const errors = sink.written[0]?.record.error?.errors ?? [];
+    expect(errors).toHaveLength(101);
+    expect(errors.slice(0, 100)).toEqual(entries.slice(0, 100));
+    expect(errors[100]).toEqual({ type: "[Truncated]", message: "150 more errors" });
+  });
+
+  test("an errors array of exactly 100 entries a processor returns is kept whole, without a summary", () => {
+    const sink = collector();
+    const entries = Array.from({ length: 100 }, (_, index) => ({ type: "Error", message: String(index) }));
+
+    emitRecord(
+      settings({ sinks: [registered(sink, withError({ type: "AggregateError", message: "many", errors: entries }))] }),
+      "info",
+      "a",
+      "m",
+      undefined,
+      undefined,
+    );
+
+    expect(sink.written[0]?.record.error?.errors).toEqual(entries);
+  });
+
+  test("an already bounded error a processor nests deep in a new chain is kept as it is, neither cut again nor truncated", () => {
+    const sink = collector();
+    const thrown = new Error("x".repeat(10_000), { cause: new Error("inner") });
+    let built: LogRecord | undefined;
+    const wrap: LogProcessor = (record) => {
+      built = record;
+      let chain: unknown = record.error;
+      for (let index = 0; index < 5; index++) {
+        chain = { type: "Error", message: `wrapper ${index}`, cause: chain };
+      }
+      return { ...record, error: chain as SerializedError };
+    };
+
+    emitRecord(settings({ sinks: [registered(sink, wrap)] }), "info", "a", "m", undefined, thrown);
+
+    let link = sink.written[0]?.record.error;
+    for (let index = 0; index < 5; index++) {
+      link = link?.cause;
+    }
+    expect(link).toBe(built?.error);
+    expect(link?.message).toBe(truncated(10_000));
+    expect(link?.cause).toEqual(expect.objectContaining({ type: "Error", message: "inner" }));
+  });
+
   test("a valid record from a per-sink processor reaches its sink alongside the other sinks' records", () => {
     const plain = collector();
     const replaced = collector();

@@ -5,6 +5,7 @@ import {
   normalizeAttributes,
   type SerializedError,
   serializeError,
+  toJsonSafe,
 } from "@vipengele/ts-core-common";
 import { type Resource, Scope, snapshot } from "@vipengele/ts-core-common/scope";
 import { mergeAttributes } from "../merge-attributes";
@@ -78,9 +79,24 @@ function createRecord(
 const CIRCULAR_LINK: SerializedError = { type: "[Circular]", message: "an error already on this chain" };
 
 /**
+ * `serializeError`'s default `maxLinks` and `maxErrors`, the limits {@link createRecord} serializes
+ * a thrown value under, so a processor's error is bounded exactly as the record's own error is.
+ */
+const MAX_LINKS = 5;
+const MAX_ERRORS = 100;
+
+/** Rebuilt in place of a link further than {@link MAX_LINKS} links from the outermost error, as `serializeError` does. */
+const TRUNCATED_LINK: SerializedError = { type: "[Truncated]", message: `the chain continues past ${MAX_LINKS} links` };
+
+/** `value` cut at the default string length and suffixed with the marker `serializeError` uses. */
+function boundString(value: string): string {
+  return toJsonSafe(value) as string;
+}
+
+/**
  * Every link of `error`'s chain and every link's `data`. They were built by `serializeError` or
- * accepted here earlier and are frozen, so a processor's error that reuses one of them keeps it as
- * it is rather than normalizing, and truncating, it a second time.
+ * accepted here earlier, already bounded, and are frozen, so a processor's error that reuses one of
+ * them keeps it as it is rather than normalizing, and truncating, it a second time.
  */
 function chainParts(error: SerializedError | undefined, parts: Set<object> = new Set()): Set<object> {
   if (error !== undefined) {
@@ -97,20 +113,28 @@ function chainParts(error: SerializedError | undefined, parts: Set<object> = new
 }
 
 /**
- * A fresh copy of one link of a processor's error, holding only the fields a
- * {@link SerializedError} has. A link from `known` is kept as it is. Anything else must be an
- * object with a string `type` and `message`, or this throws a `TypeError`; a `code` or `stack`
- * that is not a string and a `synthetic` that is not `true` are left out, `data` goes through
- * `normalizeAttributes` and `errors` is kept only when it is an array. A link already on `path`,
- * the links from the outermost one down to this one, becomes a `"[Circular]"` link, so the copy
- * is acyclic, JSON-safe and shares no object with the processor's.
+ * A fresh copy of one link of a processor's error, `links` links from the outermost one, holding
+ * only the fields a {@link SerializedError} has and bounded as `serializeError` bounds a thrown
+ * value's chain. A link from `known` is kept as it is. A link already on `path`, the links from the
+ * outermost one down to this one, becomes a `"[Circular]"` link, and one further than
+ * {@link MAX_LINKS} links out a `"[Truncated]"` link, read no further, so the walk ends however deep
+ * the processor's chain goes. Anything else must be an object with a string `type` and `message`,
+ * or this throws a `TypeError`. Its `type`, `message`, and a `code` or `stack` that is a string, are
+ * cut at the default string length with the `"…[truncated]"` suffix; a `code` or `stack` that is
+ * not a string and a `synthetic` that is not `true` are left out; `data` goes through
+ * `normalizeAttributes`; and `errors` is kept only when it is an array, its first
+ * {@link MAX_ERRORS} entries rebuilt and the rest summarised by one `"[Truncated]"` entry. The copy
+ * is acyclic, JSON-safe, bounded, and shares no object with the processor's.
  */
-function acceptErrorLink(link: unknown, known: ReadonlySet<object>, path: Set<unknown>): SerializedError {
+function acceptErrorLink(link: unknown, links: number, known: ReadonlySet<object>, path: Set<unknown>): SerializedError {
   if (known.has(link as object)) {
     return link as SerializedError;
   }
   if (path.has(link)) {
     return { ...CIRCULAR_LINK };
+  }
+  if (links > MAX_LINKS) {
+    return { ...TRUNCATED_LINK };
   }
   if (typeof link !== "object" || link === null) {
     throw new TypeError("A log processor returned an error link that is not an object");
@@ -119,12 +143,12 @@ function acceptErrorLink(link: unknown, known: ReadonlySet<object>, path: Set<un
   if (typeof candidate.type !== "string" || typeof candidate.message !== "string") {
     throw new TypeError("A log processor returned an error link without a string type and message");
   }
-  const accepted: SerializedError = { type: candidate.type, message: candidate.message };
+  const accepted: SerializedError = { type: boundString(candidate.type), message: boundString(candidate.message) };
   if (typeof candidate.code === "string") {
-    accepted.code = candidate.code;
+    accepted.code = boundString(candidate.code);
   }
   if (typeof candidate.stack === "string") {
-    accepted.stack = candidate.stack;
+    accepted.stack = boundString(candidate.stack);
   }
   if (candidate.synthetic === true) {
     accepted.synthetic = true;
@@ -134,10 +158,14 @@ function acceptErrorLink(link: unknown, known: ReadonlySet<object>, path: Set<un
   }
   path.add(link);
   if (candidate.cause !== undefined) {
-    accepted.cause = acceptErrorLink(candidate.cause, known, path);
+    accepted.cause = acceptErrorLink(candidate.cause, links + 1, known, path);
   }
   if (Array.isArray(candidate.errors)) {
-    accepted.errors = candidate.errors.map((entry: unknown) => acceptErrorLink(entry, known, path));
+    const entries: unknown[] = candidate.errors;
+    accepted.errors = entries.slice(0, MAX_ERRORS).map((entry) => acceptErrorLink(entry, links + 1, known, path));
+    if (entries.length > MAX_ERRORS) {
+      accepted.errors.push({ type: "[Truncated]", message: `${entries.length - MAX_ERRORS} more errors` });
+    }
   }
   path.delete(link);
   return accepted;
@@ -151,8 +179,9 @@ function acceptErrorLink(link: unknown, known: ReadonlySet<object>, path: Set<un
  *
  * The accepted record is rebuilt from the {@link LogRecord} fields alone, so any other key the
  * processor set is left out. Its attributes go back through `normalizeAttributes` and its error
- * through {@link acceptErrorLink}, except where they are `previous`'s own, which are kept rather
- * than bounded a second time. Nothing that is cyclic or not JSON-safe reaches `freezeDeep`, and
+ * through {@link acceptErrorLink}, which bounds it as `serializeError` bounds a thrown value,
+ * except where they are `previous`'s own, which are kept rather than bounded a second time.
+ * Nothing that is cyclic, unbounded or not JSON-safe reaches `freezeDeep`, and
  * the deep freeze walks only fresh copies and `previous`'s already frozen parts, never an object
  * of the processor's.
  */
@@ -183,7 +212,7 @@ function acceptProcessorOutput(previous: LogRecord, next: unknown): LogRecord | 
     attributes: candidate.attributes === previous.attributes ? previous.attributes : normalizeAttributes(candidate.attributes ?? {}),
   };
   if (candidate.error !== undefined) {
-    record.error = acceptErrorLink(candidate.error, chainParts(previous.error), new Set());
+    record.error = acceptErrorLink(candidate.error, 0, chainParts(previous.error), new Set());
   }
   return freezeDeep(record);
 }
@@ -246,8 +275,9 @@ function runProcessors(settings: EmitSettings, processors: readonly LogProcessor
  * the Resource is then not asked for; for its own sink alone when it is a per-sink one. Either way
  * the failure is reported to `onSinkError` with the processor as its source, and the caller does
  * not see the throw. A record a processor returns is rebuilt from the {@link LogRecord} fields
- * alone, its attributes and every link's `data` normalized again and a link that recurs on its own
- * chain replaced by a `"[Circular]"` link, then deeply frozen, so every processor and every sink
+ * alone, its attributes and every link's `data` normalized again, its error chain bounded by
+ * `serializeError`'s default string length, link and `errors` limits and a link that recurs on its
+ * own chain replaced by a `"[Circular]"` link, then deeply frozen, so every processor and every sink
  * receives a frozen, JSON-safe record and the processor's own objects stay unfrozen.
  *
  * Each `write` runs in its own guard that reports to `onSinkError` with the sink as its source, so

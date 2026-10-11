@@ -155,9 +155,13 @@ Logging.configure((b) =>
   `type` and `message`, counts as a failure.
 - **Output is re-normalized** — a returned record is rebuilt from the `LogRecord` fields alone, so
   any other key is dropped. Its `attributes` and each error link's `data` go back through the
-  attribute normalization, an error link that recurs on its own chain becomes a `"[Circular]"`
-  link, and the rebuilt copy is deeply frozen, so a sink only receives JSON-safe, frozen records
-  and the processor's own objects stay unfrozen.
+  attribute normalization, and its error chain is bounded as a thrown error's is: each link's
+  `type`, `message`, `code` and `stack` are cut at 8192 characters, a link more than 5 links from
+  the outermost one becomes a `"[Truncated]"` link, an `errors` array keeps 100 entries and
+  summarises the rest in one `"[Truncated]"` entry, and an error link that recurs on its own chain
+  becomes a `"[Circular]"` link. Links passed on from the record the processor was handed are kept
+  as they are. The rebuilt copy is deeply frozen, so a sink only receives JSON-safe, bounded,
+  frozen records and the processor's own objects stay unfrozen.
 - **Validation** — `build()` throws `LoggingConfigError` for a processor that is not a function,
   `addSink` options that are not an object, or `processors` that is not an array.
 - **Not the reporter's `Processor`** — `./errors` has an internal `Processor` stage that mutates an
