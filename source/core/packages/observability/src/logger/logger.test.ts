@@ -1,5 +1,6 @@
 import type { Level, Threshold } from "@vipengele/ts-core-common";
 import { type Resource, Scope } from "@vipengele/ts-core-common/scope";
+import { secretKeys } from "@vipengele/ts-core-redaction";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { isLoggingConfigError } from "./config-error";
 import { entryFor } from "./levels";
@@ -13,11 +14,11 @@ function emit(): EmitSettings {
 }
 
 describe("createLogger", () => {
-  test("exposes its category, enabled and the six emit methods, and nothing else", () => {
+  test("exposes its category, enabled, with and the six emit methods, and nothing else", () => {
     const logger = createLogger("services.editing", () => entryFor("warn"), emit);
 
     expect(logger.category).toBe("services.editing");
-    expect(Object.keys(logger).sort()).toEqual(["category", "debug", "enabled", "error", "fatal", "info", "trace", "warn"]);
+    expect(Object.keys(logger).sort()).toEqual(["category", "debug", "enabled", "error", "fatal", "info", "trace", "warn", "with"]);
     expect(Object.isFrozen(logger)).toBe(true);
   });
 
@@ -227,6 +228,187 @@ describe("Logger emit methods", () => {
         expect(() => logger[level]("m", { user: "ada" })).not.toThrow();
       }
     }
+  });
+});
+
+describe("Logger#with", () => {
+  test("returns a new frozen Logger for the same category whose records carry the bound attributes", () => {
+    const { records, settings } = collecting();
+    const parent = createLogger(
+      "app",
+      () => entryFor("info"),
+      () => settings,
+    );
+
+    const child = parent.with({ requestId: "r-1" });
+    child.info("handled", { status: 200 });
+    parent.info("plain");
+
+    expect(child).not.toBe(parent);
+    expect(Object.isFrozen(child)).toBe(true);
+    expect(child.category).toBe("app");
+    expect(records.map(({ category, attributes }) => [category, attributes])).toEqual([
+      ["app", { requestId: "r-1", status: 200 }],
+      ["app", {}],
+    ]);
+  });
+
+  test("a call's attribute wins over a bound attribute of the same key", () => {
+    const { records, settings } = collecting();
+    const logger = createLogger(
+      "app",
+      () => entryFor("info"),
+      () => settings,
+    ).with({ requestId: "bound", user: "ada" });
+
+    logger.info("m", { requestId: "call" });
+    logger.error("e", new Error("x"), { user: "grace" });
+
+    expect(records.map((record) => record.attributes)).toEqual([
+      { requestId: "call", user: "ada" },
+      { requestId: "bound", user: "grace" },
+    ]);
+  });
+
+  test("a nested with overrides its parent's bindings and leaves the parent unchanged", () => {
+    const { records, settings } = collecting();
+    const parent = createLogger(
+      "app",
+      () => entryFor("info"),
+      () => settings,
+    ).with({ requestId: "r-1", step: "outer" });
+
+    const child = parent.with({ step: "inner", attempt: 2 });
+    child.info("child");
+    parent.info("parent");
+
+    expect(records.map((record) => record.attributes)).toEqual([
+      { requestId: "r-1", step: "inner", attempt: 2 },
+      { requestId: "r-1", step: "outer" },
+    ]);
+  });
+
+  test("a child follows a level changed after it was created", () => {
+    const { records, settings } = collecting();
+    let threshold: Threshold = "error";
+    const child = createLogger(
+      "app",
+      () => entryFor(threshold),
+      () => settings,
+    ).with({ requestId: "r-1" });
+
+    child.info("hidden");
+    expect(child.enabled("info")).toBe(false);
+    threshold = "info";
+    child.info("shown");
+
+    expect(child.enabled("info")).toBe(true);
+    expect(records.map((record) => record.message)).toEqual(["shown"]);
+  });
+
+  test("a child reads the emit settings in force on every call", () => {
+    const first = collecting();
+    const second = collecting();
+    let current = first.settings;
+    const child = createLogger(
+      "app",
+      () => entryFor("info"),
+      () => current,
+    ).with({ requestId: "r-1" });
+
+    child.info("one");
+    current = second.settings;
+    child.info("two");
+
+    expect(first.records.map((record) => record.message)).toEqual(["one"]);
+    expect(second.records.map((record) => record.message)).toEqual(["two"]);
+  });
+
+  test("mutating the object passed to with afterwards changes no record", () => {
+    const { records, settings } = collecting();
+    const bound = { user: { id: "u-1", roles: ["reader"] } };
+    const logger = createLogger(
+      "app",
+      () => entryFor("info"),
+      () => settings,
+    ).with(bound);
+
+    bound.user.id = "u-2";
+    bound.user.roles.push("admin");
+    logger.info("m");
+
+    expect(records[0]?.attributes).toEqual({ user: { id: "u-1", roles: ["reader"] } });
+    expect(Object.isFrozen(records[0]?.attributes.user)).toBe(true);
+  });
+
+  test("a bound secret key is redacted when the record is emitted, under the policy then in force", () => {
+    const redacting = collecting({ redaction: secretKeys });
+    const plain = collecting();
+    let current = plain.settings;
+    const logger = createLogger(
+      "app",
+      () => entryFor("info"),
+      () => current,
+    ).with({ password: "hunter2", user: "ada" });
+
+    logger.info("plain");
+    current = redacting.settings;
+    logger.info("redacted");
+
+    expect(plain.records[0]?.attributes).toEqual({ password: "hunter2", user: "ada" });
+    expect(redacting.records[0]?.attributes).toEqual({ password: "[REDACTED]", user: "ada" });
+  });
+
+  test("with works as a detached reference, and so do the child's methods", () => {
+    const { records, settings } = collecting();
+    const { with: bind } = createLogger(
+      "app",
+      () => entryFor("info"),
+      () => settings,
+    );
+
+    const { info, with: bindAgain } = bind({ requestId: "r-1" });
+    info("detached");
+    bindAgain({ step: "s" }).info("nested");
+
+    expect(records.map((record) => record.attributes)).toEqual([{ requestId: "r-1" }, { requestId: "r-1", step: "s" }]);
+  });
+
+  test("with no attributes returns the Logger itself", () => {
+    const logger = createLogger(
+      "app",
+      () => entryFor("info"),
+      () => collecting().settings,
+    );
+    const child = logger.with({ requestId: "r-1" });
+
+    expect(logger.with({})).toBe(logger);
+    expect(child.with({})).toBe(child);
+  });
+
+  test("at a disabled level a child reads neither its bindings, the emit settings, nor a sink", () => {
+    const toJSON = vi.fn(() => "u-1");
+    const write = vi.fn();
+    const read = vi.fn(
+      (): EmitSettings => ({ sinks: [{ write }], clock: () => 1, redaction: null, resource: () => RESOURCE, onSinkError: () => {} }),
+    );
+    let threshold: Threshold = "off";
+    const child = createLogger("app", () => entryFor(threshold), read).with({ user: { toJSON } });
+
+    expect(toJSON).toHaveBeenCalledOnce();
+    for (const level of ["trace", "debug", "info", "warn", "error", "fatal"] as const) {
+      child[level]("m");
+    }
+
+    expect(toJSON).toHaveBeenCalledOnce();
+    expect(read).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
+
+    threshold = "info";
+    child.info("m");
+    expect(toJSON).toHaveBeenCalledOnce();
+    expect(write).toHaveBeenCalledOnce();
+    expect(write.mock.calls[0]?.[0]).toMatchObject({ attributes: { user: "u-1" } });
   });
 });
 

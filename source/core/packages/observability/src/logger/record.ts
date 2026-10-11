@@ -3,8 +3,9 @@ import type { Resource } from "@vipengele/ts-core-common/scope";
 import type { RedactionSetting } from "../redaction";
 
 /**
- * One emitted log entry, the shape every {@link Sink} receives (ADR-0007). It carries the
- * attributes of the call that produced it; the ambient Scope's attributes are not part of it.
+ * One emitted log entry, the shape every {@link Sink} receives (ADR-0007). Its attributes merge
+ * from least to most specific (ADR-0006): the current Scope's attributes, then the bindings of the
+ * Logger that emitted it, then the attributes of the call, so a key the call passes always wins.
  */
 export interface LogRecord {
   /** Epoch milliseconds with a sub-millisecond fraction, read from the {@link Clock} in force. */
@@ -13,7 +14,10 @@ export interface LogRecord {
   /** The Category of the Logger that emitted the record. */
   readonly category: string;
   readonly message: string;
-  /** The call's attributes, redacted when a {@link RedactionSetting} policy is in force. */
+  /**
+   * The call's attributes over the Logger's bindings over the current Scope's attributes,
+   * redacted when a {@link RedactionSetting} policy is in force.
+   */
   readonly attributes: Attributes;
   /** The thrown value passed to the call, with its whole `cause`/`errors` chain, when there is one. */
   readonly error?: SerializedError;

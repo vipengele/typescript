@@ -230,6 +230,30 @@ describe("emitRecord", () => {
   });
 });
 
+describe("emitRecord bindings", () => {
+  test("merges the call's attributes over the bindings, the call winning a shared key", () => {
+    const sink = collector();
+    const bindings = Object.freeze({ requestId: "r-1", step: "bound" });
+
+    emitRecord(settings({ sinks: [sink] }), "info", "a", "m", { step: "call", status: 200 }, undefined, bindings);
+    emitRecord(settings({ sinks: [sink] }), "info", "a", "m", undefined, undefined, bindings);
+
+    expect(sink.written.map(({ record }) => record.attributes)).toEqual([
+      { requestId: "r-1", step: "call", status: 200 },
+      { requestId: "r-1", step: "bound" },
+    ]);
+    expect(bindings).toEqual({ requestId: "r-1", step: "bound" });
+  });
+
+  test("redacts a bound secret key with the policy in force", () => {
+    const sink = collector();
+
+    emitRecord(settings({ sinks: [sink], redaction: secretKeys }), "info", "a", "m", { user: "ada" }, undefined, { apiKey: "k" });
+
+    expect(sink.written[0]?.record.attributes).toEqual({ apiKey: "[REDACTED]", user: "ada" });
+  });
+});
+
 describe("emitRecord redaction", () => {
   function chain(): Error {
     const deepest = Object.assign(new Error("deepest"), { password: "p3", count: 3 });

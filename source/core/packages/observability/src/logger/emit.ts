@@ -1,14 +1,15 @@
-import { type AttributesInput, type Level, normalizeAttributes, serializeError } from "@vipengele/ts-core-common";
+import { type Attributes, type AttributesInput, type Level, normalizeAttributes, serializeError } from "@vipengele/ts-core-common";
 import type { Resource } from "@vipengele/ts-core-common/scope";
+import { mergeAttributes } from "../merge-attributes";
 import { redactAttributes, redactError } from "../redaction";
 import type { EmitSettings, LogRecord } from "./record";
 
 /**
- * Freezes `value` and every object and array beneath it. A record holds only JSON-safe data that
- * `normalizeAttributes`, `serializeError` and `redact` built for it, bounded and acyclic, so the
- * walk ends and never reaches an object of the caller's.
+ * Freezes `value` and every object and array beneath it. A record and a Logger's bindings hold
+ * only JSON-safe data that `normalizeAttributes`, `serializeError` and `redact` built for them,
+ * bounded and acyclic, so the walk ends and never reaches an object of the caller's.
  */
-function freezeDeep<T>(value: T): T {
+export function freezeDeep<T>(value: T): T {
   if (typeof value === "object" && value !== null) {
     for (const entry of Object.values(value)) {
       freezeDeep(entry);
@@ -19,9 +20,11 @@ function freezeDeep<T>(value: T): T {
 }
 
 /**
- * The deeply frozen record for one call. Freezing the record, its attributes and every link of
- * its error lets every sink receive the same object without one sink's writes, at any depth,
- * changing what the next one sees.
+ * The deeply frozen record for one call. Its attributes are the call's, normalized, over the
+ * Logger's already normalized `bindings`, and are redacted as one record, so a secret key is
+ * masked whichever layer it came from. Freezing the record, its attributes and every link of its
+ * error lets every sink receive the same object without one sink's writes, at any depth, changing
+ * what the next one sees.
  */
 function createRecord(
   settings: EmitSettings,
@@ -30,9 +33,10 @@ function createRecord(
   message: string,
   attributes: AttributesInput | undefined,
   error: unknown,
+  bindings: Attributes,
 ): LogRecord {
   const time = settings.clock();
-  const normalized = normalizeAttributes(attributes ?? {});
+  const normalized = mergeAttributes([bindings, normalizeAttributes(attributes ?? {})]);
   const serialized = error === undefined ? undefined : serializeError(error);
   const policy = settings.redaction;
   const record: { -readonly [K in keyof LogRecord]: LogRecord[K] } = {
@@ -61,6 +65,9 @@ function reportSinkError(settings: EmitSettings, thrown: unknown): void {
  * Turns one enabled Logger call into a {@link LogRecord} and writes it, with the Resource in
  * force, to every sink of `settings`. Never throws.
  *
+ * `bindings` are the attributes the Logger carries from `with`, already normalized and frozen;
+ * the call's `attributes` win over them key by key.
+ *
  * `error` is `undefined` when the call passed none; any other value, `null` included, is a thrown
  * value and is serialized into the record's `error`. With no sink configured nothing else is read:
  * neither the clock, nor the attributes, nor the error.
@@ -79,6 +86,7 @@ export function emitRecord(
   message: string,
   attributes: AttributesInput | undefined,
   error: unknown,
+  bindings: Attributes = {},
 ): void {
   const { sinks } = settings;
   if (sinks.length === 0) {
@@ -88,7 +96,7 @@ export function emitRecord(
   let record: LogRecord;
   let resource: Resource;
   try {
-    record = createRecord(settings, level, category, message, attributes, error);
+    record = createRecord(settings, level, category, message, attributes, error, bindings);
     resource = settings.resource();
   } catch {
     return;
