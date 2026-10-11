@@ -1,7 +1,7 @@
 import type { SerializedError } from "@vipengele/ts-core-common";
-import type { Resource } from "@vipengele/ts-core-common/scope";
+import { type Resource, Scope } from "@vipengele/ts-core-common/scope";
 import { type RedactionPolicy, secretKeys } from "@vipengele/ts-core-redaction";
-import { describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { emitRecord } from "./emit";
 import type { EmitSettings, LogRecord, Sink } from "./record";
 
@@ -251,6 +251,134 @@ describe("emitRecord bindings", () => {
     emitRecord(settings({ sinks: [sink], redaction: secretKeys }), "info", "a", "m", { user: "ada" }, undefined, { apiKey: "k" });
 
     expect(sink.written[0]?.record.attributes).toEqual({ apiKey: "[REDACTED]", user: "ada" });
+  });
+});
+
+describe("emitRecord scope attributes", () => {
+  const RESOURCE_KEYS = ["service.name", "service.version", "deployment.environment.name", "process.runtime.name"];
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  test("carries the current Scope's attributes", () => {
+    const sink = collector();
+
+    Scope.isolated("request", { requestId: "r-1", user: "ada" }, () => {
+      emitRecord(settings({ sinks: [sink] }), "info", "a", "m", undefined, undefined);
+    });
+
+    expect(sink.written[0]?.record.attributes).toEqual({ requestId: "r-1", user: "ada" });
+  });
+
+  test("takes every enclosing scope's attributes, the innermost winning a shared key", () => {
+    const sink = collector();
+
+    Scope.isolated("request", { outer: "outer", both: "outer" }, () => {
+      Scope.inherit("step", { inner: "inner", both: "inner" }, () => {
+        emitRecord(settings({ sinks: [sink] }), "info", "a", "m", undefined, undefined);
+      });
+    });
+
+    expect(sink.written[0]?.record.attributes).toEqual({ outer: "outer", inner: "inner", both: "inner" });
+  });
+
+  test("lays the Scope beneath the bindings and the bindings beneath the call", () => {
+    const sink = collector();
+    const bindings = Object.freeze({ boundOver: "bound", allThree: "bound", bound: 1 });
+
+    Scope.isolated("request", { boundOver: "scope", callOver: "scope", allThree: "scope", scoped: 1 }, () => {
+      emitRecord(settings({ sinks: [sink] }), "info", "a", "m", { callOver: "call", allThree: "call", called: 1 }, undefined, bindings);
+    });
+
+    expect(sink.written[0]?.record.attributes).toEqual({
+      boundOver: "bound",
+      callOver: "call",
+      allThree: "call",
+      scoped: 1,
+      bound: 1,
+      called: 1,
+    });
+  });
+
+  test("an isolated scope hides the attributes of the scope it runs inside", () => {
+    const sink = collector();
+
+    Scope.isolated("outer", { outer: true }, () => {
+      Scope.isolated("inner", { inner: true }, () => {
+        emitRecord(settings({ sinks: [sink] }), "info", "a", "m", undefined, undefined);
+      });
+    });
+
+    expect(sink.written[0]?.record.attributes).toEqual({ inner: true });
+  });
+
+  test("normalizes the Scope's attributes into their JSON-safe shape", () => {
+    const sink = collector();
+    const date = new Date("2024-01-02T03:04:05.000Z");
+
+    Scope.isolated("request", { at: date, big: 10n }, () => {
+      emitRecord(settings({ sinks: [sink] }), "info", "a", "m", undefined, undefined);
+    });
+
+    expect(sink.written[0]?.record.attributes).toEqual({ at: date.toISOString(), big: "10n" });
+  });
+
+  test("redacts a secret key in the Scope with the secretKeys preset", () => {
+    const sink = collector();
+
+    Scope.isolated("request", { apiKey: "k", user: "ada" }, () => {
+      emitRecord(settings({ sinks: [sink], redaction: secretKeys }), "info", "a", "m", undefined, undefined);
+    });
+
+    expect(sink.written[0]?.record.attributes).toEqual({ apiKey: "[REDACTED]", user: "ada" });
+  });
+
+  test("never copies the Resource into the record's attributes", () => {
+    // The realm's root is the default scope's parent; its attribute bag is put back afterwards so
+    // the Resource set here never reaches another test.
+    const defaultScope = Scope.current() as unknown as Record<symbol, unknown>;
+    const root = defaultScope[Symbol.for("vipengele:scope:parent")] as Record<symbol, unknown>;
+    const attributes = Symbol.for("vipengele:scope:attributes");
+    const original = root[attributes];
+    const sink = collector();
+
+    try {
+      Scope.setResource({ "service.name": "checkout", "service.version": "1.2.3" });
+      Scope.isolated("request", { request: "a" }, () => {
+        emitRecord(settings({ sinks: [sink] }), "info", "a", "m", { call: 1 }, undefined);
+      });
+    } finally {
+      root[attributes] = original;
+    }
+
+    const recorded = sink.written[0]?.record.attributes;
+    for (const key of RESOURCE_KEYS) {
+      expect(recorded).not.toHaveProperty(key);
+    }
+    expect(recorded).toEqual({ request: "a", call: 1 });
+  });
+
+  test("still writes the record, with the bindings and the call's attributes, when reading the Scope throws", () => {
+    const sink = collector();
+    const onSinkError = vi.fn();
+    vi.spyOn(Scope, "current").mockImplementation(() => {
+      throw new Error("scope unreadable");
+    });
+
+    emitRecord(settings({ sinks: [sink], onSinkError }), "info", "a", "m", { called: 1 }, undefined, { bound: 1 });
+
+    expect(sink.written).toHaveLength(1);
+    expect(sink.written[0]?.record.attributes).toEqual({ bound: 1, called: 1 });
+    expect(onSinkError).not.toHaveBeenCalled();
+  });
+
+  test("with no sink it never reads the Scope", () => {
+    const current = vi.spyOn(Scope, "current");
+
+    emitRecord(settings({ sinks: [] }), "info", "a", "m", undefined, undefined);
+
+    expect(current).not.toHaveBeenCalled();
   });
 });
 
