@@ -1,6 +1,7 @@
-import type { AttributesInput, Level } from "@vipengele/ts-core-common";
+import { type Attributes, type AttributesInput, type Level, normalizeAttributes } from "@vipengele/ts-core-common";
+import { mergeAttributes } from "../merge-attributes";
 import { validateCategory } from "./categories";
-import { emitRecord } from "./emit";
+import { emitRecord, freezeDeep } from "./emit";
 import { enabled, type LevelEntry } from "./levels";
 import type { EmitSettings } from "./record";
 
@@ -28,6 +29,18 @@ export interface Logger {
   /** Whether a record at `level` passes the threshold that governs this Logger's category right now. */
   enabled(level: Level): boolean;
 
+  /**
+   * A new, frozen Logger for the same category whose every record carries `attributes`
+   * (ADR-0006). The bindings are lexical: they follow the returned Logger, not the call chain, and
+   * never touch the Scope. They are normalized and deeply frozen here, so changing the object
+   * passed in afterwards changes no record; redaction still runs on each record when it is
+   * emitted. A key a call passes wins over a bound one, and a nested `with` wins over the Logger
+   * it was called on, which keeps its own bindings unchanged. The returned Logger shares this
+   * one's level resolver and emit settings, so a level or sink configured later governs it too.
+   * `with` with no attributes returns this Logger itself.
+   */
+  with(attributes: AttributesInput): Logger;
+
   trace(message: string, attributes?: AttributesInput): void;
   debug(message: string, attributes?: AttributesInput): void;
   info(message: string, attributes?: AttributesInput): void;
@@ -42,18 +55,28 @@ export interface Logger {
  * `category` is not a Category; the root `*` is a level-table key, not a Logger's category.
  */
 export function createLogger(category: string, resolve: LevelResolver, emit: () => EmitSettings): Logger {
-  const validated = validateCategory(category);
+  return bindLogger(validateCategory(category), resolve, emit, {});
+}
 
+/** The {@link Logger} for an already validated category, carrying `bindings` on every record. */
+function bindLogger(category: string, resolve: LevelResolver, emit: () => EmitSettings, bindings: Attributes): Logger {
   function log(level: Level, message: string, attributes: AttributesInput | undefined, error: unknown): void {
-    if (enabled(resolve(validated), level)) {
-      emitRecord(emit(), level, validated, message, attributes, error);
+    if (enabled(resolve(category), level)) {
+      emitRecord(emit(), level, category, message, attributes, error, bindings);
     }
   }
 
-  return Object.freeze({
-    category: validated,
+  const logger: Logger = Object.freeze({
+    category,
     enabled(level: Level): boolean {
-      return enabled(resolve(validated), level);
+      return enabled(resolve(category), level);
+    },
+    with(attributes: AttributesInput): Logger {
+      const added = normalizeAttributes(attributes);
+      if (Object.keys(added).length === 0) {
+        return logger;
+      }
+      return bindLogger(category, resolve, emit, freezeDeep(mergeAttributes([bindings, added])));
     },
     trace(message: string, attributes?: AttributesInput): void {
       log("trace", message, attributes, undefined);
@@ -74,4 +97,5 @@ export function createLogger(category: string, resolve: LevelResolver, emit: () 
       log("fatal", message, attributes, error);
     },
   });
+  return logger;
 }

@@ -11,8 +11,16 @@ Run commands from `source/core` (`pnpm build`, `pnpm type-check`, `pnpm test`, `
   `onSinkError`. `sinks`/`clock`/`redaction` are builder state (`builder.ts`); `resource` and
   `onSinkError` are provider options wired from `logging.ts` (`logger.ts` cannot import it).
 - With no sink, `emitRecord` reads nothing (not the clock, attributes or error).
-- Record building (clock, `normalizeAttributes`, `serializeError`, redaction, `resource()`) runs in
-  one guard: a throw drops the record silently. Each `Sink.write` has its own guard that reports to
+- `Logger#with(attributes)` returns a frozen Logger whose closure holds the bindings, normalized and
+  deeply frozen at `with()` time (`{}` returns the same Logger); `emitRecord` takes them as its last
+  argument. A child shares the parent's level resolver and `emit` settings getter, so live level
+  changes reach it.
+- Record building (clock, Scope read, `normalizeAttributes`, `serializeError`, redaction,
+  `resource()`) runs in one guard: a throw drops the record silently. The Scope read
+  (`normalizeAttributes(snapshot(Scope.current()))`) has its own inner guard yielding `{}`, so a
+  throwing Scope never drops the record. Attributes merge through `mergeAttributes`
+  (`src/merge-attributes.ts`, shared with the reporter) as Scope < bindings < call, then are
+  redacted as one record. Each `Sink.write` has its own guard that reports to
   `onSinkError`; every sink is tried and the caller never sees a throw.
 - Redaction (`secretKeys` by default, `null` disables) covers `attributes` and every link of the
   error chain, including the JSON `message` of a synthetic link; it runs unbounded over input
