@@ -38,6 +38,10 @@
       "types": "./dist/errors/index.d.ts",
       "default": "./dist/errors/index.js"
     },
+    "./timeout": {
+      "types": "./dist/timeout/index.d.ts",
+      "default": "./dist/timeout/index.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
