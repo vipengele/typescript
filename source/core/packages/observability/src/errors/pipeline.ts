@@ -49,6 +49,11 @@ export interface Pipeline {
    * `frames` at `maxBreadth`. An absent option, or an absent object, takes `serializeError`'s default.
    */
   readonly limits?: Readonly<SerializeErrorOptions> | undefined;
+  /**
+   * The `deployment.environment.name` values events are sent for, checked before any stage runs.
+   * Every environment is enabled when absent.
+   */
+  readonly enabledEnvironments?: readonly string[] | undefined;
 }
 
 /** `serializeError`'s default `maxBreadth`, which `frames` take when no `maxBreadth` is set. */
@@ -150,7 +155,8 @@ function enrich(payload: NormalizedPayload, input: CaptureInput, mechanism: Mech
 }
 
 /**
- * The Resource an event is sent with, read from `Scope.resource()` once per event. A throw while
+ * The Resource an event is gated on and sent with, read from `Scope.resource()` once per event,
+ * before any stage runs. A throw while
  * reading it yields a Resource whose keys are all `undefined`, and the event still goes out:
  * an event is worth more than its Resource. The logger drops a record on the same throw instead.
  */
@@ -175,6 +181,18 @@ function eventResource(): Resource {
 }
 
 /**
+ * Whether `resource`'s `deployment.environment.name` is one the pipeline sends events for. Every
+ * environment is enabled without an allow-list. With one, an unset environment is enabled, and a set
+ * one — the empty string included — only when the list holds it. A `Scope.resource()` that throws
+ * reaches here as a Resource with every key unset, so its event is enabled: a Resource that cannot
+ * be read says nothing about the environment, and an event is worth more than its Resource.
+ */
+function isEnvironmentEnabled(resource: Resource, pipeline: Pipeline): boolean {
+  const environment = resource["deployment.environment.name"];
+  return pipeline.enabledEnvironments === undefined || environment === undefined || pipeline.enabledEnvironments.includes(environment);
+}
+
+/**
  * Between enrichment and the processors: a copy of `event` whose `attributes`, `mechanism.data`,
  * and every link of its exception chain are redacted by `policy`, the links as the logger redacts
  * a record's error. The event's `message`, and every link's `stack` and `frames`, are kept as they
@@ -192,23 +210,26 @@ function redactEvent(event: ErrorEvent, policy: RedactionPolicy): ErrorEvent {
 }
 
 /**
- * Redaction, then stages 3 to 5: processors in order, then filters in order, then the transport.
- * Returns without sending once a filter drops the event.
+ * Redaction, then stages 3 to 5: processors in order, then filters in order, then the transport,
+ * which receives `resource` — the Resource the environment gate read, so a `Scope.setResource`
+ * made while the event runs through the stages never changes what it is sent with. Returns without
+ * sending once a filter drops the event.
  */
-function deliver(event: ErrorEvent, pipeline: Pipeline): void {
+function deliver(event: ErrorEvent, resource: Resource, pipeline: Pipeline): void {
   const policy = pipeline.redaction ?? null;
   const redacted = policy === null ? event : redactEvent(event, policy);
   const processed = pipeline.processors.reduce((current, processor) => processor(current), redacted);
   if (!pipeline.filters.every((filter) => filter(processed))) {
     return;
   }
-  pipeline.transport?.send(processed, eventResource());
+  pipeline.transport?.send(processed, resource);
 }
 
 /**
  * Creates the function every capture goes through — `captureException`, `captureMessage`, and any
- * handler that hands the reporter an error with its own {@link Mechanism}. It runs normalize,
- * enrich, redaction, processors, filters and the transport, in that order, every time. A stage or a
+ * handler that hands the reporter an error with its own {@link Mechanism}. It reads the Resource
+ * once and drops the event before any stage when its environment is not enabled; otherwise it runs
+ * normalize, enrich, redaction, processors, filters and the transport, in that order. A stage or a
  * `transport.send` that throws drops the event silently: the id is returned either way, since a
  * transport is fire-and-forget and the caller learns nothing of delivery (ADR-0010).
  */
@@ -216,7 +237,10 @@ export function createCapture(pipeline: Pipeline): Capture {
   return (input, mechanism) => {
     const id = createEventId();
     try {
-      deliver(enrich(normalize(input, pipeline), input, mechanism, id, pipeline), pipeline);
+      const resource = eventResource();
+      if (isEnvironmentEnabled(resource, pipeline)) {
+        deliver(enrich(normalize(input, pipeline), input, mechanism, id, pipeline), resource, pipeline);
+      }
     } catch {
       // The event is dropped; a capture never throws.
     }

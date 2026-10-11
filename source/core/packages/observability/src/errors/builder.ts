@@ -26,6 +26,11 @@ export interface ReporterSettings {
    * `serializeError`'s default.
    */
   readonly limits: Readonly<SerializeErrorOptions>;
+  /**
+   * The `deployment.environment.name` values events are sent for, checked before anything else on
+   * every capture. Absent when none was set; every environment is then enabled.
+   */
+  readonly enabledEnvironments?: readonly string[];
 }
 
 /** The options {@link ReporterBuilder.limits} accepts, in the order they are validated. */
@@ -52,6 +57,7 @@ export class ReporterBuilder {
   #redaction: RedactionSetting | undefined;
   readonly #integrations = new Map<string, Integration>();
   #limits: Readonly<SerializeErrorOptions> = Object.freeze({});
+  #enabledEnvironments: readonly string[] | undefined;
 
   /** Where captured events go. A later call replaces the transport an earlier one set. */
   transport(transport: Transport): this {
@@ -121,6 +127,35 @@ export class ReporterBuilder {
     return this;
   }
 
+  /**
+   * The allow-list of `deployment.environment.name` values the Reporter sends events for. A capture
+   * whose Resource names an environment the list does not hold — the empty string included — is
+   * dropped before it is normalized, and still returns its id. A Resource with no environment is
+   * always enabled. The list is copied, so a later change to `environments` does not change it. A
+   * later call replaces the list an earlier one set.
+   *
+   * @throws {ReporterConfigError} When `environments` is not an array, is empty, or holds an entry
+   * that is not a string; the builder is then left as it was.
+   */
+  enabledEnvironments(environments: readonly string[]): this {
+    if (!Array.isArray(environments)) {
+      throw new ReporterConfigError(`Invalid reporter enabled environments ${describe(environments)}: expected an array of strings.`);
+    }
+    const copy: unknown[] = [...environments];
+    if (copy.length === 0) {
+      throw new ReporterConfigError("Invalid reporter enabled environments: expected at least one environment.");
+    }
+    for (const [index, environment] of copy.entries()) {
+      if (typeof environment !== "string") {
+        throw new ReporterConfigError(
+          `Invalid reporter enabled environment at index ${index} ${describe(environment)}: expected a string.`,
+        );
+      }
+    }
+    this.#enabledEnvironments = Object.freeze(copy as string[]);
+    return this;
+  }
+
   /** The settings composed so far, as a snapshot a later call on this builder does not change. */
   build(): ReporterSettings {
     return {
@@ -131,6 +166,7 @@ export class ReporterBuilder {
       // The preset is read when a build is made, never at module scope (ADR-0011).
       redaction: this.#redaction === undefined ? secretKeys : this.#redaction,
       limits: this.#limits,
+      enabledEnvironments: this.#enabledEnvironments,
     };
   }
 }

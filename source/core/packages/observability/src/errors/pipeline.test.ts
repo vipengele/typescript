@@ -22,6 +22,23 @@ const RESOURCE_KEYS = [
   "device.type",
 ];
 
+const EVENT_ID = /^[0-9a-f]{32}$/;
+
+// The realm's root is the default scope's parent. Its attribute bag is put back after every test,
+// so a Resource a test sets never reaches the next one.
+const ATTRIBUTES = Symbol.for("vipengele:scope:attributes");
+const realmRoot = (Scope.current() as unknown as Record<symbol, unknown>)[Symbol.for("vipengele:scope:parent")] as Record<symbol, unknown>;
+const originalAttributes = realmRoot[ATTRIBUTES];
+
+/** Gives the realm's root a Resource with every key unset. */
+function clearResource(): void {
+  const bag = Object.create(null) as Record<string, unknown>;
+  for (const key of RESOURCE_KEYS) {
+    bag[key] = undefined;
+  }
+  realmRoot[ATTRIBUTES] = Object.freeze(bag);
+}
+
 function onlyEvent(events: readonly ErrorEvent[]): ErrorEvent {
   expect(events).toHaveLength(1);
   return events[0] as ErrorEvent;
@@ -33,6 +50,7 @@ function aReporter() {
 }
 
 afterEach(() => {
+  realmRoot[ATTRIBUTES] = originalAttributes;
   vi.restoreAllMocks();
 });
 
@@ -179,7 +197,7 @@ describe("scope attributes in an event", () => {
 });
 
 describe("the Resource an event is sent with", () => {
-  it("hands send the Resource Scope.resource() returns at delivery, alongside the event", () => {
+  it("hands send the Resource Scope.resource() returns at capture, alongside the event", () => {
     const sent: [ErrorEvent, Resource][] = [];
     const reporter = createReporter((b) =>
       b.transport({
@@ -239,6 +257,139 @@ describe("the Resource an event is sent with", () => {
       expect(resource[key as keyof Resource]).toBeUndefined();
     }
     expect(Object.isFrozen(resource)).toBe(true);
+  });
+});
+
+describe("the enabled environments gate", () => {
+  function aGatedReporter(environments: readonly string[], clock: () => number = () => 1) {
+    const transport = createTestTransport();
+    return { transport, reporter: createReporter((b) => b.transport(transport).clock(clock).enabledEnvironments(environments)) };
+  }
+
+  /** An error that counts every read of its `name`, `message` and `stack`, so a test sees whether normalization reached it. */
+  function aWatchedError() {
+    const read = vi.fn();
+    const error = new Error("boom");
+    for (const key of ["name", "message", "stack"] as const) {
+      Object.defineProperty(error, key, {
+        get: () => {
+          read(key);
+          return key;
+        },
+      });
+    }
+    return { error, read };
+  }
+
+  it("sends an event whose environment the list holds, with the Resource naming it", () => {
+    Scope.setResource({ "deployment.environment.name": "production" });
+    const { transport, reporter } = aGatedReporter(["staging", "production"]);
+
+    const id = reporter.captureException(new Error("boom"));
+
+    expect(onlyEvent(transport.events).id).toBe(id);
+    expect(transport.resources[0]?.["deployment.environment.name"]).toBe("production");
+  });
+
+  it("drops an event whose environment the list does not hold before normalizing it, and still returns an id", () => {
+    Scope.setResource({ "deployment.environment.name": "development" });
+    const clock = vi.fn(() => 1);
+    const { transport, reporter } = aGatedReporter(["production"], clock);
+    const { error, read } = aWatchedError();
+
+    const exceptionId = reporter.captureException(error, { attributes: { call: 1 } });
+    const messageId = reporter.captureMessage("hello");
+
+    expect(exceptionId).toMatch(EVENT_ID);
+    expect(messageId).toMatch(EVENT_ID);
+    expect(exceptionId).not.toBe(messageId);
+    expect(read).not.toHaveBeenCalled();
+    expect(clock).not.toHaveBeenCalled();
+    expect(transport.events).toEqual([]);
+    expect(transport.resources).toEqual([]);
+  });
+
+  it("sends an event whose Resource has no environment", () => {
+    clearResource();
+    const { transport, reporter } = aGatedReporter(["production"]);
+
+    reporter.captureMessage("hello");
+
+    expect(onlyEvent(transport.events).message).toBe("hello");
+    expect(transport.resources[0]?.["deployment.environment.name"]).toBeUndefined();
+  });
+
+  it("counts the empty string as an environment, dropping it unless the list holds it", () => {
+    Scope.setResource({ "deployment.environment.name": "" });
+    const dropped = aGatedReporter(["production"]);
+    const kept = aGatedReporter(["", "production"]);
+
+    dropped.reporter.captureMessage("hello");
+    kept.reporter.captureMessage("hello");
+
+    expect(dropped.transport.events).toEqual([]);
+    expect(onlyEvent(kept.transport.events).message).toBe("hello");
+    expect(kept.transport.resources[0]?.["deployment.environment.name"]).toBe("");
+  });
+
+  it("sends every event, whatever its environment, when no list is set", () => {
+    Scope.setResource({ "deployment.environment.name": "anywhere" });
+    const { transport, reporter } = aReporter();
+
+    reporter.captureMessage("hello");
+
+    expect(onlyEvent(transport.events).message).toBe("hello");
+  });
+
+  it("sends the event, with every Resource key undefined, when reading the Resource throws", () => {
+    Scope.setResource({ "deployment.environment.name": "development" });
+    const { transport, reporter } = aGatedReporter(["production"]);
+    vi.spyOn(Scope, "resource").mockImplementation(() => {
+      throw new Error("resource unreadable");
+    });
+
+    const id = reporter.captureMessage("hello");
+
+    expect(onlyEvent(transport.events).id).toBe(id);
+    expect(transport.resources[0]?.["deployment.environment.name"]).toBeUndefined();
+  });
+
+  it("follows a Scope.setResource from the next event on", () => {
+    Scope.setResource({ "deployment.environment.name": "development" });
+    const { transport, reporter } = aGatedReporter(["production"]);
+
+    reporter.captureMessage("first");
+    Scope.setResource({ "deployment.environment.name": "production" });
+    reporter.captureMessage("second");
+    Scope.setResource({ "deployment.environment.name": "development" });
+    reporter.captureMessage("third");
+
+    expect(onlyEvent(transport.events).message).toBe("second");
+  });
+
+  it("reads the Resource once per event, and sends the event with the Resource the gate read", () => {
+    Scope.setResource({ "deployment.environment.name": "staging" });
+    // The clock runs during enrichment, after the gate and before delivery.
+    const clock = vi.fn(() => {
+      Scope.setResource({ "deployment.environment.name": "production" });
+      return 1;
+    });
+    const { transport, reporter } = aGatedReporter(["staging"], clock);
+    const resource = vi.spyOn(Scope, "resource");
+
+    reporter.captureMessage("first");
+
+    expect(resource).toHaveBeenCalledOnce();
+    expect(clock).toHaveBeenCalledOnce();
+    expect(onlyEvent(transport.events).message).toBe("first");
+    expect(transport.resources[0]?.["deployment.environment.name"]).toBe("staging");
+    expect(transport.resources[0]).toBe(resource.mock.results[0]?.value);
+
+    reporter.captureMessage("second");
+
+    expect(resource).toHaveBeenCalledTimes(2);
+    expect(clock).toHaveBeenCalledOnce();
+    expect(transport.events).toHaveLength(1);
   });
 });
 
