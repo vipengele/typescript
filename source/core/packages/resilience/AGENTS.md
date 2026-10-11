@@ -24,3 +24,12 @@ Resilience primitives. Entry points: `.` (re-exports `./errors`) and `./errors`.
 - The only dependency is `@vipengele/ts-core-common`, resolved through its built `dist/`, so it is
   built before this package's tests run (turbo's `^build`; the lydite setup line in
   `.lydite/components.yml`).
+
+## Shared types and the emitter
+
+- `src/types.ts` holds `Policy`, `ExecutionContext` (`attempt` is 1-based), `ExecuteOptions`
+  (`signal` only), `Outcome<T>`, `Listenable<E>` and `Unsubscribe`; the package root exports them.
+- `createEmitter` (`src/listenable.ts`) is internal and not exported from the root: policies own
+  an emitter and expose only its `Listenable`. Each `on` is an independent subscription (the same
+  function twice is called twice), `emit` walks a snapshot (a listener added mid-emit misses the
+  event; one removed mid-emit still gets it), and a throwing listener is swallowed.
