@@ -1,0 +1,55 @@
+{
+  "name": "@vipengele/ts-core-resilience",
+  "version": "0.2.0",
+  "description": "Resilience primitives for the browser and Node — timeouts, retries and the typed errors they raise.",
+  "keywords": [
+    "vipengele",
+    "typescript",
+    "resilience",
+    "retry",
+    "timeout",
+    "circuit-breaker",
+    "rate-limit",
+    "bulkhead"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "engines": {
+    "node": ">=24"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vipengele/typescript.git",
+    "directory": "source/core/packages/resilience"
+  },
+  "homepage": "https://github.com/vipengele/typescript/tree/main/source/core/packages/resilience#readme",
+  "bugs": "https://github.com/vipengele/typescript/issues",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./errors": {
+      "types": "./dist/errors/index.d.ts",
+      "default": "./dist/errors/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsup && tsc -p tsconfig.build.json",
+    "type-check": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --coverage"
+  },
+  "dependencies": {
+    "@vipengele/ts-core-common": "workspace:*"
+  }
+}
