@@ -38,6 +38,10 @@
       "types": "./dist/errors/index.d.ts",
       "default": "./dist/errors/index.js"
     },
+    "./retry": {
+      "types": "./dist/retry/index.d.ts",
+      "default": "./dist/retry/index.js"
+    },
     "./timeout": {
       "types": "./dist/timeout/index.d.ts",
       "default": "./dist/timeout/index.js"

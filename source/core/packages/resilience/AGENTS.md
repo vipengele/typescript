@@ -1,7 +1,7 @@
 # @vipengele/ts-core-resilience
 
-Resilience primitives. Entry points: `.` (re-exports `./errors` and `./timeout`), `./errors` and
-`./timeout`. Run commands from `source/core` (`pnpm build`, `pnpm type-check`,
+Resilience primitives. Entry points: `.` (re-exports `./errors`, `./retry` and `./timeout`),
+`./errors`, `./retry` and `./timeout`. Run commands from `source/core` (`pnpm build`, `pnpm type-check`,
 `pnpm test`, `pnpm lint`, `pnpm format:check`).
 
 ## Errors (`src/errors/resilience-errors.ts`)
@@ -54,3 +54,37 @@ Resilience primitives. Entry points: `.` (re-exports `./errors` and `./timeout`)
 - A pre-aborted caller signal rejects with its reason before `op` runs or a sleep starts; a
   synchronous throw from `op` rejects before a sleep starts. A mid-flight caller abort is not
   raced: it reaches `op` through its signal, and the op's own outcome decides the result.
+
+## Retry (`src/retry/retry.ts`, `src/retry/backoff.ts`)
+
+- `createRetry(name, { maxAttempts, backoff, shouldRetry?, retryAfter? }, { clock?, scheduler? })`
+  returns a `RetryPolicy`: a `Policy` plus `events: Listenable<RetryEvent>`. `maxAttempts` is an
+  integer of at least 1 and counts the first attempt. `./retry` re-exports the shared `Policy`,
+  `ExecuteOptions`, `ExecutionContext`, `Listenable`, `Outcome` and `Unsubscribe` types.
+- Retry calls `op({ attempt, signal })` itself, `attempt` 1-based; `signal` is the caller's, or a
+  never-aborted signal when none is given. A synchronous throw counts as a failed attempt. The
+  final error is rethrown as the very value `op` threw; a final `ok` outcome resolves with its
+  value.
+- Backoff strategies map the 1-based number of the attempt that just failed to a delay:
+  `fixedBackoff(ms)`, `exponentialBackoff({ initialMs, multiplier = 2, maxMs? })`
+  (`min(maxMs, initialMs * multiplier ** (attempt - 1))`) and `withJitter(strategy, "full" |
+  "equal", random = Math.random)`. Each factory validates at creation and throws
+  `ResilienceConfigError` for a non-finite or negative number, a `multiplier` below 1, or an
+  unknown jitter kind, so the error surfaces where the bad number is written.
+- `retryAfter(outcome, attempt)` overrides the backoff; `undefined` falls back to it. Every delay
+  is sanitised before the sleep: NaN or negative becomes 0, and anything above 2147483647 is
+  clamped to it. Without the clamp an infinite delay makes the scheduler reject with a
+  `RangeError` in place of the operation's error, and an oversized one fires at once.
+- The default `shouldRetry` declines `ok` outcomes and a `CircuitOpenError`,
+  `RateLimitExceededError` or `BulkheadFullError` (matched by guard), and retries every other
+  error, `OperationTimeoutError` included. It has no abort branch: the loop handles abort. A
+  custom `shouldRetry` may retry an `ok` outcome; when attempts run out the last value is returned.
+- Abort: the caller's signal is checked before the first attempt, after each failed attempt
+  (before `shouldRetry` is asked) and is passed to `scheduler.sleep`; each rejects with
+  `signal.reason`. An attempt that succeeds after an abort still returns its value.
+- Events carry `kind`, `name` and `at` (the clock). `retry` (`attempt`, `delayMs`, `outcome`) is
+  emitted before each sleep with the sanitised delay; `retry-exhausted` (`attempts`, `outcome`)
+  only when `shouldRetry` wanted another attempt and none was left. A stop because `shouldRetry`
+  declined emits nothing.
+- The loop is split into small helpers (`attemptOnce`, `delayFor`, `sanitizeDelay`, `settle`)
+  to keep each function's cyclomatic complexity well under lydite's CRAP gate of 30.
