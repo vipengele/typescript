@@ -7,7 +7,8 @@ export type ScopeAttributes = Record<string, unknown>;
  * The environment the root scope holds: which service, release, environment, runtime, operating
  * system, browser and device is emitting. Every key is reserved from the moment the root exists,
  * whether or not it has a value. The keys follow OpenTelemetry's semantic conventions except
- * `service.dist`, `browser.name` and `device.type`, which are vipengele extensions.
+ * `service.dist`, `browser.name`, `browser.version` and `device.type`, which are vipengele
+ * extensions.
  */
 export interface Resource {
   readonly "service.name": string | undefined;

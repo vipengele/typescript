@@ -17,10 +17,12 @@ and the Reporter never awaits it: batching, retry and the decision to drop are t
 once everything accepted so far has been delivered or dropped, `false` when the timeout elapses
 first. `close` flushes, then turns every later `send` into a no-op.
 
-The pipeline reads `Scope.resource()` once per event, at delivery, and passes the frozen result as
-`resource`, so a Resource supplied through `Scope.setResource` after the Reporter was built is the
-one a Transport sees. The Transport attaches it once per payload; the event itself never carries
-it. The read runs inside a guard: a throw yields a Resource whose four keys are all `undefined`,
+The pipeline reads `Scope.resource()` once per event, at capture, before any stage, and passes that
+same frozen result as `resource`
+(`0016-release-environment-and-runtime-context-are-resource.md`), so a Resource supplied through
+`Scope.setResource` after the Reporter was built is the one a Transport sees, and one supplied while
+the event passes through the stages is not. The Transport attaches it once per payload; the event
+itself never carries it. The read runs inside a guard: a throw yields a Resource whose keys are all `undefined`,
 and the event still goes out. This differs from the logger, which drops the record when reading
 the Resource throws: an Error Event is worth more than its Resource, so it is delivered without
 one rather than lost. The console transport does not print the Resource; the test
