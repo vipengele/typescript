@@ -2,6 +2,7 @@ import { type RedactionPolicy, secretKeys } from "@vipengele/ts-core-redaction";
 import { describe, expect, test } from "vitest";
 import { freezeDeep } from "./emit";
 import { Logging } from "./logging";
+import { isNormalized, markNormalized } from "./normalized";
 import type { LogRecord, Sink } from "./record";
 import { redactionProcessor } from "./redaction-processor";
 
@@ -76,5 +77,35 @@ describe("redactionProcessor", () => {
     expect(strict[0]?.attributes.ssn).not.toBe("123");
     expect(plain[0]?.attributes.ssn).toBe("123");
     expect(plain[0]?.attributes.password).not.toBe("p");
+  });
+
+  test("a marked input gives a deeply frozen, marked output", () => {
+    const out = redactionProcessor()(markNormalized(record())) as LogRecord;
+    expect(isNormalized(out)).toBe(true);
+    expect(Object.isFrozen(out)).toBe(true);
+    expect(Object.isFrozen(out.attributes.nested)).toBe(true);
+    expect(Object.isFrozen(out.error?.cause?.data)).toBe(true);
+  });
+
+  test("an unmarked input gives an unmarked output that is not frozen", () => {
+    const out = redactionProcessor()(record()) as LogRecord;
+    expect(isNormalized(out)).toBe(false);
+    expect(Object.isFrozen(out)).toBe(false);
+  });
+
+  test("a sink behind it receives a frozen, JSON-safe, redacted record", () => {
+    const written: LogRecord[] = [];
+    const provider = Logging.createProvider((b) =>
+      b.addLevels({ "*": "info" }).addSink({ write: (r) => void written.push(r) }, { processors: [redactionProcessor(ssnPolicy)] }),
+    );
+    provider.logger("app").error("failed", new Error("boom", { cause: { ssn: "789" } }), { ssn: "123", nested: { ssn: "456" } });
+    const out = written[0] as LogRecord;
+    expect(out.attributes.ssn).not.toBe("123");
+    expect((out.attributes.nested as Record<string, unknown>).ssn).not.toBe("456");
+    expect(out.error?.cause?.message).not.toContain("789");
+    expect(Object.isFrozen(out)).toBe(true);
+    expect(Object.isFrozen(out.attributes.nested)).toBe(true);
+    expect(Object.isFrozen(out.error?.cause)).toBe(true);
+    expect(JSON.parse(JSON.stringify(out))).toEqual(out);
   });
 });

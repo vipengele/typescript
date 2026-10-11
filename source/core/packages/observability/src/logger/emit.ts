@@ -10,6 +10,7 @@ import {
 import { type Resource, Scope, snapshot } from "@vipengele/ts-core-common/scope";
 import { mergeAttributes } from "../merge-attributes";
 import { redactAttributes, redactError } from "../redaction";
+import { isNormalized, markNormalized } from "./normalized";
 import type { EmitSettings, LogProcessor, LogRecord, Sink } from "./record";
 
 /**
@@ -42,7 +43,7 @@ function scopeAttributes(): Attributes {
 }
 
 /**
- * The deeply frozen record for one call. Its attributes merge from least to most specific — the
+ * The deeply frozen, marked record for one call. Its attributes merge from least to most specific — the
  * current Scope's, then the Logger's already normalized `bindings`, then the call's — each layer
  * normalized on its own, so the call wins a shared key over the bindings and the bindings over the
  * Scope. They are redacted as one record, so a secret key is masked whichever layer it came from. Freezing the record, its attributes and every link of its
@@ -72,7 +73,7 @@ function createRecord(
   if (serialized !== undefined) {
     record.error = policy === null ? serialized : redactError(serialized, policy);
   }
-  return freezeDeep(record);
+  return markNormalized(freezeDeep(record));
 }
 
 /** Rebuilt in place of a link that is already on the path from the outermost error, as `serializeError` does. */
@@ -186,7 +187,9 @@ function acceptErrorLink(link: unknown, links: number, known: ReadonlySet<object
  * strings are arbitrary. Parts that are `previous`'s own are kept rather than bounded a second time.
  * Nothing that is cyclic, unbounded or not JSON-safe reaches `freezeDeep`, and
  * the deep freeze walks only fresh copies and `previous`'s already frozen parts, never an object
- * of the processor's.
+ * of the processor's. A record {@link markNormalized} marked — one `redactionProcessor` built from a
+ * marked record — is checked for the same field types, then taken through {@link acceptNormalized}
+ * without normalizing its attributes or error again. The accepted record is marked in turn.
  */
 function acceptProcessorOutput(previous: LogRecord, next: unknown): LogRecord | null {
   if (next === null) {
@@ -207,6 +210,9 @@ function acceptProcessorOutput(previous: LogRecord, next: unknown): LogRecord | 
   ) {
     throw new TypeError("A log processor returned a record without a numeric time and a string level, category and message");
   }
+  if (isNormalized(candidate)) {
+    return acceptNormalized(candidate);
+  }
   const record: { -readonly [K in keyof LogRecord]: LogRecord[K] } = {
     time: candidate.time,
     level: candidate.level,
@@ -217,7 +223,26 @@ function acceptProcessorOutput(previous: LogRecord, next: unknown): LogRecord | 
   if (candidate.error !== undefined) {
     record.error = acceptErrorLink(candidate.error, 0, chainParts(previous.error), new Set());
   }
-  return freezeDeep(record);
+  return markNormalized(freezeDeep(record));
+}
+
+/**
+ * A record {@link markNormalized} marked, rebuilt from the {@link LogRecord} fields alone. Its
+ * attributes and error are already JSON-safe, bounded and deeply frozen, so they are kept as they
+ * are rather than normalized a second time, and only the rebuilt record itself is frozen.
+ */
+function acceptNormalized(candidate: LogRecord): LogRecord {
+  const record: { -readonly [K in keyof LogRecord]: LogRecord[K] } = {
+    time: candidate.time,
+    level: candidate.level,
+    category: candidate.category,
+    message: candidate.message,
+    attributes: candidate.attributes,
+  };
+  if (candidate.error !== undefined) {
+    record.error = candidate.error;
+  }
+  return markNormalized(Object.freeze(record));
 }
 
 /** Reports a failed sink or processor; a throw from the report itself is swallowed. */
@@ -282,7 +307,9 @@ function runProcessors(settings: EmitSettings, processors: readonly LogProcessor
  * `serializeError`'s link and `errors` limits, each link's `message` and `stack` cut as for a thrown
  * error and its `type` and `code` cut as well because a processor's strings are arbitrary, and a
  * link that recurs on its own chain replaced by a `"[Circular]"` link, then deeply frozen, so every processor and every sink
- * receives a frozen, JSON-safe record and the processor's own objects stay unfrozen.
+ * receives a frozen, JSON-safe record and the processor's own objects stay unfrozen. The record
+ * `redactionProcessor` returns is redacted from an already normalized record and deeply frozen,
+ * and is taken without that second normalization.
  *
  * Each `write` runs in its own guard that reports to `onSinkError` with the sink as its source, so
  * every sink is tried.

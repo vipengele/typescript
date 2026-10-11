@@ -26,7 +26,10 @@ arbitrary, a link past `maxLinks` becomes a `"[Truncated]"` link, an `errors` ar
 is summarised by one `"[Truncated]"` entry, and an error link that recurs on its own chain becomes
 a `"[Circular]"` link. The parts the processor passed on from the record it was handed are kept as they are
 rather than bounded twice. The rebuilt copy is deeply frozen, never the processor's own objects. A
-Sink only ever receives a JSON-safe, frozen record. `build()` throws `LoggingConfigError` for a processor that is not a function, for
+Sink only ever receives a JSON-safe, frozen record. The record `redactionProcessor` returns is
+redacted from one the logger already normalized, unbounded as the built-in stage redacts, and
+deeply frozen, so it is trusted without that second pass; the trust is by identity, so a copy a
+processor makes of it is re-normalized. `build()` throws `LoggingConfigError` for a processor that is not a function, for
 `addSink` options that are not an object and for `processors` that is not an array (ADR-0002).
 
 ## Built-in redaction is the fixed first stage

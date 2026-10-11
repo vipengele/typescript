@@ -3,7 +3,9 @@ import { type Resource, Scope } from "@vipengele/ts-core-common/scope";
 import { type RedactionPolicy, secretKeys } from "@vipengele/ts-core-redaction";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { emitRecord } from "./emit";
+import { isNormalized, markNormalized } from "./normalized";
 import type { EmitSettings, LogProcessor, LogRecord, Sink, SinkRegistration } from "./record";
+import { redactionProcessor } from "./redaction-processor";
 
 const RESOURCE: Resource = Object.freeze({
   "service.name": "checkout",
@@ -1458,5 +1460,142 @@ describe("emitRecord processor output", () => {
     expect(replaced.written[0]?.record).toEqual(replacement);
     expect(Object.isFrozen(replaced.written[0]?.record)).toBe(true);
     expect(Object.isFrozen(replacement)).toBe(false);
+  });
+});
+
+describe("emitRecord processor output marked as normalized", () => {
+  /** `processor`, keeping every record it returns in `into`. */
+  function capturing(processor: LogProcessor, into: (LogRecord | null)[]): LogProcessor {
+    return (record) => {
+      const next = processor(record);
+      into.push(next);
+      return next;
+    };
+  }
+
+  test("every record handed to a processor is marked", () => {
+    const handed: LogRecord[] = [];
+    const step: LogProcessor = (record) => {
+      handed.push(record);
+      return { ...record, message: "next" };
+    };
+
+    emitRecord(settings({ sinks: [registered(collector(), step)], processors: [step] }), "info", "a", "m", undefined, undefined);
+
+    expect(handed).toHaveLength(2);
+    expect(handed.every((record) => isNormalized(record))).toBe(true);
+  });
+
+  test("redactionProcessor's attributes and error reach the sink as they are, not normalized again", () => {
+    const sink = collector();
+    const returned: (LogRecord | null)[] = [];
+
+    emitRecord(
+      settings({ sinks: [registered(sink, capturing(redactionProcessor(), returned))] }),
+      "info",
+      "a",
+      "m",
+      { password: "p", long: "x".repeat(10_000) },
+      new Error("boom"),
+    );
+
+    const out = returned[0] as LogRecord;
+    const record = sink.written[0]?.record as LogRecord;
+    expect(isNormalized(out)).toBe(true);
+    expect(record).not.toBe(out);
+    expect(record.attributes).toBe(out.attributes);
+    expect(record.error).toBe(out.error);
+    expect(record.attributes.password).not.toBe("p");
+    expect(Object.isFrozen(record)).toBe(true);
+    expect(Object.isFrozen(record.attributes)).toBe(true);
+    expect(Object.isFrozen(record.error)).toBe(true);
+    expect(JSON.parse(JSON.stringify(record))).toEqual(record);
+  });
+
+  test("a record without an error from redactionProcessor reaches the sink without one", () => {
+    const sink = collector();
+
+    emitRecord(settings({ sinks: [registered(sink, redactionProcessor())] }), "info", "a", "m", { k: "v" }, undefined);
+
+    expect(sink.written[0]?.record).toEqual({
+      time: 1_700_000_000_000.25,
+      level: "info",
+      category: "a",
+      message: "m",
+      attributes: { k: "v" },
+    });
+  });
+
+  test("a copy of a marked record is not marked, and its attributes and error are normalized in full", () => {
+    const sink = collector();
+    const returned: (LogRecord | null)[] = [];
+    const copy: LogProcessor = (record) => {
+      const out = redactionProcessor()(record) as LogRecord;
+      returned.push(out);
+      return { ...out, attributes: { ...out.attributes, map: new Map([["k", 1]]) } } as unknown as LogRecord;
+    };
+
+    emitRecord(settings({ sinks: [registered(sink, copy)] }), "info", "a", "m", { password: "p" }, new Error("boom"));
+
+    const record = sink.written[0]?.record as LogRecord;
+    expect(record.attributes).toEqual({ password: (returned[0] as LogRecord).attributes.password, map: { k: 1 } });
+    expect(record.error).toEqual((returned[0] as LogRecord).error);
+    expect(record.error).not.toBe((returned[0] as LogRecord).error);
+    expect(isNormalized(record)).toBe(true);
+  });
+
+  test("redactionProcessor over a record a processor built leaves its output unmarked, and it is normalized in full", () => {
+    const sink = collector();
+    const returned: (LogRecord | null)[] = [];
+    const cyclic: Record<string, unknown> = { name: "loop" };
+    cyclic.self = cyclic;
+    const redactBuilt: LogProcessor = (record) =>
+      redactionProcessor()({
+        ...record,
+        attributes: { at: new Date("2024-01-02T03:04:05.000Z"), cyclic: { ...cyclic } },
+      } as unknown as LogRecord);
+
+    emitRecord(settings({ sinks: [registered(sink, capturing(redactBuilt, returned))] }), "info", "a", "m", undefined, undefined);
+
+    const out = returned[0] as LogRecord;
+    const record = sink.written[0]?.record as LogRecord;
+    expect(isNormalized(out)).toBe(false);
+    expect(Object.isFrozen(out)).toBe(false);
+    expect(record.attributes.at).toBe("2024-01-02T03:04:05.000Z");
+    expect(() => JSON.stringify(record)).not.toThrow();
+  });
+
+  const malformedMarked: { readonly name: string; readonly value: Record<string, unknown> }[] = [
+    { name: "a string time", value: { time: "now", level: "info", category: "a", message: "m", attributes: {} } },
+    { name: "a numeric level", value: { time: 1, level: 30, category: "a", message: "m", attributes: {} } },
+    { name: "a null category", value: { time: 1, level: "info", category: null, message: "m", attributes: {} } },
+    { name: "no message", value: { time: 1, level: "info", category: "a", attributes: {} } },
+  ];
+
+  test.each(malformedMarked)("a marked record with $name still drops the record and is reported", ({ value }) => {
+    const dropped = collector();
+    const after = collector();
+    const onSinkError = vi.fn();
+    const processor = (() => markNormalized(Object.freeze(value) as unknown as LogRecord)) satisfies LogProcessor;
+
+    emitRecord(settings({ sinks: [registered(dropped, processor), after], onSinkError }), "info", "a", "m", undefined, undefined);
+
+    expect(dropped.written).toHaveLength(0);
+    expect(after.written).toHaveLength(1);
+    expect(onSinkError).toHaveBeenCalledOnce();
+    expect(onSinkError.mock.calls[0]?.[0]).toBeInstanceOf(TypeError);
+    expect(onSinkError.mock.calls[0]?.[1]).toBe(processor);
+  });
+
+  test("a marked record is rebuilt from the LogRecord fields alone", () => {
+    const sink = collector();
+    const extra: LogProcessor = (record) => markNormalized(Object.freeze({ ...record, extra: "dropped" }));
+
+    emitRecord(settings({ sinks: [registered(sink, extra)] }), "info", "a", "m", { k: "v" }, undefined);
+
+    const record = sink.written[0]?.record as LogRecord;
+    expect("extra" in record).toBe(false);
+    expect(record.attributes).toEqual({ k: "v" });
+    expect(Object.isFrozen(record)).toBe(true);
   });
 });

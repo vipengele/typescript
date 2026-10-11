@@ -162,7 +162,10 @@ Logging.configure((b) =>
   summarises the rest in one `"[Truncated]"` entry, and an error link that recurs on its own chain
   becomes a `"[Circular]"` link. Links passed on from the record the processor was handed are kept
   as they are. The rebuilt copy is deeply frozen, so a sink only receives JSON-safe, bounded,
-  frozen records and the processor's own objects stay unfrozen.
+  frozen records and the processor's own objects stay unfrozen. The record `redactionProcessor`
+  returns, redacted from the record it was handed, is already JSON-safe, bounded and deeply frozen,
+  so only its `time`, `level`, `category` and `message` are checked and its `attributes` and error
+  are kept without a second pass; a copy a processor makes of it is re-normalized like any other.
 - **Validation** — `build()` throws `LoggingConfigError` for a processor that is not a function,
   `addSink` options that are not an object, or `processors` that is not an array.
 - **Not the reporter's `Processor`** — `./errors` has an internal `Processor` stage that mutates an
