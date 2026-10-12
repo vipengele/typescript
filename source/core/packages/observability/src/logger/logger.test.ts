@@ -85,7 +85,15 @@ function collecting(overrides: Partial<EmitSettings> = {}): { readonly records: 
   };
   return {
     records,
-    settings: { sinks: [sink], clock: () => 42.5, redaction: null, resource: () => RESOURCE, onSinkError: () => {}, ...overrides },
+    settings: {
+      sinks: [{ sink, processors: [] }],
+      processors: [],
+      clock: () => 42.5,
+      redaction: null,
+      resource: () => RESOURCE,
+      onSinkError: () => {},
+      ...overrides,
+    },
   };
 }
 
@@ -154,7 +162,14 @@ describe("Logger emit methods", () => {
         return keys();
       },
     };
-    const settings: EmitSettings = { sinks: [{ write }], clock, redaction, resource, onSinkError: () => {} };
+    const settings: EmitSettings = {
+      sinks: [{ sink: { write }, processors: [] }],
+      processors: [],
+      clock,
+      redaction,
+      resource,
+      onSinkError: () => {},
+    };
     const read = vi.fn(() => settings);
     const logger = createLogger("app", () => entryFor("error"), read);
 
@@ -224,7 +239,7 @@ describe("Logger emit methods", () => {
     };
     const levels: Level[] = ["trace", "debug", "info", "warn", "error", "fatal"];
 
-    for (const overrides of [{ sinks: [failing] }, { clock }, { redaction }]) {
+    for (const overrides of [{ sinks: [{ sink: failing, processors: [] }] }, { clock }, { redaction }]) {
       const { settings } = collecting(overrides);
       const logger = createLogger(
         "app",
@@ -397,7 +412,14 @@ describe("Logger#with", () => {
     const toJSON = vi.fn(() => "u-1");
     const write = vi.fn();
     const read = vi.fn(
-      (): EmitSettings => ({ sinks: [{ write }], clock: () => 1, redaction: null, resource: () => RESOURCE, onSinkError: () => {} }),
+      (): EmitSettings => ({
+        sinks: [{ sink: { write }, processors: [] }],
+        processors: [],
+        clock: () => 1,
+        redaction: null,
+        resource: () => RESOURCE,
+        onSinkError: () => {},
+      }),
     );
     let threshold: Threshold = "off";
     const child = createLogger("app", () => entryFor(threshold), read).with({ user: { toJSON } });

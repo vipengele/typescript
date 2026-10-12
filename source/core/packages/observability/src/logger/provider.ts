@@ -4,7 +4,7 @@ import { createLoggingBuilder, type LoggingBuilder } from "./builder";
 import { validateCategoryKey } from "./categories";
 import { entryFor, type LevelEntry, resolveEntry, validateThreshold } from "./levels";
 import { createLogger, type Logger } from "./logger";
-import type { EmitSettings } from "./record";
+import type { EmitSettings, LogProcessor, Sink } from "./record";
 import { DEFAULT_LEVELS, EMPTY_LAYER, createSettings, type LoggingSettings } from "./settings";
 
 /**
@@ -46,10 +46,21 @@ export interface LoggerProviderOptions {
   resource?(): Resource;
 
   /**
-   * Called with the thrown value of each `Sink.write` that fails. When omitted, a sink failure is
-   * dropped.
+   * Called with the thrown value of each `Sink.write` that fails, and of each processor that
+   * throws or returns something other than a record or `null`, with the failing sink or processor
+   * as `source`. Every failure is reported, unless `sinkErrorsOncePerSource` says otherwise. When
+   * omitted, a failure is dropped.
    */
-  onSinkError?(error: unknown): void;
+  onSinkError?(error: unknown, source: Sink | LogProcessor): void;
+
+  /**
+   * When `true`, `onSinkError` is called only for the first failure of each source, told apart by
+   * identity, per configuration: a sink added twice, or a processor that runs both globally and
+   * ahead of one sink, is reported once. A successful `configure` and every `reset` start a fresh
+   * configuration, so a source that fails again is reported again; an `override` does not, since
+   * it changes levels and leaves every sink and processor in place. Defaults to `false`.
+   */
+  sinkErrorsOncePerSource?: boolean;
 }
 
 /**
@@ -127,13 +138,37 @@ export function createLoggerProvider(configure?: ConfigureCallback, options: Log
     resource = options.resource.bind(options);
   }
 
-  const onSinkError = options.onSinkError === undefined ? () => {} : options.onSinkError.bind(options);
+  /** The sources already reported in the configuration in force, read only under `sinkErrorsOncePerSource`. */
+  let reported = new WeakSet<Sink | LogProcessor>();
+
+  let onSinkError: (error: unknown, source: Sink | LogProcessor) => void;
+  if (options.onSinkError === undefined) {
+    onSinkError = () => {};
+  } else if (options.sinkErrorsOncePerSource === true) {
+    const report = options.onSinkError.bind(options);
+    onSinkError = (error, source) => {
+      if (reported.has(source)) {
+        return;
+      }
+      reported.add(source);
+      report(error, source);
+    };
+  } else {
+    onSinkError = options.onSinkError.bind(options);
+  }
 
   let emitSettings = emitSettingsOf(settings);
 
   /** What the provider's Loggers emit through under `current`; it cannot throw, so it never splits a commit. */
   function emitSettingsOf(current: LoggingSettings): EmitSettings {
-    return Object.freeze({ sinks: current.sinks, clock: current.clock, redaction: current.redaction, resource, onSinkError });
+    return Object.freeze({
+      sinks: current.sinks,
+      processors: current.processors,
+      clock: current.clock,
+      redaction: current.redaction,
+      resource,
+      onSinkError,
+    });
   }
 
   function emit(): EmitSettings {
@@ -175,6 +210,7 @@ export function createLoggerProvider(configure?: ConfigureCallback, options: Log
   return Object.freeze({
     configure(callback: ConfigureCallback): LoggingSettings {
       const { next, issues } = rebuild(callback);
+      reported = new WeakSet();
       commit(next);
       reportIssues(issues);
       return next;
@@ -191,6 +227,7 @@ export function createLoggerProvider(configure?: ConfigureCallback, options: Log
       return commit(createSettings({ ...settings.layers, overrides }, settings));
     },
     reset(): LoggingSettings {
+      reported = new WeakSet();
       return commit(createSettings({ defaults: DEFAULT_LEVELS, builder: EMPTY_LAYER, overrides: EMPTY_LAYER }));
     },
     logger(category: string): Logger {

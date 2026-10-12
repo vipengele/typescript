@@ -21,8 +21,18 @@ Run commands from `source/core` (`pnpm build`, `pnpm type-check`, `pnpm test`, `
   throwing Scope never drops the record. Attributes merge through `mergeAttributes`
   (`src/merge-attributes.ts`, shared with the reporter) as Scope < bindings < call, then are
   redacted as one record. Each `Sink.write` has its own guard that reports to
-  `onSinkError`; every sink is tried and the caller never sees a throw.
-- Redaction (`secretKeys` by default, `null` disables) covers `attributes` and every link of the
+  `onSinkError(error, source)`; every sink is tried and the caller never sees a throw.
+- Processors (`LogProcessor`: record in, record or `null` out): `builder.addProcessor` runs ahead of
+  every sink, `addSink(sink, { processors })` after the global chain, ahead of that sink. A throw, a
+  malformed return or a cyclic attribute fails closed: a global processor drops the record for all
+  sinks, a per-sink one for that sink. Returned attributes are re-normalized and the result frozen.
+  `build()` throws `LoggingConfigError` for invalid processors or options. `redactionProcessor(policy)`
+  (`redaction-processor.ts`) is the opt-in per-sink extra (ADR-0017).
+- The default warn path (`sinkErrorsOncePerSource: true`) warns once per sink or processor per
+  configuration (identity `WeakSet`; `configure` and `reset` clear it, `override` does not); a
+  host-supplied `onSinkError` receives every failure. A copy that finds another
+  `vipengele.logger.provider.<non-v1>` slot warns once, when its default provider is first resolved.
+- Redaction is the fixed first stage, before any processor. It (`secretKeys` by default, `null` disables) covers `attributes` and every link of the
   error chain, including the JSON `message` of a synthetic link; it runs unbounded over input
   already bounded by normalization. The record message and an `Error`'s `message`/`stack` are not
   scanned. The finished record is deeply frozen and shared by all sinks.

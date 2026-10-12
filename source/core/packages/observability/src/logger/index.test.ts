@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import * as entry from "./index";
-import type { LogRecord, Sink } from "./index";
+import type { LogProcessor, LogRecord, Sink, SinkOptions, SinkRegistration } from "./index";
 
 test("the entry point exports exactly the public runtime surface", () => {
   expect(Object.keys(entry).sort()).toEqual([
@@ -9,6 +9,7 @@ test("the entry point exports exactly the public runtime surface", () => {
     "LoggingConfigError",
     "isLoggingConfigError",
     "parseSpec",
+    "redactionProcessor",
     "setWarnTarget",
   ]);
 });
@@ -32,4 +33,14 @@ test("a provider built with a sink delivers a record and the resource to it", ()
   expect(typeof received[0]?.record.time).toBe("number");
   expect(received[0]?.record.error).toBeUndefined();
   expect(received[0]?.resource).toBeTypeOf("object");
+});
+
+test("the processor and sink registration types are exported", () => {
+  const processor: LogProcessor = entry.redactionProcessor();
+  const options: SinkOptions = {};
+  const registration: SinkRegistration = { sink: { write: () => undefined }, processors: [processor] };
+
+  expect(processor).toBeTypeOf("function");
+  expect(options).toEqual({});
+  expect(registration.processors).toEqual([processor]);
 });

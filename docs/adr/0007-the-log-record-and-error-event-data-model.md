@@ -119,6 +119,9 @@ anything else with a `ReporterConfigError` (ADR-0002). The Logger's limits are t
 no builder option. The limits are per value; neither the Logger nor the Reporter caps a whole record
 or event, because wire limits belong to the Transport (ADR-0010). Redaction runs at the same point, before
 any Sink. Every record a Sink receives is JSON-safe, bounded and redacted.
+A Logger's Log Processors run after that redaction and re-normalize what they return, so a record
+stays JSON-safe and frozen, while a processor itself can add content the policy never saw
+(`0017-logger-processors-fail-closed-after-built-in-redaction.md`).
 
 ## One error type for both
 

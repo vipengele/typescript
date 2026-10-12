@@ -2,24 +2,38 @@ import { type Clock, systemClock, type Threshold } from "@vipengele/ts-core-comm
 import { validateCategoryKey } from "./categories";
 import { LoggingConfigError } from "./config-error";
 import { validateThreshold } from "./levels";
-import type { RedactionSetting, Sink } from "./record";
-import { DEFAULT_LEVELS, defaultRedaction, EMPTY_LAYER, freezeLayer, type LevelLayer } from "./settings";
+import type { LogProcessor, RedactionSetting, Sink, SinkRegistration } from "./record";
+import { DEFAULT_LEVELS, defaultRedaction, EMPTY_LAYER, freezeLayer, freezeRegistration, type LevelLayer } from "./settings";
 import { parseSpec } from "./spec";
 
 /**
  * What {@link LoggingBuilder.build} produces: the `defaults` and `builder` layers of a
- * `LoggingSettings`; `sinks`, `clock` and `redaction`, what its Loggers emit through; and
+ * `LoggingSettings`; `sinks`, `processors`, `clock` and `redaction`, what its Loggers emit through; and
  * `issues`, one human-readable string per spec entry an `addSpec` call skipped or overrode, in the
  * order the specs were added. Issues never fail a build; reporting them is the caller's job.
  */
 export interface LoggingBuild {
   readonly defaults: LevelLayer;
   readonly builder: LevelLayer;
-  /** The sinks passed to `addSink`, in the order they were added; frozen. */
-  readonly sinks: readonly Sink[];
+  /**
+   * The sinks passed to `addSink`, in the order they were added, each with the processors passed
+   * alongside it; the list, each registration and each processor list are frozen.
+   */
+  readonly sinks: readonly SinkRegistration[];
+  /** The processors passed to `addProcessor`, in the order they were added; frozen. */
+  readonly processors: readonly LogProcessor[];
   readonly clock: Clock;
   readonly redaction: RedactionSetting;
   readonly issues: readonly string[];
+}
+
+/** What `addSink` accepts alongside a sink. */
+export interface SinkOptions {
+  /**
+   * The processors that run ahead of this sink alone, in order, after every global processor. A
+   * `null` from one drops the record for this sink only.
+   */
+  readonly processors?: readonly LogProcessor[];
 }
 
 /**
@@ -49,11 +63,22 @@ export interface LoggingBuilder {
   addSpec(spec: string): LoggingBuilder;
 
   /**
-   * Appends `sink` to the sinks every record is written to, in the order they were added. It is
-   * recorded when this is called and validated by `build`, which throws a `LoggingConfigError` when
-   * it is not an object.
+   * Appends `sink` to the sinks every record is written to, in the order they were added, with
+   * `options.processors` running ahead of it alone. The sink and its processors are recorded when
+   * this is called, the processor list copied, so a later change to it has no effect. They are
+   * validated by `build`, which throws a `LoggingConfigError` when `sink` is not an object,
+   * `options` is given and is not an object, `options.processors` is given and is not an array,
+   * or one of its entries is not a function.
    */
-  addSink(sink: Sink): LoggingBuilder;
+  addSink(sink: Sink, options?: SinkOptions): LoggingBuilder;
+
+  /**
+   * Appends `processor` to the processors every record passes through ahead of every sink, in the
+   * order they were added; a `null` from one drops the record for every sink. It is recorded when
+   * this is called and validated by `build`, which throws a `LoggingConfigError` when it is not a
+   * function.
+   */
+  addProcessor(processor: LogProcessor): LoggingBuilder;
 
   /**
    * The source of every record's `time`, in epoch ms; `systemClock` unless set. A later call
@@ -70,9 +95,10 @@ export interface LoggingBuilder {
   /**
    * Validates every source and sink and returns the resulting build. Throws a `LoggingConfigError`
    * on the first invalid category key or threshold passed to `addLevels`, even one a later source
-   * replaces, on an `addLevels` argument that is not an object, or, once every source is valid, on
-   * the first `addSink` argument that is not an object. Reads the builder without changing it:
-   * calling it again gives an equal result.
+   * replaces, or on an `addLevels` argument that is not an object; once every source is valid, on
+   * the first invalid `addSink` sink, options or per-sink processor, in the order the sinks were
+   * added; and once every sink is valid, on the first `addProcessor` argument that is not a
+   * function. Reads the builder without changing it: calling it again gives an equal result.
    */
   build(): LoggingBuild;
 }
@@ -82,15 +108,65 @@ type Source =
   | { readonly kind: "levels"; readonly entries: readonly (readonly [string, unknown])[] }
   | { readonly kind: "invalid"; readonly value: unknown };
 
+/** A sink as recorded when it is added; validated only by `build`. */
+interface RecordedSink {
+  readonly sink: unknown;
+  readonly options: unknown;
+  /** `options.processors` as it stood when the sink was added, an array copied. */
+  readonly processors: unknown;
+}
+
 function typeName(value: unknown): string {
   return value === null ? "null" : typeof value;
+}
+
+function isObject(value: unknown): value is object {
+  return typeof value === "object" && value !== null;
+}
+
+/** `options.processors` as it stands now, an array copied so a later change to it has no effect. */
+function recordProcessors(options: unknown): unknown {
+  if (!isObject(options)) {
+    return undefined;
+  }
+  const processors = (options as SinkOptions).processors;
+  return Array.isArray(processors) ? [...processors] : processors;
+}
+
+function validateProcessor(processor: unknown, where: string): LogProcessor {
+  if (typeof processor !== "function") {
+    throw new LoggingConfigError(`Invalid logger ${where} of type ${typeName(processor)}: expected a function.`);
+  }
+  return processor as LogProcessor;
+}
+
+/** The registration of `recorded`; throws a `LoggingConfigError` on the first invalid part. */
+function validateSink(recorded: RecordedSink): SinkRegistration {
+  const { sink, options, processors } = recorded;
+  if (!isObject(sink)) {
+    throw new LoggingConfigError(`Invalid logger sink of type ${typeName(sink)}: expected an object.`);
+  }
+  if (options !== undefined && !isObject(options)) {
+    throw new LoggingConfigError(`Invalid logger sink options of type ${typeName(options)}: expected an object.`);
+  }
+  if (processors === undefined) {
+    return freezeRegistration({ sink: sink as Sink, processors: [] });
+  }
+  if (!Array.isArray(processors)) {
+    throw new LoggingConfigError(`Invalid logger sink processors of type ${typeName(processors)}: expected an array.`);
+  }
+  return freezeRegistration({
+    sink: sink as Sink,
+    processors: processors.map((processor: unknown) => validateProcessor(processor, "sink processor")),
+  });
 }
 
 /** A new {@link LoggingBuilder} holding the defaults, no sources and no sinks. */
 export function createLoggingBuilder(): LoggingBuilder {
   let defaults = DEFAULT_LEVELS;
   const sources: Source[] = [];
-  const sinks: unknown[] = [];
+  const sinks: RecordedSink[] = [];
+  const processors: unknown[] = [];
   let clock: Clock = systemClock;
   let redaction: RedactionSetting | undefined;
   const issues: string[] = [];
@@ -114,8 +190,12 @@ export function createLoggingBuilder(): LoggingBuilder {
       issues.push(...parsed.issues);
       return builder;
     },
-    addSink(sink) {
-      sinks.push(sink);
+    addSink(sink, options) {
+      sinks.push({ sink, options, processors: recordProcessors(options) });
+      return builder;
+    },
+    addProcessor(processor) {
+      processors.push(processor);
       return builder;
     },
     clock(next) {
@@ -137,15 +217,13 @@ export function createLoggingBuilder(): LoggingBuilder {
           merged[validateCategoryKey(key)] = validateThreshold(threshold);
         }
       }
-      for (const sink of sinks) {
-        if (typeof sink !== "object" || sink === null) {
-          throw new LoggingConfigError(`Invalid logger sink of type ${typeName(sink)}: expected an object.`);
-        }
-      }
+      const registrations = sinks.map(validateSink);
+      const global = processors.map((processor) => validateProcessor(processor, "processor"));
       return Object.freeze({
         defaults,
         builder: freezeLayer(merged),
-        sinks: Object.freeze([...sinks] as Sink[]),
+        sinks: Object.freeze(registrations),
+        processors: Object.freeze(global),
         clock,
         redaction: redaction === undefined ? defaultRedaction() : redaction,
         issues: Object.freeze([...issues]),

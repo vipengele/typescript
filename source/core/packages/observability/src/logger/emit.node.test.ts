@@ -15,7 +15,8 @@ describe("scope attributes in a record across awaits", () => {
       },
     };
     const settings: EmitSettings = {
-      sinks: [sink],
+      sinks: [{ sink, processors: [] }],
+      processors: [],
       clock: () => 0,
       redaction: null,
       resource: () => Scope.resource(),

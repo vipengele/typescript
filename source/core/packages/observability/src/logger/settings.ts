@@ -2,7 +2,7 @@ import { systemClock, type Threshold } from "@vipengele/ts-core-common";
 import { secretKeys } from "@vipengele/ts-core-redaction";
 import { ROOT_CATEGORY, validateCategoryKey } from "./categories";
 import { entryFor, type LevelEntry, type LevelTable, validateThreshold } from "./levels";
-import type { EmitSettings, RedactionSetting } from "./record";
+import type { EmitSettings, RedactionSetting, SinkRegistration } from "./record";
 
 /**
  * One layer of level configuration: category key (a Category or the root `*`) to its `Threshold`.
@@ -32,16 +32,17 @@ export type LoggingLayers = Readonly<Record<LayerName, LevelLayer>>;
 
 /**
  * The builder state that governs what a Logger emits through, as a build carries it: the sinks in
- * order, the clock and the redaction setting. A `configure` replaces all three together.
+ * order, each with its own processors, the global processors, the clock and the redaction setting.
+ * A `configure` replaces all of them together.
  */
-export type OutputSettings = Pick<EmitSettings, "sinks" | "clock" | "redaction">;
+export type OutputSettings = Pick<EmitSettings, "sinks" | "processors" | "clock" | "redaction">;
 
 /**
  * A snapshot of the configuration in force: each layer as it stood, `levels`, the effective table
  * those layers flatten to, and the {@link OutputSettings} of the build in force. Every part this
  * module creates is frozen and none is shared with the state it was taken from, so a snapshot
- * never changes after it is returned; the sinks, the clock and the redaction policy themselves
- * are the caller's own objects, held by reference.
+ * never changes after it is returned; the sinks, the processors, the clock and the redaction
+ * policy themselves are the caller's own objects, held by reference.
  *
  * When no layer configures the root `*`, `levels` has no root: `resolveEntry` gives `undefined`
  * for a category no other key governs, and a reader of the shared table falls back to `warn`.
@@ -65,9 +66,17 @@ export function defaultRedaction(): RedactionSetting {
   return secretKeys;
 }
 
-/** The output of a build that sets none: no sinks, the system clock and the default redaction. */
+/**
+ * The output of a build that sets none: no sinks, no processors, the system clock and the default
+ * redaction.
+ */
 export function defaultOutput(): OutputSettings {
-  return Object.freeze({ sinks: Object.freeze([]), clock: systemClock, redaction: defaultRedaction() });
+  return Object.freeze({ sinks: Object.freeze([]), processors: Object.freeze([]), clock: systemClock, redaction: defaultRedaction() });
+}
+
+/** A frozen copy of `registration`, its processor list copied into a frozen array. */
+export function freezeRegistration(registration: SinkRegistration): SinkRegistration {
+  return Object.freeze({ sink: registration.sink, processors: Object.freeze([...registration.processors]) });
 }
 
 /**
@@ -101,8 +110,9 @@ export function flattenLayers(layers: readonly LevelLayer[]): LevelTable {
  * A {@link LoggingSettings} snapshot of `layers` and `output`. Each layer is copied through
  * {@link freezeLayer}, so the snapshot is independent of the objects passed in, and a layer that
  * holds an invalid category key or threshold throws a `LoggingConfigError`. `levels` is the
- * layers flattened in {@link LAYER_ORDER}. The sink list is copied into a frozen array; `output`
- * defaults to {@link defaultOutput}.
+ * layers flattened in {@link LAYER_ORDER}. The sink list, each registration's processor list and
+ * the global processor list are copied into frozen arrays; `output` defaults to
+ * {@link defaultOutput}.
  */
 export function createSettings(
   layers: Readonly<Record<LayerName, Readonly<Record<string, unknown>>>>,
@@ -115,7 +125,8 @@ export function createSettings(
   return Object.freeze({
     layers: Object.freeze(copied),
     levels: flattenLayers(LAYER_ORDER.map((name) => copied[name])),
-    sinks: Object.freeze([...output.sinks]),
+    sinks: Object.freeze(output.sinks.map(freezeRegistration)),
+    processors: Object.freeze([...output.processors]),
     clock: output.clock,
     redaction: output.redaction,
   });

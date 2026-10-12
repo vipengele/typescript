@@ -4,8 +4,12 @@ import { entryFor, isThreshold, type LevelEntry, type LevelTable, resolveEntry, 
 // Dotted rather than colon-style: the key is a cross-version protocol fixed by ADR-0005.
 const LEVELS_SLOT_KEY = "vipengele.logger.levels";
 
-// Versioned by record protocol, not package version, per ADR-0005.
-const PROVIDER_SLOT_KEY = "vipengele.logger.provider.v1";
+// Versioned by record protocol, not package version, per ADR-0005: every protocol's provider slot
+// shares this prefix and differs only in the version after it.
+const PROVIDER_SLOT_PREFIX = "vipengele.logger.provider.";
+
+/** The provider slot key, and so the record protocol, this copy of the package speaks. */
+export const PROVIDER_SLOT_KEY = `${PROVIDER_SLOT_PREFIX}v1`;
 
 type Registry = Record<symbol, unknown>;
 
@@ -175,4 +179,22 @@ export function getOrCreateDefaultProvider<T>(create: () => T): T {
     registry()[slot] = create();
   }
   return registry()[slot] as T;
+}
+
+/**
+ * The provider slot keys of every other record protocol present in the realm: the descriptions of
+ * `globalThis`'s own symbol keys that carry the provider slot prefix but are not this copy's
+ * {@link PROVIDER_SLOT_KEY}. A copy of the package speaking another protocol keeps its sinks and
+ * provider state behind such a key, so a non-empty result means the two copies share levels but
+ * never records. An empty slot is never created, and nothing on `globalThis` is read beyond its keys.
+ */
+export function findForeignProviderProtocols(): string[] {
+  const foreign: string[] = [];
+  for (const symbol of Object.getOwnPropertySymbols(globalThis)) {
+    const key = symbol.description;
+    if (key !== undefined && key !== PROVIDER_SLOT_KEY && key.startsWith(PROVIDER_SLOT_PREFIX)) {
+      foreign.push(key);
+    }
+  }
+  return foreign;
 }

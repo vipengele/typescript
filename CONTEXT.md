@@ -84,6 +84,12 @@ _Avoid_: line, log line (a record is not text until a formatter makes it so)
 Where Log Records go: the console, a stream, a buffer, an exporter. A logger configuration may
 hold several.
 
+**Log Processor**:
+A step that sees a Log Record before a Sink does and returns it, a replacement, or nothing to drop
+it. A processor registered on the configuration runs ahead of every Sink; one registered with a Sink
+runs ahead of that Sink alone.
+_Avoid_: filter, middleware, interceptor
+
 **Reporter**:
 The error reporter from `@vipengele/ts-core-observability/errors`: captures errors, normalizes
 them into Error Events and hands them to a Transport.

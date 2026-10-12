@@ -51,8 +51,9 @@ The registry is split by how each part breaks across versions:
   `Symbol.for('vipengele.logger.provider.v1')`, bumped only when the Log Record's shape breaks.
   A Sink built for one shape is never handed another.
 - Each copy registers its protocol version; a copy that finds another protocol already present
-  emits one `warn` saying Sinks configured on one do not receive the other's records. This warning
-  belongs to the sinks work (#27) and is not emitted by the level-only logger.
+  emits one `warn` saying Sinks configured on one do not receive the other's records. A copy finds
+  one by enumerating the symbols on `globalThis` for a `vipengele.logger.provider.` description other
+  than `v1`, and warns once per copy, the first time its default provider is resolved.
 
 One key for everything hands old Sinks new records. One key per package major splits the level
 table, so an application raising a level silently misses a library pinned to the other major.

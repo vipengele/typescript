@@ -38,6 +38,22 @@ export interface Sink {
   write(record: LogRecord, resource: Resource): void;
 }
 
+/**
+ * A stage between a record and the sinks: it returns the record to pass on, the one it was handed
+ * or another, or `null` to drop it. Processors run in the order they were added, each on what the
+ * previous one returned. A global processor (`addProcessor`) sees every record ahead of every
+ * sink, and its `null` drops the record for all of them; a per-sink processor (`addSink`'s
+ * `processors`) runs after the global ones, ahead of its own sink alone, and its `null` drops the
+ * record for that sink only. A processor sees the record after built-in redaction.
+ */
+export type LogProcessor = (record: LogRecord) => LogRecord | null;
+
+/** A sink as a build carries it: the sink and the processors that run ahead of it alone, in order. */
+export interface SinkRegistration {
+  readonly sink: Sink;
+  readonly processors: readonly LogProcessor[];
+}
+
 export type { RedactionSetting };
 
 /**
@@ -47,8 +63,8 @@ export type { RedactionSetting };
  *
  * Where each part comes from:
  *
- * - `sinks`, `clock` and `redaction` are builder state, carried by `LoggingBuild` alongside the
- *   level layers. A `configure` replaces the sinks; it never appends to those of an earlier one.
+ * - `sinks`, `processors`, `clock` and `redaction` are builder state, carried by `LoggingBuild`
+ *   alongside the level layers. A `configure` replaces the sinks; it never appends to those of an earlier one.
  *   A provider made by `createProvider` owns its sinks alone and shares none with the default
  *   provider.
  * - `resource` and `onSinkError` are provider settings, not builder state. They are wired in
@@ -64,13 +80,19 @@ export type { RedactionSetting };
  *
  * `emit` is read on every call that passes the level check. Building the record (reading the
  * clock, serializing the error, redacting) happens inside one `try`/`catch`: a throwing clock or
- * redaction policy drops that record, delivers it to no sink and does not reach the caller.
- * Delivery then runs per sink, each `write` in its own `try`/`catch` that reports to
- * `onSinkError`.
+ * redaction policy drops that record, delivers it to no sink and does not reach the caller. The
+ * global processors run next, then delivery runs per sink: the sink's own processors, then its
+ * `write` in its own `try`/`catch`. A failing processor or `write` is reported to `onSinkError`.
  */
 export interface EmitSettings {
-  /** The sinks that receive each record, in order. Every sink is tried even when one throws. */
-  readonly sinks: readonly Sink[];
+  /**
+   * The sinks that receive each record, in order, each with its own processors. Every sink is
+   * tried even when one throws.
+   */
+  readonly sinks: readonly SinkRegistration[];
+
+  /** The processors every record passes through, in order, ahead of every sink's own. */
+  readonly processors: readonly LogProcessor[];
 
   /** The source of {@link LogRecord.time}. */
   readonly clock: Clock;
@@ -86,9 +108,13 @@ export interface EmitSettings {
   readonly resource: () => Resource;
 
   /**
-   * Called with the thrown value of a `Sink.write` that failed, once per failing sink per
-   * record. It is itself guarded: a throw from `onSinkError` is swallowed, so reporting a sink
-   * failure can never break the call that emitted the record.
+   * Called with the thrown value of a `Sink.write` that failed, with that sink as `source`, and
+   * with the thrown value of a processor that failed — the `TypeError` for a return that is
+   * neither a record nor `null`, or the error freezing its return raised — with that processor as
+   * `source`. Each failure on each path is reported: a sink registered twice that throws twice is
+   * reported twice, and whether a source is reported again is the provider's decision. It is
+   * itself guarded: a throw from `onSinkError` is swallowed, so reporting a failure can never
+   * break the call that emitted the record.
    */
-  readonly onSinkError: (error: unknown) => void;
+  readonly onSinkError: (error: unknown, source: Sink | LogProcessor) => void;
 }
