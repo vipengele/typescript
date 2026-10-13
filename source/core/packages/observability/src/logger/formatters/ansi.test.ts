@@ -34,6 +34,12 @@ function sgr(code: string, text: string): string {
   return `${ESC}${code}m${text}${RESET}`;
 }
 
+/** A raw ESC and BEL, and the `\uXXXX` escapes the formatter shows them as. */
+const RAW_ESC = "\u001b";
+const RAW_BEL = "\u0007";
+const SHOWN_ESC = "\\u001b";
+const SHOWN_BEL = "\\u0007";
+
 const TIME = sgr("2", "2025-10-09T08:53:20.123Z");
 const CATEGORY = sgr("1", "app.checkout");
 const INFO = sgr("32", "INFO ");
@@ -180,6 +186,71 @@ describe("ansiFormatter", () => {
       expect(line.split(ESC).length - 1).toBe(6);
       expect(line.split(RESET).length - 1).toBe(3);
     }
+  });
+
+  test("shows an OSC sequence in the message as visible escapes, leaving only the formatter's own ESC", () => {
+    const line = formatted({ ...RECORD, message: "title \u001b]0;pwn\u0007 set" });
+
+    expect(line).toBe(`${TIME} ${INFO} ${CATEGORY} title \\u001b]0;pwn\\u0007 set`);
+    expect(line.split("\u001b").length - 1).toBe(6);
+    expect(unstyled(line)).not.toContain("\u001b");
+  });
+
+  test("shows ESC in the category and in an error's type, message, code and stack as visible escapes", () => {
+    const error: SerializedError = {
+      type: `Error${RAW_ESC}[2J`,
+      message: `bad input ${RAW_ESC}[31mred`,
+      code: `code${RAW_ESC}[K`,
+      stack: `frame ${RAW_ESC}]8;;https://example.test${RAW_BEL}link`,
+    };
+
+    const line = formatted({ ...RECORD, category: `app${RAW_ESC}[1Achk`, error });
+
+    expect(line).toBe(
+      [
+        `${TIME} ${INFO} ${sgr("1", `app${SHOWN_ESC}[1Achk`)} order placed`,
+        `  Error${SHOWN_ESC}[2J: bad input ${SHOWN_ESC}[31mred [code${SHOWN_ESC}[K]`,
+        `  frame ${SHOWN_ESC}]8;;https://example.test${SHOWN_BEL}link`,
+      ].join("\n"),
+    );
+    expect(line.split("\u001b").length - 1).toBe(6);
+  });
+
+  test("strips the V8 stack header before escaping the remaining frames", () => {
+    const error: SerializedError = {
+      type: "Error",
+      message: "bad \u001b",
+      stack: "Error: bad \u001b\n    at run (run\u001b.ts:1:1)",
+    };
+
+    expect(
+      formatted({ ...RECORD, error })
+        .split("\n")
+        .slice(1),
+    ).toEqual(["  Error: bad \\u001b", "      at run (run\\u001b.ts:1:1)"]);
+  });
+
+  test("indents every message line after the first, so a newline cannot forge a record", () => {
+    const line = formatted({ ...RECORD, message: "ok\r\n2025-01-01T00:00:00.000Z INFO  fake forged" });
+
+    expect(line).toBe(`${TIME} ${INFO} ${CATEGORY} ok\\u000d\n  2025-01-01T00:00:00.000Z INFO  fake forged`);
+    for (const continuation of line.split("\n").slice(1)) {
+      expect(continuation.startsWith(" ")).toBe(true);
+    }
+  });
+
+  test("indents every category line after the first", () => {
+    expect(formatted({ ...RECORD, category: "app\nforged" })).toBe(`${TIME} ${INFO} ${sgr("1", "app\n  forged")} order placed`);
+  });
+
+  test("keeps tabs and newlines, indenting the line after a newline", () => {
+    expect(formatted({ ...RECORD, message: "a\tb\nc\td" })).toBe(`${TIME} ${INFO} ${CATEGORY} a\tb\n  c\td`);
+  });
+
+  test("shows NUL, DEL and C1 controls as visible escapes and keeps other non-ASCII text", () => {
+    const line = formatted({ ...RECORD, message: "\u0000 \u007f \u0080 \u009b31m \u009f \u00a0é 😀 ~" });
+
+    expect(line).toBe(`${TIME} ${INFO} ${CATEGORY} \\u0000 \\u007f \\u0080 \\u009b31m \\u009f \u00a0é 😀 ~`);
   });
 
   test("keeps format specifiers in the message, category and attributes intact behind %s", () => {
