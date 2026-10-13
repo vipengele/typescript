@@ -1,5 +1,10 @@
 export type { LoggingBuild, LoggingBuilder, SinkOptions } from "./builder";
+export { type ConsoleSinkOptions, createConsoleSink } from "./console-sink";
 export { isLoggingConfigError, LOGGING_CONFIG_ERROR_CODE, LoggingConfigError } from "./config-error";
+export type { ConsoleLike, Formatter } from "./formatter";
+export { ansiFormatter } from "./formatters/ansi";
+export { browserFormatter } from "./formatters/browser";
+export { jsonLinesFormatter } from "./formatters/json-lines";
 export type { LevelEntry, LevelTable } from "./levels";
 export type { Logger } from "./logger";
 export { Logging, setWarnTarget, type WarnTarget } from "./logging";

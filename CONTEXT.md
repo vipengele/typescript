@@ -78,11 +78,16 @@ category prefix, and the longest matching prefix wins.
 
 **Log Record**:
 One structured log entry: time, level, category, message, attributes and optionally an error.
-_Avoid_: line, log line (a record is not text until a formatter makes it so)
+_Avoid_: line, log line (a record is not text until a Formatter makes it so)
 
 **Sink**:
 Where Log Records go: the console, a stream, a buffer, an exporter. A logger configuration may
 hold several.
+
+**Formatter**:
+Turns a Log Record into what a console prints. It decides how a record looks, never where it goes:
+the Sink that holds it picks the destination.
+_Avoid_: serializer, renderer, layout
 
 **Log Processor**:
 A step that sees a Log Record before a Sink does and returns it, a replacement, or nothing to drop

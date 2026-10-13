@@ -1,13 +1,17 @@
 import { expect, test } from "vitest";
 import * as entry from "./index";
-import type { LogProcessor, LogRecord, Sink, SinkOptions, SinkRegistration } from "./index";
+import type { ConsoleLike, ConsoleSinkOptions, Formatter, LogProcessor, LogRecord, Sink, SinkOptions, SinkRegistration } from "./index";
 
 test("the entry point exports exactly the public runtime surface", () => {
   expect(Object.keys(entry).sort()).toEqual([
     "LOGGING_CONFIG_ERROR_CODE",
     "Logging",
     "LoggingConfigError",
+    "ansiFormatter",
+    "browserFormatter",
+    "createConsoleSink",
     "isLoggingConfigError",
+    "jsonLinesFormatter",
     "parseSpec",
     "redactionProcessor",
     "setWarnTarget",
@@ -43,4 +47,14 @@ test("the processor and sink registration types are exported", () => {
   expect(processor).toBeTypeOf("function");
   expect(options).toEqual({});
   expect(registration.processors).toEqual([processor]);
+});
+
+test("the console sink, formatter and console types are exported", () => {
+  const options: ConsoleSinkOptions = {};
+  const formatter: Formatter = entry.jsonLinesFormatter;
+  const consoleLike: Pick<ConsoleLike, "info"> = { info: () => undefined };
+
+  expect(entry.createConsoleSink(options)).toBeTypeOf("object");
+  expect(formatter).toBe(entry.jsonLinesFormatter);
+  expect(consoleLike.info).toBeTypeOf("function");
 });

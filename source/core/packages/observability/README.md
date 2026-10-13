@@ -191,9 +191,63 @@ Built-in redaction is the first stage, ahead of every processor, so a processor 
 record. `redactionProcessor(policy = secretKeys)` is the opt-in extra for a different policy on one
 sink: it redacts `attributes` and the error chain with that policy and does not scan `message`.
 
-**What the logger does not have:** formatters, and configuration sources (`VPG_LOG`, browser
-sources, files). A sink formats a record itself, and levels are set in code, with `configure`,
-`override` and spec strings.
+**Formatters and the console sink** — a `Formatter` is an object with `format(record, resource)`
+that returns the arguments of one console call. It never picks the console method: the console sink
+routes by level (`error` and `fatal` to `console.error`, `warn` to `console.warn`, `info` to
+`console.info`, `trace` and `debug` to `console.debug`, never `console.trace`) and calls
+`console[method](...formatter.format(record, resource))`.
+
+```ts
+import { createConsoleSink, Logging } from "@vipengele/ts-core-observability/logger";
+
+Logging.configure((b) => b.addSink(createConsoleSink()));
+```
+
+`createConsoleSink({ formatter?, console?, source? })` returns a `Sink`:
+
+- **Selection** — an explicit `formatter` always wins. Without one the runtime's capabilities pick:
+  `consoleStyling` gives `browserFormatter`, else `ansiColour` gives `ansiFormatter`, else
+  `jsonLinesFormatter`. Deno offers both capabilities and gets the browser formatter. `source`
+  stands in for `globalThis` when the capabilities are read. The formatter is resolved once, when
+  the sink is created.
+- **Console** — `console` defaults to `globalThis.console`, read on every write. A `ConsoleLike`
+  has `error`, `warn`, `info` and `debug`.
+- **Failure** — a formatter that throws propagates out of `write` to the provider's `onSinkError`,
+  as any sink's failure does.
+
+The three formatters:
+
+- **`jsonLinesFormatter`** — one JSON object per line, keyed `time`, `level`, `category`,
+  `message`, `attributes`, `error` (absent without one) and `resource`. `time` stays the record's
+  epoch milliseconds as a number, sub-millisecond fraction included.
+
+  ```text
+  {"time":1760000000123.456,"level":"info","category":"app.checkout","message":"order placed","attributes":{"orderId":"o-1"},"resource":{"service.name":"checkout"}}
+  ```
+
+- **`ansiFormatter`** — one coloured line for a terminal: a dim UTC ISO 8601 time, the level in its
+  colour, the category in bold, the message, the attributes as compact JSON, then the error with
+  its stack and `cause` chain on the following lines.
+
+  ```text
+  2025-10-09T08:53:20.123Z INFO  app.checkout order placed {"orderId":"o-1"}
+  ```
+
+- **`browserFormatter`** — a `%c` format string for the time, level and category with a CSS
+  argument for each, then the message, the attribute object and the serialized error as separate
+  arguments, so DevTools can expand them.
+
+  ```text
+  %c2025-10-09T08:53:20.123Z %cINFO %capp.checkout, <css>, <css>, <css>, "order placed", { orderId: "o-1" }
+  ```
+
+A console reads the first string argument as a format string (`%s`, `%d`, `%c`, `%o`, ...), so user
+text there is mangled or swallows the next argument. The built-in formatters return their text
+behind `"%s"`, or escape `%` as `%%` in the format string they build. A `Formatter` of your own must
+do the same and never hand a message, category or attribute value to the first argument unescaped.
+
+**What the logger does not have:** configuration sources (`VPG_LOG`, browser sources, files). Levels
+are set in code, with `configure`, `override` and spec strings.
 
 ## `./errors`
 
