@@ -39,6 +39,25 @@ Run commands from `source/core` (`pnpm build`, `pnpm type-check`, `pnpm test`, `
 - `configure` replaces the sinks rather than appending; a `createProvider` provider shares none
   with the default one. Level table and default provider live in `globalThis` slots (ADR-0005).
 
+## Console sink and formatters (`src/logger`)
+
+- A `Formatter` (`formatter.ts`) returns the argument list of one console call. The sink owns
+  routing: `createConsoleSink` (`console-sink.ts`) calls `console[consoleMethodFor(level)](...args)`,
+  so a formatter never picks a method.
+- The first argument is a console format string. JSON lines and ANSI return `["%s", text]`; the
+  browser formatter escapes `%` as `%%` in the `%c` format string it builds and passes message,
+  attributes and error as later arguments. A formatter must not put user text in the first slot.
+- With no `formatter` option, `formatters/select.ts` reads `detectCapability`: `consoleStyling`
+  gives browser, else `ansiColour` gives ANSI, else JSON lines (Deno has both, styling wins). It is
+  resolved once at creation. Without an injected `source`, `detectCapability` memoises per module
+  copy, so tests inject a `source` (or a `formatter`) to control the outcome; a bare call is only
+  asserted to return one of the three formatters.
+- `ConsoleLike` has no `log`. The routing table in `formatter.ts` is a private copy that mirrors
+  the errors console transport; ADR-0007 "Levels" is the authority. `./logger` and `./errors` must
+  not import each other.
+- `write` has no try/catch: a throwing formatter or console reaches `onSinkError`. `time` is the
+  epoch-ms number in JSON lines and UTC ISO text in the ANSI and browser formatters (ADR-0018).
+
 ## Shared redaction helpers (`src/redaction.ts`)
 
 - `redactAttributes` and `redactError` are used by the logger's emit path and the reporter's
