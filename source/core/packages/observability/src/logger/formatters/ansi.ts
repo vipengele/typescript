@@ -90,7 +90,7 @@ function renderError(error: SerializedError, prefix: string, indent: string): st
     header += ` [${visible(error.code)}]`;
   }
   if (error.data !== undefined) {
-    header += ` ${JSON.stringify(error.data)}`;
+    header += ` ${visible(JSON.stringify(error.data))}`;
   }
   const lines = [indented(header, indent)];
   if (error.stack !== undefined) {
@@ -115,8 +115,9 @@ function renderError(error: SerializedError, prefix: string, indent: string): st
  * message, the attributes or the error. The text is returned behind `"%s"`, so a `%` in user text
  * never reaches the console's format string.
  *
- * Control characters in the category, the message and every error's type, message, code and stack
- * (C0 controls other than tab and newline, DEL and C1 controls) are shown as `\uXXXX` escapes, so
+ * Control characters in the category, the message, the attributes and every error's type, message,
+ * code, data and stack (C0 controls other than tab and newline, DEL and C1 controls, which
+ * `JSON.stringify` leaves raw above U+001F) are shown as `\uXXXX` escapes, so
  * the only escape sequences reaching the terminal are the formatter's own styles. Every line of
  * the category and the message after the first is indented by {@link INDENT}, as error lines are,
  * so a newline in user text never starts a line that reads as a record of its own.
@@ -128,7 +129,7 @@ export const ansiFormatter: Formatter = {
     const category = styled(BOLD, continued(visible(record.category)));
     let line = `${time} ${level} ${category} ${continued(visible(record.message))}`;
     if (Object.keys(record.attributes).length > 0) {
-      line += ` ${JSON.stringify(record.attributes)}`;
+      line += ` ${visible(JSON.stringify(record.attributes))}`;
     }
     if (record.error !== undefined) {
       line += `\n${renderError(record.error, "", INDENT)}`;

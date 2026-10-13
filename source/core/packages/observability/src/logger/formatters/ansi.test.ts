@@ -253,6 +253,24 @@ describe("ansiFormatter", () => {
     expect(line).toBe(`${TIME} ${INFO} ${CATEGORY} \\u0000 \\u007f \\u0080 \\u009b31m \\u009f \u00a0é 😀 ~`);
   });
 
+  test("shows DEL and C1 controls in attribute values as visible escapes", () => {
+    const raw = `a${"\u009b"}31m${"\u007f"}b`;
+    const line = formatted({ ...RECORD, attributes: { note: raw } });
+
+    expect(line).toBe(`${TIME} ${INFO} ${CATEGORY} order placed {"note":"a\\u009b31m\\u007fb"}`);
+    expect(line).not.toContain("\u009b");
+    expect(line).not.toContain("\u007f");
+  });
+
+  test("shows DEL and C1 controls in error data as visible escapes", () => {
+    const error: SerializedError = { type: "Error", message: "boom", data: { note: `x${"\u009b"}2J${"\u007f"}` } };
+    const line = formatted({ ...RECORD, error });
+
+    expect(line.split("\n")[1]).toBe(`  Error: boom {"note":"x${"\\u009b"}2J${"\\u007f"}"}`);
+    expect(line).not.toContain("\u009b");
+    expect(line).not.toContain("\u007f");
+  });
+
   test("keeps format specifiers in the message, category and attributes intact behind %s", () => {
     const text = "disk 95%d full, %c styled, %s swallowed, 100% bare %";
     const record: LogRecord = {
