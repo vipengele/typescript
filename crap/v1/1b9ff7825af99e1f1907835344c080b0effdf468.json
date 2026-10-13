@@ -1,0 +1,22 @@
+{
+  "core-common": {
+    "above": 0,
+    "worst": 16,
+    "producer": "vitest 5.0.0, @vitest/coverage-v8 5.0.0"
+  },
+  "core-observability": {
+    "above": 0,
+    "worst": 19,
+    "producer": "vitest 5.0.0, @vitest/coverage-v8 5.0.0"
+  },
+  "core-redaction": {
+    "above": 0,
+    "worst": 11,
+    "producer": "vitest 5.0.0, @vitest/coverage-v8 5.0.0"
+  },
+  "core-resilience": {
+    "above": 0,
+    "worst": 6,
+    "producer": "vitest 5.0.0, @vitest/coverage-v8 5.0.0"
+  }
+}
