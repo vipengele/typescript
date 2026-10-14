@@ -246,8 +246,107 @@ text there is mangled or swallows the next argument. The built-in formatters ret
 behind `"%s"`, or escape `%` as `%%` in the format string they build. A `Formatter` of your own must
 do the same and never hand a message, category or attribute value to the first argument unescaped.
 
-**What the logger does not have:** configuration sources (`VPG_LOG`, browser sources, files). Levels
-are set in code, with `configure`, `override` and spec strings.
+### Configuration sources
+
+A level spec reaches the logger from the defaults, from sources the builder adds, from live
+overrides and from the `VPG_LOG` environment variable. Lowest first, a higher layer's level for a
+category replacing a lower one's:
+
+1. **Defaults** — `"*": "warn"`.
+2. **Builder sources** — `addLevels`, `addSpec` and `addBrowserSources`, in the order added, a later
+   source replacing an earlier one's entry for a category.
+3. **Live overrides** — `Logging.override` and the console handle.
+4. **`VPG_LOG`** — beats an override for the same category.
+
+**`VPG_LOG`** — a level spec read from `process.env`:
+
+```sh
+VPG_LOG="*:warn,services:debug" node server.js
+```
+
+- **One lazy read** — each provider reads it once, on its first `configure`, `override` or `reset`
+  or on the first level check of one of its Loggers, whichever comes first, never on import. The
+  levels are published to the shared level table, so a module-scope Logger and every copy of the
+  package see them with no `configure` call. A `createProvider` provider reads it too.
+- **Bad entries** — an entry with a bad level or category is skipped and reported through the warn
+  target, the warning naming `VPG_LOG`. A missing `process.env`, a non-string value or a throwing
+  read means no spec. Nothing reaches the caller.
+- **It stays** — `clearDefaults()` and `Logging.reset()` keep it; only `.ignoreEnvironment()` on the
+  builder removes it, for as long as that configuration is in force. A later `configure` that does
+  not call it restores the layer.
+
+```ts
+Logging.configure((b) => b.ignoreEnvironment().addLevels({ "*": "info" }));
+```
+
+**Browser sources** — `addBrowserSources(options?)` reads a level spec from `localStorage` and from
+the URL, and does nothing outside a browser:
+
+```ts
+Logging.configure((b) => b.addBrowserSources().addSink(createConsoleSink()));
+// https://example.test/app?log=services:trace
+```
+
+- **Options** — `BrowserSourcesOptions` is `{ urlParameter?, storageKey? }`, defaulting to `log` and
+  `vipengele.log`. Each is a non-empty string; anything else makes `build()` throw
+  `LoggingConfigError`.
+- **Order** — storage is added before the URL, so the URL wins where both set a category.
+- **Guarded reads** — a throwing access, a missing `location` or blocked storage means no source. An
+  empty stored string counts as absent: no warning, nothing cleared.
+- **Bad entries** — warned like any spec, each warning naming the URL parameter or the storage key.
+- **An unreadable stored spec** — a non-empty stored string that holds no level is removed from
+  storage, but only once the configuration built from it is in force: `build()` touches no storage
+  and a rejected `configure` removes nothing. A bad URL parameter never removes good stored
+  levels.
+
+**Console handle** — `installConsole(name)` puts a function on `globalThis[name]` for changing
+levels live from the browser console, and returns the function that removes it:
+
+```ts
+const uninstall = Logging.installConsole("logging");
+// in the console:
+logging("services:debug,*:warn"); // a spec string
+logging({ levels: { services: "debug" } }); // a { levels } object
+logging(null); // removes every override and the stored spec
+logging(); // reports the levels in force
+uninstall();
+```
+
+`LoggerProvider.installConsole(name)` does the same for a provider from `createProvider`.
+
+- **Input** — `ConsoleHandleInput` is a spec string, `{ levels }`, `null` or nothing; the handle's
+  type is `ConsoleHandle`. A spec or `{ levels }` is validated whole before anything is written: a
+  skipped or repeated entry, or a spec that sets no level, throws `LoggingConfigError` and changes
+  nothing. A valid one is merged into the overrides, as `override` sets them.
+- **Persistence** — only when the build in force has browser sources, the change is merged into the
+  spec stored under their storage key. It never writes the URL parameter. Blocked storage leaves
+  the change in force for this page only, and the confirmation says so.
+- **Confirmation** — every call writes one `info` record under the category
+  `vipengele.logger.console`, whatever level governs that category, through the processors and
+  sinks in force. It lists the levels in force, names every override `VPG_LOG` takes precedence
+  over, and says whether the change was stored. With no sink in force the same line goes to the
+  `warn` provider option; the default provider and a `createProvider` provider use the warn target,
+  and a provider built without the option uses `console.warn`.
+- **Name collision** — `LoggingConfigError` when `globalThis[name]` holds anything but `undefined`
+  or a console handle. Installing the same name again replaces the earlier handle, and the
+  returned function removes a handle only while it is still the one installed.
+- **Another copy's provider** — `Logging.installConsole` throws `LoggingConfigError` when the
+  default provider in the realm was created by a copy of the package that has no `installConsole`.
+
+**Persistence caveat** — a spec the console handle stored comes back on the next load as a builder
+source: below the overrides and below any source added after `addBrowserSources`. `Logging.reset()`
+does not clear storage; `logging(null)` does.
+
+**Types** — `BrowserSourcesOptions`, `BrowserSourcesSetting` (`{ storageKey }`, what
+`LoggingSettings.browserSources` and `LoggingBuild.browserSources` hold, or `null` when the build
+read no browser sources), `ConsoleHandle` and `ConsoleHandleInput` are exported. `LoggingBuild` also
+carries `ignoreEnvironment`, and `LoggerProviderOptions` takes `environment()`, which reads the raw
+`VPG_LOG` value (`Logging` supplies it from `process.env`; a provider built without it has no
+environment layer), and `warn(message)`, the destination of a console handle's confirmation when
+no sink is in force.
+
+**What the logger does not have:** configuration files. Levels are set in code, with `configure`,
+`override` and spec strings, and from `VPG_LOG` and the browser sources above.
 
 ## `./errors`
 
