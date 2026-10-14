@@ -4,7 +4,7 @@ import type { IsoDayOfWeek } from "./civil";
 import { DateTimeParseError, type DateTimeTryParseResult } from "./errors";
 import { LocalDate } from "./local-date";
 import { LocalTime } from "./local-time";
-import { formatDateTime, parseDateTime } from "./locale-format";
+import { formatDateTime, parseDateTime, type TimeOptions } from "./locale-format";
 import { civilNow } from "./now";
 import type { ZoneId } from "./zone-id";
 import { ZonedDateTime, type ZonedDateTimeOptions } from "./zoned-date-time";
@@ -25,15 +25,15 @@ function parseValue(str: string): LocalDateTime | undefined {
 
 /**
  * The date-time `str` writes in `locale`'s date-time layout, or `undefined` when it writes none.
- * Each half is read by its own type's localized reader.
+ * Each half is read by its own type's localized reader, the time under `options`.
  */
-function parseLocalizedValue(str: string, locale: Locale): LocalDateTime | undefined {
-  const text = parseDateTime(str, locale);
+function parseLocalizedValue(str: string, locale: Locale, options: TimeOptions): LocalDateTime | undefined {
+  const text = parseDateTime(str, locale, options);
   if (text === undefined) {
     return undefined;
   }
   const date = LocalDate.tryParseLocalized(text.date, locale);
-  const time = LocalTime.tryParseLocalized(text.time, locale);
+  const time = LocalTime.tryParseLocalized(text.time, locale, options);
   if (date.value === undefined || time.value === undefined) {
     return undefined;
   }
@@ -121,9 +121,15 @@ export class LocalDateTime {
    * Reads the date-time `str` writes in `locale`'s layout, or in `Locale.default()` when `locale`
    * is omitted: `02/03/2026, 01:30 PM` in `en-US`, `03.02.2026, 13:30` in `de-DE`. The date
    * follows {@link LocalDate.parseLocalized}'s rules and the time
-   * {@link LocalTime.parseLocalized}'s, so the result's second and nanosecond are zero. Whether
-   * the date or the time comes first, and the text around them, are read from `Intl`, matching
+   * {@link LocalTime.parseLocalized}'s under the same `options`. Whether the date or the time
+   * comes first, and the text around them, are read from `Intl`, matching
    * {@link LocalDateTime#format}; whitespace in that text matches any whitespace.
+   *
+   * The time is the hour and minute, and the result's second is zero. With `options.seconds` the
+   * time also holds a two-digit second after the minute (`02/03/2026, 01:30:45 PM` in `en-US`,
+   * `03.02.2026, 13:30:45` in `de-DE`) and the result carries it, so a string with no second is
+   * rejected; without it a string that writes a second is rejected. The nanosecond is zero either
+   * way.
    *
    * {@link LocalDateTime.parse} stays the ISO 8601 reader: a locale-aware reader under the same
    * name would make `parse(str)` read the runtime's locale rather than ISO.
@@ -131,8 +137,8 @@ export class LocalDateTime {
    * @throws {DateTimeParseError} when `str` does not follow the layout, or its fields do not name
    *   a date and a time (`02/30/2026, 10:00 AM` or `02/03/2026, 13:00 PM` in `en-US`).
    */
-  static parseLocalized(str: string, locale: Locale = Locale.default()): LocalDateTime {
-    const value = parseLocalizedValue(str, locale);
+  static parseLocalized(str: string, locale: Locale = Locale.default(), options: TimeOptions = {}): LocalDateTime {
+    const value = parseLocalizedValue(str, locale, options);
     if (value === undefined) {
       throw new DateTimeParseError(`Cannot parse ${JSON.stringify(str)} as a date-time in ${locale.tag}.`);
     }
@@ -141,10 +147,15 @@ export class LocalDateTime {
 
   /**
    * The non-throwing counterpart of {@link LocalDateTime.parseLocalized}: a string that does not
-   * write a date-time yields `{ success: false }` rather than a {@link DateTimeParseError}.
+   * write a date-time yields `{ success: false }` rather than a {@link DateTimeParseError}. With
+   * `options.seconds` a string with no second yields it too, and without it a string with one does.
    */
-  static tryParseLocalized(str: string, locale: Locale = Locale.default()): DateTimeTryParseResult<LocalDateTime> {
-    const value = parseLocalizedValue(str, locale);
+  static tryParseLocalized(
+    str: string,
+    locale: Locale = Locale.default(),
+    options: TimeOptions = {},
+  ): DateTimeTryParseResult<LocalDateTime> {
+    const value = parseLocalizedValue(str, locale, options);
     return value === undefined ? { success: false } : { success: true, value };
   }
 
@@ -208,12 +219,15 @@ export class LocalDateTime {
    * When `Intl`'s combined output does not hold the two as separate runs, the date comes first
    * and a single space separates them.
    *
-   * Like {@link LocalTime#format}, the second and the nanosecond are not written, so
-   * {@link LocalDateTime.parseLocalized} under the same locale reads back this date-time with
-   * both set to zero.
+   * The time is the hour and minute, as {@link LocalTime#format} writes it under the same
+   * `options`. With `options.seconds` the second is written too, padded to two digits
+   * (`02/03/2026, 01:30:45 PM` in `en-US`, `03.02.2026, 13:30:45` in `de-DE`), and the layout is
+   * the one `Intl` uses for a time with seconds. The nanosecond is never written, so
+   * {@link LocalDateTime.parseLocalized} under the same locale and options reads back this
+   * date-time with its nanosecond set to zero, and its second too unless `options.seconds` is set.
    */
-  format(locale: Locale = Locale.default()): string {
-    return formatDateTime(this.date, this.time, locale);
+  format(locale: Locale = Locale.default(), options: TimeOptions = {}): string {
+    return formatDateTime(this.date, this.time, locale, options);
   }
 
   /**
