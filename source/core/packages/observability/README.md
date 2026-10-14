@@ -63,6 +63,27 @@ log.info("saved", { documentId: 7 });
 log.error("save failed", caught, { documentId: 7 });
 ```
 
+Either `attributes` argument may be a function, `AttributesThunk` (`() => AttributesInput`, a type
+exported from `@vipengele/ts-core-observability/logger`), computed only when the record is written:
+
+```ts
+log.debug("state", () => ({ snapshot: expensiveSnapshot() })); // runs only if a debug record is written
+log.error("save failed", caught, () => ({ documentId: doc.id }));
+```
+
+- **Dispatch** — only the `attributes` argument is read as a thunk. In `warn`, `error` and `fatal` a
+  function in the `error` position is an error value, serialized like any thrown value, never a
+  thunk; pass `undefined` there to give a thunk in the third position.
+- **Once per record** — the thunk runs after the level check and the no-sink check, once however
+  many sinks receive the record, and before normalization and redaction, so a secret key it returns
+  is redacted like any other.
+- **Failure** — a thunk that throws, or returns anything but a record (a string, array, `null`,
+  `undefined`, number or function), gives `{}` for its layer. The record is still written, and
+  nothing is reported to `onSinkError`, which is for sinks and processors.
+- **No re-entry** — while any attributes thunk runs, every other thunk, per-call or bound, on any
+  logger of the same copy of the package gets `{}`, so a thunk that logs cannot recurse. The flag
+  belongs to each copy of the package; a thunk that recurses through a second copy is not stopped.
+
 A call below the level in force does nothing. One that passes the check becomes a `LogRecord`:
 `time` (epoch milliseconds with a sub-millisecond fraction), `level`, `category`, `message`,
 `attributes`, and, when the call passed one, `error`, the thrown value serialized with its whole
@@ -86,6 +107,28 @@ requestLog.with({ requestId: "def" }); // overrides the parent's requestId
   settings, so a level change through `Logging.override` or `configure` reaches it.
 - **No attributes** — `with({})` returns the same Logger.
 
+`log.with(thunk)` binds attributes computed lazily:
+
+```ts
+const sessionLog = log.with(() => ({ user: currentUser().id }));
+
+sessionLog.debug("not written"); // below the level: the thunk does not run
+sessionLog.info("opened"); // first record with a sink: the thunk runs, the result is kept
+sessionLog.info("saved"); // reuses the kept result
+```
+
+- **At most once** — the thunk runs at the bound Logger's first record that passes the level check
+  and has a sink; the result is normalized, deeply frozen and reused. If it throws, that record gets
+  `{}` for the binding and the failure is not kept, so the next record runs the thunk again.
+- **Children** — a Logger made by `with` on `sessionLog` carries the value when `sessionLog` has
+  already evaluated it, as a fixed value. If `sessionLog` has not, the child holds its own cell and
+  runs the thunk at its own first record, so parent and child can hold different values.
+- **Order** — `with(thunk).with({ x })` lets the static `x` win over the same key from the thunk. A
+  thunk always makes a new Logger, even though `with({})` returns the same one.
+- **The first record decides** — a thunk that reads ambient context such as the Scope captures the
+  context of that first record for every later one. A value that follows each record belongs in
+  the Scope's attributes, not in a bound thunk.
+
 **Scope attributes** — every record that passes the level check and has a sink also carries the
 attributes of the ambient `Scope` chain (`snapshot(Scope.current())`, from `./scope` of
 `@vipengele/ts-core-common`), never the Resource keys. Attributes merge from least to most
@@ -97,7 +140,23 @@ same helper. If reading the Scope throws, the record is emitted without its Scop
   a record emitted after one carries no Scope attributes. Bind what must survive an `await` with
   `with`.
 - **Cost** — the Scope is read on every record that passes the level check and has a sink; there is
-  no opt-out.
+  no opt-out. The same rule governs the rest of the work: an attributes thunk, the clock and the
+  emit settings run once per record, after the level and sink checks.
+
+**Hot path** — a disabled call makes the Logger allocate nothing and run nothing: no thunk, clock,
+Scope read or emit settings read. A category with nothing configured resolves through one shared,
+frozen level entry. What the caller writes is its own cost: an arrow function inline at a disabled
+call site still allocates a closure, which the Logger cannot avoid. The free guard is
+`enabled`:
+
+```ts
+if (log.enabled("debug")) {
+  log.debug("state", { snapshot: expensiveSnapshot() });
+}
+```
+
+The test suite checks this in both runtimes (nothing runs for a disabled or sinkless call) and in
+Node (heap growth of 1e5 disabled calls with one hoisted thunk stays under 256 KB).
 
 **Sinks** — a `Sink` is an object with `write(record, resource)`, where `resource` is the `Resource`
 in force when the record was emitted; that `(record, resource)` arity is part of the
