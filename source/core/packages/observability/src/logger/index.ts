@@ -8,7 +8,7 @@ export { ansiFormatter } from "./formatters/ansi";
 export { browserFormatter } from "./formatters/browser";
 export { jsonLinesFormatter } from "./formatters/json-lines";
 export type { LevelEntry, LevelTable } from "./levels";
-export type { Logger } from "./logger";
+export type { AttributesThunk, Logger } from "./logger";
 export { Logging, setWarnTarget, type WarnTarget } from "./logging";
 export type { ConfigureCallback, LoggerProvider, LoggerProviderOptions } from "./provider";
 export { redactionProcessor } from "./redaction-processor";

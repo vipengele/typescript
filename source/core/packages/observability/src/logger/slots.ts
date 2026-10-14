@@ -21,6 +21,9 @@ type Registry = Record<symbol, unknown>;
  */
 const FALLBACK_LEVEL = "warn";
 
+/** The one frozen entry every resolution that finds neither a key nor a root returns, so none allocates. */
+export const FALLBACK_ENTRY: LevelEntry = Object.freeze(entryFor(FALLBACK_LEVEL));
+
 /** Every level, least severe first, for placing a foreign severity against the levels this copy knows. */
 const LEVELS_BY_SEVERITY = (Object.keys(SEVERITY_NUMBERS) as Level[]).sort((a, b) => SEVERITY_NUMBERS[a] - SEVERITY_NUMBERS[b]);
 
@@ -163,7 +166,7 @@ export function publishLevelTable(table: LevelTable): LevelTable {
  * resolves to the default `warn`.
  */
 export function resolveSharedEntry(category: string): LevelEntry {
-  return resolveEntry(readLevelTable(), category) ?? entryFor(FALLBACK_LEVEL);
+  return resolveEntry(readLevelTable(), category) ?? FALLBACK_ENTRY;
 }
 
 /**

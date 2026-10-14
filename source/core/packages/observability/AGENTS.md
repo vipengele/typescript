@@ -10,7 +10,19 @@ Run commands from `source/core` (`pnpm build`, `pnpm type-check`, `pnpm test`, `
   `EmitSettings` (`record.ts`) read on every call: `sinks`, `clock`, `redaction`, `resource`,
   `onSinkError`. `sinks`/`clock`/`redaction` are builder state (`builder.ts`); `resource` and
   `onSinkError` are provider options wired from `logging.ts` (`logger.ts` cannot import it).
-- With no sink, `emitRecord` reads nothing (not the clock, attributes or error).
+- With no sink, `emitRecord` reads nothing (not the clock, attributes, thunk or error). A disabled
+  call stops at the level check: the Logger allocates nothing and runs nothing.
+- `attributes` of an emit method is `AttributesInput | AttributesThunk` (`logger.ts`), dispatched on
+  `typeof === "function"` of that argument alone; in `warn`/`error`/`fatal` a function in the `error`
+  position is an error value. `createRecord` runs a per-call thunk once per record through
+  `evaluateAttributes` (`emit.ts`), before normalization and redaction. A throw, a re-entrant call or
+  a non-record result (string, array, `null`, `undefined`) gives `{}`; nothing reaches `onSinkError`.
+  The re-entrancy flag is module-level, so it is global within one copy of the package and not shared
+  across copies (ADR-0019).
+- Hot-path proof: `hot-path.test.ts` (both runtimes) asserts nothing runs for a disabled or sinkless
+  call; `hot-path.node.test.ts` (Node only) measures heap growth of disabled calls with a hoisted
+  thunk, discarding any attempt a GC ran in (observed through `PerformanceObserver`). There is no
+  bench: `src/**` counts toward the coverage gate and ships in the build output.
 - Level layers, lowest first: defaults, builder, overrides, environment (`VPG_LOG`). The environment
   layer is read once per provider, lazily (`environment-source.ts`), survives `clearDefaults()` and
   `reset()`, and only `ignoreEnvironment()` drops it. Every `Logger` call checks the level, then calls
@@ -20,10 +32,17 @@ Run commands from `source/core` (`pnpm build`, `pnpm type-check`, `pnpm test`, `
 - `build()` is side-effect free: it reads browser storage but never writes it. A stored spec found
   unreadable is cleared only after the provider commits the build, so a rejected `configure` clears
   nothing. The published level table is replaced whole and frozen, never mutated.
-- `Logger#with(attributes)` returns a frozen Logger whose closure holds the bindings, normalized and
-  deeply frozen at `with()` time (`{}` returns the same Logger); `emitRecord` takes them as its last
-  argument. A child shares the parent's level resolver and `emit` settings getter, so live level
-  changes reach it.
+- `Logger#with(attributes)` returns a frozen Logger whose closure holds an ordered list of binding
+  layers (`BindingLayer`, `emit.ts`); `emitRecord` takes them as its last argument. A static input is
+  normalized and deeply frozen at `with()` time (`{}` returns the same Logger; any thunk makes a new
+  one). A thunk makes a lazy layer: evaluated at the first record that passes the level check with a
+  sink, normalized, frozen and reused; a throw gives `{}` for that record and is not memoized. A
+  child carries an evaluated parent layer as a fixed value, and an unevaluated one as a fresh cell
+  that evaluates at the child's own first record, so parent and child can disagree. Layers merge in
+  order, so `with(thunk).with({ x })` lets the static layer win. Consecutive static layers (and a
+  static layer after an already-evaluated thunk) merge into one fixed layer at `with()` time; a
+  static layer after an unevaluated thunk stays its own layer. A child shares the parent's level
+  resolver and `emit` settings getter, so live level changes reach it.
 - Record building (clock, Scope read, `normalizeAttributes`, `serializeError`, redaction,
   `resource()`) runs in one guard: a throw drops the record silently. The Scope read
   (`normalizeAttributes(snapshot(Scope.current()))`) has its own inner guard yielding `{}`, so a
