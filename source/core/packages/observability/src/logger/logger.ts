@@ -1,4 +1,5 @@
 import { type Attributes, type AttributesInput, type Level, normalizeAttributes } from "@vipengele/ts-core-common";
+import { mergeAttributes } from "../merge-attributes";
 import { validateCategory } from "./categories";
 import { type BindingLayer, emitRecord, evaluateAttributes, freezeDeep } from "./emit";
 import { enabled, type LevelEntry } from "./levels";
@@ -84,6 +85,8 @@ export function createLogger(category: string, resolve: LevelResolver, emit: () 
 
 /** One layer of a Logger's bindings, and what a Logger made by `with` on it carries instead. */
 interface Layer extends BindingLayer {
+  /** The attributes every read returns, or `undefined` for a layer whose read may still change. */
+  readonly fixed: Attributes | undefined;
   /** The layer a Logger made by `with` on this one carries in its place. */
   inherit(): Layer;
 }
@@ -91,6 +94,7 @@ interface Layer extends BindingLayer {
 /** A layer whose attributes are fixed; a child carries it as it is. */
 function fixedLayer(attributes: Attributes): Layer {
   const layer: Layer = {
+    fixed: attributes,
     read: () => attributes,
     inherit: () => layer,
   };
@@ -108,6 +112,7 @@ const EMPTY: Attributes = Object.freeze({});
 function lazyLayer(thunk: AttributesThunk): Layer {
   let resolved: Attributes | undefined;
   return {
+    fixed: undefined,
     read(): Attributes {
       if (resolved === undefined) {
         const value = evaluateAttributes(thunk);
@@ -120,6 +125,21 @@ function lazyLayer(thunk: AttributesThunk): Layer {
     },
     inherit: () => (resolved === undefined ? lazyLayer(thunk) : fixedLayer(resolved)),
   };
+}
+
+/**
+ * The layers a Logger made by `with` carries: each of `bindings` as it inherits it, then `added`.
+ * Static attributes following a fixed layer merge into it, the later key winning, so a chain of
+ * static `with` calls reads one layer per record however long it is. A lazy layer always stays its
+ * own entry, so attributes bound after it still win over whatever its thunk returns.
+ */
+function childBindings(bindings: readonly Layer[], added: Layer): Layer[] {
+  const inherited = bindings.map((layer) => layer.inherit());
+  const previous = inherited.at(-1)?.fixed;
+  if (added.fixed === undefined || previous === undefined) {
+    return [...inherited, added];
+  }
+  return [...inherited.slice(0, -1), fixedLayer(freezeDeep(mergeAttributes([previous, added.fixed])))];
 }
 
 /** The {@link Logger} for an already validated category, carrying `bindings` on every record. */
@@ -146,7 +166,7 @@ function bindLogger(category: string, resolve: LevelResolver, emit: () => EmitSe
         }
         added = fixedLayer(freezeDeep(normalized));
       }
-      return bindLogger(category, resolve, emit, [...bindings.map((layer) => layer.inherit()), added]);
+      return bindLogger(category, resolve, emit, childBindings(bindings, added));
     },
     trace(message: string, attributes?: AttributesInput | AttributesThunk): void {
       log("trace", message, attributes, undefined);

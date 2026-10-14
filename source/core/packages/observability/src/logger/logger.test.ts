@@ -3,10 +3,18 @@ import { type Resource, Scope } from "@vipengele/ts-core-common/scope";
 import { secretKeys } from "@vipengele/ts-core-redaction";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { isLoggingConfigError } from "./config-error";
+import { type BindingLayer, emitRecord } from "./emit";
 import { entryFor } from "./levels";
 import { createLogger } from "./logger";
 import { Logging, setWarnTarget } from "./logging";
 import type { EmitSettings, LogRecord, Sink } from "./record";
+
+vi.mock("./emit", { spy: true });
+
+/** The binding layers the most recent `emitRecord` call received. */
+function lastBindings(): readonly BindingLayer[] {
+  return vi.mocked(emitRecord).mock.lastCall?.[6] ?? [];
+}
 
 /** Emit settings for a Logger whose `enabled` is under test; `enabled` never reads them. */
 function emit(): EmitSettings {
@@ -677,6 +685,111 @@ describe("Logger#with a thunk", () => {
     expect(logger.with({})).toBe(logger);
     expect(logger.with(() => ({}))).not.toBe(logger);
     expect(Object.isFrozen(logger.with(() => ({})))).toBe(true);
+  });
+});
+
+describe("Logger#with layers", () => {
+  test("chained static calls write the record a single merged with writes, the later key winning", () => {
+    const { records, settings } = collecting();
+    const logger = createLogger(
+      "app",
+      () => entryFor("info"),
+      () => settings,
+    );
+
+    logger
+      .with({ a: 1, shared: "first" })
+      .with({ b: 2, shared: "second" })
+      .with({ c: { nested: true }, shared: "third" })
+      .info("chained");
+    logger.with({ a: 1, b: 2, c: { nested: true }, shared: "third" }).info("merged");
+
+    expect(records[0]?.attributes).toEqual({ a: 1, b: 2, c: { nested: true }, shared: "third" });
+    expect(records[0]?.attributes).toEqual(records[1]?.attributes);
+    expect(Object.isFrozen(records[0]?.attributes.c)).toBe(true);
+  });
+
+  test("a chain of static calls reads one layer per record however long it is", () => {
+    const { settings } = collecting();
+    let logger = createLogger(
+      "app",
+      () => entryFor("info"),
+      () => settings,
+    );
+
+    for (let index = 0; index < 20; index++) {
+      logger = logger.with({ [`k${index}`]: index });
+      logger.info("m");
+      expect(lastBindings()).toHaveLength(1);
+    }
+    expect(lastBindings()[0]?.read()).toEqual(Object.fromEntries(Array.from({ length: 20 }, (_, index) => [`k${index}`, index])));
+  });
+
+  test("a static call merging into its parent's layer leaves the parent's bindings unchanged", () => {
+    const { records, settings } = collecting();
+    const parent = createLogger(
+      "app",
+      () => entryFor("info"),
+      () => settings,
+    ).with({ step: "outer" });
+
+    parent.with({ step: "inner" }).info("child");
+    parent.info("parent");
+
+    expect(records.map((record) => record.attributes)).toEqual([{ step: "inner" }, { step: "outer" }]);
+  });
+
+  test("a thunk keeps its own layer between static ones, merging as Scope, then layers in order, then the call", () => {
+    const { records, settings } = collecting();
+    const thunk = vi.fn(() => ({ fromThunk: "thunk", before: "thunk", after: "thunk", call: "thunk" }));
+    const logger = createLogger(
+      "app",
+      () => entryFor("info"),
+      () => settings,
+    )
+      .with({ before: "static", scope: "binding", first: 1 })
+      .with({ second: 2 })
+      .with(thunk)
+      .with({ after: "static" })
+      .with({ last: 3 });
+
+    Scope.isolated("request", { scope: "scope", onlyScope: true }, () => {
+      logger.info("m", { call: "call" });
+    });
+
+    expect(lastBindings()).toHaveLength(3);
+    expect(records[0]?.attributes).toEqual({
+      onlyScope: true,
+      scope: "binding",
+      before: "thunk",
+      first: 1,
+      second: 2,
+      fromThunk: "thunk",
+      after: "static",
+      last: 3,
+      call: "call",
+    });
+  });
+
+  test("a static call after an evaluated thunk merges into the value the thunk kept", () => {
+    const { records, settings } = collecting();
+    const thunk = vi.fn(() => ({ host: "h-1", key: "lazy" }));
+    const parent = createLogger(
+      "app",
+      () => entryFor("info"),
+      () => settings,
+    ).with(thunk);
+
+    parent.info("parent");
+    const child = parent.with({ key: "static" });
+    child.info("child");
+
+    expect(thunk).toHaveBeenCalledOnce();
+    expect(lastBindings()).toHaveLength(1);
+    expect(records.map((record) => record.attributes)).toEqual([
+      { host: "h-1", key: "lazy" },
+      { host: "h-1", key: "static" },
+    ]);
   });
 });
 
