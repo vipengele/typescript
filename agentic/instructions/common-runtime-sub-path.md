@@ -7,8 +7,8 @@ description: "The runtime sub-path of ts-core-common is where runtime and capabi
 `@vipengele/ts-core-common` ships its surface as tree-shakeable sub-paths: `./types/numeric`,
 `./types/date-time` (`LocalDate`, `LocalTime`, `LocalDateTime`: validated, immutable, zoneless civil
 values with ISO 8601 parse and format, arithmetic, `now()`, locale-aware `format`/`parseLocalized`/
-`tryParseLocalized`, `LocalDate#segments` and `LocalTime#segments`, with an opt-in `{ seconds }` on
-the time's localized methods and `LocalTime.dayPeriods`; `Instant`, a nanosecond point on the UTC timeline;
+`tryParseLocalized`, `LocalDate#segments`, `LocalTime#segments` and `LocalDateTime#segments`, with an
+opt-in `{ seconds }` on the time's and the date-time's localized methods and `LocalTime.dayPeriods`; `Instant`, a nanosecond point on the UTC timeline;
 `ZoneId`, a named time zone with `offsetSecondsAt`; `ZonedDateTime`, a date and time of day in a
 zone, built by `LocalDateTime#atZone`, `LocalDate#atStartOfDay` and `Instant#atZone`, with a
 `disambiguation` option for a skipped or repeated local time and a `ZoneResolutionError` for

@@ -23,8 +23,8 @@ Error Event, Scope, Breadcrumb, Transport) before naming things.
     `Locale` — a validated BCP 47 tag with month and weekday names, hour cycle and first day of the
     week — ADR-0013), `./types/date-time` (`LocalDate`, `LocalTime`, `LocalDateTime`: validated,
     immutable, zoneless civil values with ISO 8601 parse/format, arithmetic, `now()`, locale-aware
-    `format`/`parseLocalized`/`tryParseLocalized`, `LocalDate#segments` and `LocalTime#segments`, with
-    an opt-in `{ seconds }` on the time's localized methods and `LocalTime.dayPeriods`; `Instant`, a
+    `format`/`parseLocalized`/`tryParseLocalized`, `LocalDate#segments`, `LocalTime#segments` and
+    `LocalDateTime#segments`, with an opt-in `{ seconds }` on the time's and the date-time's localized methods and `LocalTime.dayPeriods`; `Instant`, a
     nanosecond point on the UTC timeline; `ZoneId`, a named time zone with `offsetSecondsAt`; `ZonedDateTime`, a date and time of day in a
     zone, built by `LocalDateTime#atZone`, `LocalDate#atStartOfDay` and `Instant#atZone`, with a
     `disambiguation` option settling a skipped or repeated local time, a `ZoneResolutionError` for
@@ -88,7 +88,7 @@ Error Event, Scope, Breadcrumb, Transport) before naming things.
   from `@vipengele/ts-core-common`'s `./types/numeric` sub-path, `Locale` (with `HourCycle`,
   `IsoWeekday`, `NameStyle`) from its `./locale` sub-path, `LocalDate`, `LocalTime`,
   `LocalDateTime`, `Instant`, `ZoneId` and `ZonedDateTime` (with their errors, guards,
-  `ZoneResolutionError` and `DateSegment`, `DateSegmentType`, `TimeSegment`, `TimeSegmentType`, `DateTimeTryParseResult`,
+  `ZoneResolutionError` and `DateSegment`, `DateSegmentType`, `DateTimeSegment`, `DateTimeSegmentType`, `TimeSegment`, `TimeSegmentType`, `DateTimeTryParseResult`,
   `Disambiguation`, `IsoDayOfWeek`, `ZonedDateTimeOptions`) from its `./types/date-time` sub-path, and `redact`,
   `secretKeys`, `composePolicies`, `redactUrl`, `redactQueryString`, `redactHeaders`, `maskKeepLast` and `pseudonymize`, the value
   detectors `valueDetectors`, `jwt`, `bearerToken`, `creditCard`, `email`, `awsAccessKey`,
