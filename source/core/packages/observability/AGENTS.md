@@ -39,7 +39,9 @@ Run commands from `source/core` (`pnpm build`, `pnpm type-check`, `pnpm test`, `
   sink, normalized, frozen and reused; a throw gives `{}` for that record and is not memoized. A
   child carries an evaluated parent layer as a fixed value, and an unevaluated one as a fresh cell
   that evaluates at the child's own first record, so parent and child can disagree. Layers merge in
-  order, so `with(thunk).with({ x })` lets the static layer win. A child shares the parent's level
+  order, so `with(thunk).with({ x })` lets the static layer win. Consecutive static layers (and a
+  static layer after an already-evaluated thunk) merge into one fixed layer at `with()` time; a
+  static layer after an unevaluated thunk stays its own layer. A child shares the parent's level
   resolver and `emit` settings getter, so live level changes reach it.
 - Record building (clock, Scope read, `normalizeAttributes`, `serializeError`, redaction,
   `resource()`) runs in one guard: a throw drops the record silently. The Scope read
