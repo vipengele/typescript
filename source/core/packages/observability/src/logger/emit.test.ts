@@ -1,8 +1,8 @@
-import type { SerializedError } from "@vipengele/ts-core-common";
+import type { Attributes, SerializedError } from "@vipengele/ts-core-common";
 import { type Resource, Scope } from "@vipengele/ts-core-common/scope";
 import { type RedactionPolicy, secretKeys } from "@vipengele/ts-core-redaction";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { emitRecord } from "./emit";
+import { type BindingLayer, emitRecord, evaluateAttributes } from "./emit";
 import { isNormalized, markNormalized } from "./normalized";
 import type { EmitSettings, LogProcessor, LogRecord, Sink, SinkRegistration } from "./record";
 import { redactionProcessor } from "./redaction-processor";
@@ -35,6 +35,11 @@ function collector(): Sink & { readonly written: Written[] } {
       written.push({ record, resource });
     },
   };
+}
+
+/** A binding layer that always reads `attributes`. */
+function layer(attributes: Attributes): BindingLayer {
+  return { read: () => attributes };
 }
 
 /** `sink` registered with `processors` running ahead of it alone. */
@@ -255,8 +260,8 @@ describe("emitRecord bindings", () => {
     const sink = collector();
     const bindings = Object.freeze({ requestId: "r-1", step: "bound" });
 
-    emitRecord(settings({ sinks: [sink] }), "info", "a", "m", { step: "call", status: 200 }, undefined, bindings);
-    emitRecord(settings({ sinks: [sink] }), "info", "a", "m", undefined, undefined, bindings);
+    emitRecord(settings({ sinks: [sink] }), "info", "a", "m", { step: "call", status: 200 }, undefined, [layer(bindings)]);
+    emitRecord(settings({ sinks: [sink] }), "info", "a", "m", undefined, undefined, [layer(bindings)]);
 
     expect(sink.written.map(({ record }) => record.attributes)).toEqual([
       { requestId: "r-1", step: "call", status: 200 },
@@ -268,9 +273,161 @@ describe("emitRecord bindings", () => {
   test("redacts a bound secret key with the policy in force", () => {
     const sink = collector();
 
-    emitRecord(settings({ sinks: [sink], redaction: secretKeys }), "info", "a", "m", { user: "ada" }, undefined, { apiKey: "k" });
+    emitRecord(settings({ sinks: [sink], redaction: secretKeys }), "info", "a", "m", { user: "ada" }, undefined, [layer({ apiKey: "k" })]);
 
     expect(sink.written[0]?.record.attributes).toEqual({ apiKey: "[REDACTED]", user: "ada" });
+  });
+});
+
+describe("emitRecord binding layers", () => {
+  test("reads every layer once per record, a later layer winning a shared key over an earlier one", () => {
+    const sink = collector();
+    const first = vi.fn(() => Object.freeze({ step: "first", first: 1 }));
+    const second = vi.fn(() => Object.freeze({ step: "second", second: 2 }));
+
+    emitRecord(settings({ sinks: [sink, collector()] }), "info", "a", "m", { call: 3 }, undefined, [{ read: first }, { read: second }]);
+
+    expect(sink.written[0]?.record.attributes).toEqual({ step: "second", first: 1, second: 2, call: 3 });
+    expect(first).toHaveBeenCalledOnce();
+    expect(second).toHaveBeenCalledOnce();
+  });
+
+  test("with no sink it reads no layer", () => {
+    const read = vi.fn(() => ({}));
+
+    emitRecord(settings({ sinks: [] }), "info", "a", "m", undefined, undefined, [{ read }]);
+
+    expect(read).not.toHaveBeenCalled();
+  });
+});
+
+describe("emitRecord attributes thunk", () => {
+  test("runs once per record however many sinks receive it, and writes what it returns, normalized", () => {
+    const first = collector();
+    const second = collector();
+    const date = new Date("2024-01-02T03:04:05.000Z");
+    const thunk = vi.fn(() => ({ at: date, big: 10n }));
+
+    emitRecord(settings({ sinks: [first, second] }), "info", "a", "m", thunk, undefined, [layer({ bound: 1 })]);
+
+    expect(thunk).toHaveBeenCalledOnce();
+    expect(first.written[0]?.record.attributes).toEqual({ bound: 1, at: date.toISOString(), big: "10n" });
+    expect(second.written[0]?.record).toBe(first.written[0]?.record);
+  });
+
+  test("with no sink it never runs", () => {
+    const thunk = vi.fn(() => ({ a: 1 }));
+
+    emitRecord(settings({ sinks: [] }), "info", "a", "m", thunk, undefined);
+
+    expect(thunk).not.toHaveBeenCalled();
+  });
+
+  test("a throwing thunk gives an empty call layer, and the record is still written without a report", () => {
+    const sink = collector();
+    const onSinkError = vi.fn();
+
+    Scope.isolated("request", { scoped: 1 }, () => {
+      emitRecord(
+        settings({ sinks: [sink], onSinkError }),
+        "warn",
+        "a",
+        "m",
+        () => {
+          throw new Error("thunk");
+        },
+        undefined,
+        [layer({ bound: 1 })],
+      );
+    });
+
+    expect(sink.written).toHaveLength(1);
+    expect(sink.written[0]?.record).toMatchObject({ message: "m", attributes: { scoped: 1, bound: 1 } });
+    expect(onSinkError).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    { kind: "a string", value: "text" },
+    { kind: "an array", value: [1, 2] },
+    { kind: "null", value: null },
+    { kind: "undefined", value: undefined },
+    { kind: "a number", value: 7 },
+    { kind: "a function", value: () => ({ a: 1 }) },
+  ])("a thunk returning $kind gives an empty call layer", ({ value }) => {
+    const sink = collector();
+
+    emitRecord(settings({ sinks: [sink] }), "info", "a", "m", () => value as never, undefined, [layer({ bound: 1 })]);
+
+    expect(sink.written[0]?.record.attributes).toEqual({ bound: 1 });
+  });
+
+  test("a thunk that logs from inside itself sees an empty layer for its own call, and runs once", () => {
+    const sink = collector();
+    const emitSettings = settings({ sinks: [sink] });
+    const thunk = vi.fn((): Record<string, unknown> => {
+      emitRecord(emitSettings, "debug", "a", "inner", thunk, undefined);
+      return { outer: true };
+    });
+
+    emitRecord(emitSettings, "info", "a", "outer", thunk, undefined);
+
+    expect(thunk).toHaveBeenCalledOnce();
+    expect(sink.written.map(({ record }) => [record.message, record.attributes])).toEqual([
+      ["inner", {}],
+      ["outer", { outer: true }],
+    ]);
+  });
+
+  test("a thunk passed to two calls runs once for each record", () => {
+    const sink = collector();
+    const thunk = vi.fn(() => ({ n: 1 }));
+
+    emitRecord(settings({ sinks: [sink] }), "info", "a", "m", thunk, undefined);
+    emitRecord(settings({ sinks: [sink] }), "info", "a", "m", thunk, undefined);
+
+    expect(thunk).toHaveBeenCalledTimes(2);
+    expect(sink.written.map(({ record }) => record.attributes)).toEqual([{ n: 1 }, { n: 1 }]);
+  });
+
+  test("redacts a secret key the thunk returns with the policy in force", () => {
+    const sink = collector();
+
+    emitRecord(settings({ sinks: [sink], redaction: secretKeys }), "info", "a", "m", () => ({ password: "p", user: "ada" }), undefined);
+
+    expect(sink.written[0]?.record.attributes).toEqual({ password: "[REDACTED]", user: "ada" });
+  });
+});
+
+describe("evaluateAttributes", () => {
+  test("gives the thunk's record normalized, an empty record for a result that is not one, and undefined for a throw", () => {
+    expect(evaluateAttributes(() => ({ big: 1n }))).toEqual({ big: "1n" });
+    expect(evaluateAttributes(() => "text" as never)).toEqual({});
+    expect(
+      evaluateAttributes(() => {
+        throw new Error("thunk");
+      }),
+    ).toBeUndefined();
+  });
+
+  test("gives undefined while another thunk is running, and runs thunks again once it returns", () => {
+    let nested: unknown = "unset";
+
+    const outer = evaluateAttributes(() => {
+      nested = evaluateAttributes(() => ({ inner: true }));
+      return { outer: true };
+    });
+
+    expect(nested).toBeUndefined();
+    expect(outer).toEqual({ outer: true });
+    expect(evaluateAttributes(() => ({ after: true }))).toEqual({ after: true });
+  });
+
+  test("runs thunks again after one throws", () => {
+    evaluateAttributes(() => {
+      throw new Error("thunk");
+    });
+
+    expect(evaluateAttributes(() => ({ after: true }))).toEqual({ after: true });
   });
 });
 
@@ -308,7 +465,9 @@ describe("emitRecord scope attributes", () => {
     const bindings = Object.freeze({ boundOver: "bound", allThree: "bound", bound: 1 });
 
     Scope.isolated("request", { boundOver: "scope", callOver: "scope", allThree: "scope", scoped: 1 }, () => {
-      emitRecord(settings({ sinks: [sink] }), "info", "a", "m", { callOver: "call", allThree: "call", called: 1 }, undefined, bindings);
+      emitRecord(settings({ sinks: [sink] }), "info", "a", "m", { callOver: "call", allThree: "call", called: 1 }, undefined, [
+        layer(bindings),
+      ]);
     });
 
     expect(sink.written[0]?.record.attributes).toEqual({
@@ -386,7 +545,7 @@ describe("emitRecord scope attributes", () => {
       throw new Error("scope unreadable");
     });
 
-    emitRecord(settings({ sinks: [sink], onSinkError }), "info", "a", "m", { called: 1 }, undefined, { bound: 1 });
+    emitRecord(settings({ sinks: [sink], onSinkError }), "info", "a", "m", { called: 1 }, undefined, [layer({ bound: 1 })]);
 
     expect(sink.written).toHaveLength(1);
     expect(sink.written[0]?.record.attributes).toEqual({ bound: 1, called: 1 });

@@ -441,6 +441,245 @@ describe("Logger#with", () => {
   });
 });
 
+describe("Logger attributes thunk", () => {
+  test("each of the six methods runs a thunk in its attributes position and writes what it returns", () => {
+    const { records, settings } = collecting();
+    const logger = createLogger(
+      "app",
+      () => entryFor("trace"),
+      () => settings,
+    );
+    const failure = new Error("boom");
+
+    logger.trace("t", () => ({ n: 1 }));
+    logger.debug("d", () => ({ n: 2 }));
+    logger.info("i", () => ({ n: 3 }));
+    logger.warn("w", failure, () => ({ n: 4 }));
+    logger.error("e", undefined, () => ({ n: 5 }));
+    logger.fatal("f", failure, () => ({ n: 6 }));
+
+    expect(records.map(({ level, attributes }) => [level, attributes])).toEqual([
+      ["trace", { n: 1 }],
+      ["debug", { n: 2 }],
+      ["info", { n: 3 }],
+      ["warn", { n: 4 }],
+      ["error", { n: 5 }],
+      ["fatal", { n: 6 }],
+    ]);
+  });
+
+  test("a disabled level runs no thunk and reads no emit settings", () => {
+    const read = vi.fn(() => collecting().settings);
+    const thunk = vi.fn(() => ({ n: 1 }));
+    const logger = createLogger("app", () => entryFor("off"), read);
+
+    logger.trace("t", thunk);
+    logger.debug("d", thunk);
+    logger.info("i", thunk);
+    logger.warn("w", undefined, thunk);
+    logger.error("e", new Error("x"), thunk);
+    logger.fatal("f", undefined, thunk);
+
+    expect(thunk).not.toHaveBeenCalled();
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  test("a function passed as the error of warn, error or fatal is an error value, never run", () => {
+    const { records, settings } = collecting();
+    const logger = createLogger(
+      "app",
+      () => entryFor("warn"),
+      () => settings,
+    );
+    const failure = vi.fn(() => ({ n: 1 }));
+
+    logger.warn("w", failure);
+    logger.error("e", failure);
+    logger.fatal("f", failure, { n: 2 });
+
+    expect(failure).not.toHaveBeenCalled();
+    expect(records.map((record) => record.attributes)).toEqual([{}, {}, { n: 2 }]);
+    for (const record of records) {
+      expect(record.error).toMatchObject({ synthetic: true });
+    }
+  });
+});
+
+describe("Logger#with a thunk", () => {
+  test("runs nothing at with, at a disabled level or with no sink, and runs once at the first record written", () => {
+    const { records, settings } = collecting();
+    let threshold: Threshold = "off";
+    let current: EmitSettings = { ...settings, sinks: [] };
+    const thunk = vi.fn(() => ({ host: "h-1" }));
+    const logger = createLogger(
+      "app",
+      () => entryFor(threshold),
+      () => current,
+    ).with(thunk);
+
+    logger.info("disabled");
+    threshold = "info";
+    logger.info("no sink");
+    expect(thunk).not.toHaveBeenCalled();
+
+    current = settings;
+    logger.info("one", { n: 1 });
+    logger.warn("two");
+
+    expect(thunk).toHaveBeenCalledOnce();
+    expect(records.map((record) => record.attributes)).toEqual([{ host: "h-1", n: 1 }, { host: "h-1" }]);
+    expect(Object.isFrozen(records[0]?.attributes)).toBe(true);
+  });
+
+  test("a throw gives an empty binding for that record and is not kept, so the next record runs the thunk again", () => {
+    const { records, settings } = collecting();
+    let attempts = 0;
+    const logger = createLogger(
+      "app",
+      () => entryFor("info"),
+      () => settings,
+    ).with(() => {
+      attempts += 1;
+      if (attempts === 1) {
+        throw new Error("not ready");
+      }
+      return { attempt: attempts };
+    });
+
+    logger.info("first", { n: 1 });
+    logger.info("second");
+    logger.info("third");
+
+    expect(attempts).toBe(2);
+    expect(records.map((record) => record.attributes)).toEqual([{ n: 1 }, { attempt: 2 }, { attempt: 2 }]);
+  });
+
+  test("a result that is not a record binds an empty record, kept like any other result", () => {
+    const { records, settings } = collecting();
+    const thunk = vi.fn(() => ["not", "a", "record"] as never);
+    const logger = createLogger(
+      "app",
+      () => entryFor("info"),
+      () => settings,
+    ).with(thunk);
+
+    logger.info("one");
+    logger.info("two");
+
+    expect(thunk).toHaveBeenCalledOnce();
+    expect(records.map((record) => record.attributes)).toEqual([{}, {}]);
+  });
+
+  test("a child made before the parent's first record runs the thunk itself, so the two may disagree", () => {
+    const { records, settings } = collecting();
+    let calls = 0;
+    const parent = createLogger(
+      "app",
+      () => entryFor("info"),
+      () => settings,
+    ).with(() => {
+      calls += 1;
+      return { call: calls };
+    });
+
+    const child = parent.with({ step: "s" });
+    expect(calls).toBe(0);
+    child.info("child");
+    parent.info("parent");
+    child.info("child again");
+
+    expect(calls).toBe(2);
+    expect(records.map((record) => record.attributes)).toEqual([{ call: 1, step: "s" }, { call: 2 }, { call: 1, step: "s" }]);
+  });
+
+  test("a child made after the parent's first record carries the parent's value", () => {
+    const { records, settings } = collecting();
+    const thunk = vi.fn(() => ({ host: "h-1" }));
+    const parent = createLogger(
+      "app",
+      () => entryFor("info"),
+      () => settings,
+    ).with(thunk);
+
+    parent.info("parent");
+    parent.with({ step: "s" }).info("child");
+    parent.with(() => ({ more: true })).info("lazy child");
+
+    expect(thunk).toHaveBeenCalledOnce();
+    expect(records.map((record) => record.attributes)).toEqual([{ host: "h-1" }, { host: "h-1", step: "s" }, { host: "h-1", more: true }]);
+  });
+
+  test("a later with wins a shared key over an earlier one, lazy or not, and the call wins over both", () => {
+    const { records, settings } = collecting();
+    const logger = createLogger(
+      "app",
+      () => entryFor("info"),
+      () => settings,
+    );
+
+    logger
+      .with(() => ({ key: "lazy", lazy: 1 }))
+      .with({ key: "static" })
+      .info("static wins");
+    logger
+      .with({ key: "static", fixed: 1 })
+      .with(() => ({ key: "lazy" }))
+      .info("lazy wins");
+    logger.with(() => ({ key: "lazy" })).info("call wins", () => ({ key: "call" }));
+
+    expect(records.map((record) => record.attributes)).toEqual([{ key: "static", lazy: 1 }, { key: "lazy", fixed: 1 }, { key: "call" }]);
+  });
+
+  test("a thunk's secret key is redacted under the policy in force", () => {
+    const { records, settings } = collecting({ redaction: secretKeys });
+    createLogger(
+      "app",
+      () => entryFor("info"),
+      () => settings,
+    )
+      .with(() => ({ apiKey: "k", user: "ada" }))
+      .info("m");
+
+    expect(records[0]?.attributes).toEqual({ apiKey: "[REDACTED]", user: "ada" });
+  });
+
+  test("a thunk that logs through its own Logger sees an empty binding there, and its result is kept", () => {
+    const { records, settings } = collecting();
+    const base = createLogger(
+      "app",
+      () => entryFor("info"),
+      () => settings,
+    );
+    const thunk = vi.fn(() => {
+      logger.info("inside");
+      return { host: "h-1" };
+    });
+    const logger = base.with(thunk);
+
+    logger.info("outside");
+    logger.info("again");
+
+    expect(thunk).toHaveBeenCalledOnce();
+    expect(records.map((record) => [record.message, record.attributes])).toEqual([
+      ["inside", {}],
+      ["outside", { host: "h-1" }],
+      ["again", { host: "h-1" }],
+    ]);
+  });
+
+  test("with an empty record returns the Logger itself, while any thunk returns a new Logger", () => {
+    const logger = createLogger(
+      "app",
+      () => entryFor("info"),
+      () => collecting().settings,
+    );
+
+    expect(logger.with({})).toBe(logger);
+    expect(logger.with(() => ({}))).not.toBe(logger);
+    expect(Object.isFrozen(logger.with(() => ({})))).toBe(true);
+  });
+});
+
 describe("Logger through a provider", () => {
   afterEach(() => {
     setWarnTarget(undefined);

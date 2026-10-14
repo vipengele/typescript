@@ -10,8 +10,17 @@ import {
 import { type Resource, Scope, snapshot } from "@vipengele/ts-core-common/scope";
 import { mergeAttributes } from "../merge-attributes";
 import { redactAttributes, redactError } from "../redaction";
+import type { AttributesThunk } from "./logger";
 import { isNormalized, markNormalized } from "./normalized";
 import type { EmitSettings, LogProcessor, LogRecord, Sink } from "./record";
+
+/**
+ * One layer of a Logger's bindings, read once for each record the Logger builds. `read` returns
+ * attributes that are already normalized and deeply frozen, and never throws.
+ */
+export interface BindingLayer {
+  read(): Attributes;
+}
 
 /**
  * Freezes `value` and every object and array beneath it. A record and a Logger's bindings hold
@@ -42,11 +51,47 @@ function scopeAttributes(): Attributes {
   }
 }
 
+/** Whether an attributes thunk is running in this module copy, so a thunk that logs never runs a thunk. */
+let evaluating = false;
+
+/**
+ * What `thunk` returns, normalized, or `undefined` when it throws or is asked for while a thunk is
+ * already running. A thunk that logs from inside itself would otherwise run itself again for every
+ * nested record, until a `RangeError` caught at each frame wrote one record per frame. A result that
+ * is not a plain record — a string, an array, `null`, `undefined` — normalizes to `{}`.
+ */
+export function evaluateAttributes(thunk: AttributesThunk): Attributes | undefined {
+  if (evaluating) {
+    return undefined;
+  }
+  evaluating = true;
+  try {
+    const value: unknown = thunk();
+    return typeof value === "object" && value !== null && !Array.isArray(value) ? normalizeAttributes(value as AttributesInput) : {};
+  } catch {
+    return undefined;
+  } finally {
+    evaluating = false;
+  }
+}
+
+/**
+ * A call's own attributes, normalized. A thunk runs here, once per record however many sinks
+ * receive it; one that throws, or runs while a thunk is already running, yields an empty record, so
+ * the record still goes out with the Scope's attributes and the bindings.
+ */
+function callAttributes(attributes: AttributesInput | AttributesThunk | undefined): Attributes {
+  if (typeof attributes === "function") {
+    return evaluateAttributes(attributes) ?? {};
+  }
+  return normalizeAttributes(attributes ?? {});
+}
+
 /**
  * The deeply frozen, marked record for one call. Its attributes merge from least to most specific — the
- * current Scope's, then the Logger's already normalized `bindings`, then the call's — each layer
- * normalized on its own, so the call wins a shared key over the bindings and the bindings over the
- * Scope. They are redacted as one record, so a secret key is masked whichever layer it came from. Freezing the record, its attributes and every link of its
+ * current Scope's, then each of the Logger's `bindings` layers in order, then the call's — each layer
+ * normalized on its own, so the call wins a shared key over the bindings, a later binding layer over
+ * an earlier one and the bindings over the Scope. They are redacted as one record, so a secret key is masked whichever layer it came from. Freezing the record, its attributes and every link of its
  * error lets every sink receive the same object without one sink's writes, at any depth, changing
  * what the next one sees.
  */
@@ -55,12 +100,12 @@ function createRecord(
   level: Level,
   category: string,
   message: string,
-  attributes: AttributesInput | undefined,
+  attributes: AttributesInput | AttributesThunk | undefined,
   error: unknown,
-  bindings: Attributes,
+  bindings: readonly BindingLayer[],
 ): LogRecord {
   const time = settings.clock();
-  const normalized = mergeAttributes([scopeAttributes(), bindings, normalizeAttributes(attributes ?? {})]);
+  const normalized = mergeAttributes([scopeAttributes(), ...bindings.map((layer) => layer.read()), callAttributes(attributes)]);
   const serialized = error === undefined ? undefined : serializeError(error);
   const policy = settings.redaction;
   const record: { -readonly [K in keyof LogRecord]: LogRecord[K] } = {
@@ -284,13 +329,19 @@ function runProcessors(settings: EmitSettings, processors: readonly LogProcessor
  * calling it, and a provider calls it directly for a console handle's confirmation, which no
  * category's level may suppress.
  *
- * `bindings` are the attributes the Logger carries from `with`, already normalized and frozen.
- * They lie over the current Scope's attributes, and the call's `attributes` win over both key by
- * key. A throw while reading the Scope leaves its attributes out rather than dropping the record.
+ * `bindings` are the layers the Logger carries from `with`, each read once per record. They lie
+ * over the current Scope's attributes, a later layer winning over an earlier one, and the call's
+ * `attributes` win over all of them key by key. A throw while reading the Scope leaves its
+ * attributes out rather than dropping the record.
+ *
+ * `attributes` given as a function runs only here, after the sink check and once per record. A
+ * throw from it, a result that is not a record, or a run while another attributes thunk is running
+ * yields an empty call layer: the record is still written, and nothing is reported.
  *
  * `error` is `undefined` when the call passed none; any other value, `null` included, is a thrown
- * value and is serialized into the record's `error`. With no sink configured nothing else is read:
- * neither the clock, nor the Scope, nor the attributes, nor the error.
+ * value and is serialized into the record's `error`. With no sink configured nothing else is read
+ * or run: neither the clock, nor the Scope, nor the bindings, nor the attributes or their thunk, nor
+ * the error.
  *
  * Building the record — the clock, normalizing the attributes, serializing the error, redacting
  * them and asking for the Resource — runs inside one guard. A throw there drops the record: no
@@ -323,9 +374,9 @@ export function emitRecord(
   level: Level,
   category: string,
   message: string,
-  attributes: AttributesInput | undefined,
+  attributes: AttributesInput | AttributesThunk | undefined,
   error: unknown,
-  bindings: Attributes = {},
+  bindings: readonly BindingLayer[] = [],
 ): void {
   const { sinks } = settings;
   if (sinks.length === 0) {
