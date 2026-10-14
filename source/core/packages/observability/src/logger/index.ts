@@ -1,5 +1,6 @@
 export type { BrowserSourcesOptions } from "./browser-sources";
 export type { LoggingBuild, LoggingBuilder, SinkOptions } from "./builder";
+export type { ConsoleHandle, ConsoleHandleInput } from "./console-handle";
 export { type ConsoleSinkOptions, createConsoleSink } from "./console-sink";
 export { isLoggingConfigError, LOGGING_CONFIG_ERROR_CODE, LoggingConfigError } from "./config-error";
 export type { ConsoleLike, Formatter } from "./formatter";

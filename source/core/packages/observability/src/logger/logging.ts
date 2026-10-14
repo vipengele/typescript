@@ -1,5 +1,6 @@
 import type { Threshold } from "@vipengele/ts-core-common";
 import { Scope } from "@vipengele/ts-core-common/scope";
+import { LoggingConfigError } from "./config-error";
 import { readEnvironmentSpec } from "./environment-source";
 import type { Logger } from "./logger";
 import { type ConfigureCallback, createLoggerProvider, type LoggerProvider } from "./provider";
@@ -30,7 +31,8 @@ let warnTarget: WarnTarget | undefined;
 
 /**
  * Redirects where `Logging.configure` reports spec issues, where a bad entry in `VPG_LOG` is
- * reported, and where a failed sink write or log processor is reported, or restores `console.warn` when given `undefined`. The target is read when something
+ * reported, where a failed sink write or log processor is reported, and where a console handle's
+ * confirmation goes when no sink is configured, or restores `console.warn` when given `undefined`. The target is read when something
  * is reported, never captured, so it governs the default provider whenever that provider was
  * created.
  */
@@ -130,6 +132,7 @@ function defaultProvider(): LoggerProvider {
       onSinkError: reportSinkError,
       sinkErrorsOncePerSource: true,
       environment: readEnvironmentSpec,
+      warn,
     }),
   );
 }
@@ -163,13 +166,30 @@ export const Logging = Object.freeze({
   },
 
   /**
+   * Installs a console handle on the default provider at `globalThis[name]` (see
+   * `LoggerProvider.installConsole`) and returns the function that removes it. With no sink
+   * configured, each confirmation goes to the warn target. Throws a `LoggingConfigError` when the
+   * default provider was created by a copy of the package that has no console handle.
+   */
+  installConsole(name: string): () => void {
+    const provider: Partial<LoggerProvider> = defaultProvider();
+    if (typeof provider.installConsole !== "function") {
+      throw new LoggingConfigError(
+        "The default logger provider in this realm was created by a copy of the logger without installConsole; install the handle from that copy.",
+      );
+    }
+    return provider.installConsole(name);
+  },
+
+  /**
    * A provider of its own, started from the defaults and then `configure`. It reads and writes
    * neither shared slot, and its sinks are its own, shared with neither the default provider nor
    * any other. Its spec issues, from `configure` and from every later `configure` call, are
    * reported once each per call through the warn target, as is the first failure of each of its
    * sinks and processors per configuration; its records carry `Scope.resource()`, as the default
    * provider's do. It reads `VPG_LOG` once, on its own first operation or level check, and applies
-   * it above every other layer unless its build calls `ignoreEnvironment()`.
+   * it above every other layer unless its build calls `ignoreEnvironment()`. A console handle it
+   * installs confirms through the warn target when it has no sink.
    */
   createProvider(configure?: ConfigureCallback): LoggerProvider {
     return createLoggerProvider(configure, {
@@ -178,6 +198,7 @@ export const Logging = Object.freeze({
       onSinkError: reportSinkError,
       sinkErrorsOncePerSource: true,
       environment: readEnvironmentSpec,
+      warn,
     });
   },
 });

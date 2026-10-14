@@ -2,6 +2,8 @@ import type { Threshold } from "@vipengele/ts-core-common";
 import type { Resource } from "@vipengele/ts-core-common/scope";
 import { clearUnreadableStoredSpecs, createLoggingBuilder, type LoggingBuild, type LoggingBuilder } from "./builder";
 import { validateCategoryKey } from "./categories";
+import { CONSOLE_HANDLE_CATEGORY, installConsoleHandle } from "./console-handle";
+import { emitRecord } from "./emit";
 import { parseEnvironmentSpec } from "./environment-source";
 import { entryFor, type LevelEntry, resolveEntry, validateThreshold } from "./levels";
 import { createLogger, type Logger } from "./logger";
@@ -16,7 +18,8 @@ export type ConfigureCallback = (builder: LoggingBuilder) => void;
 
 /**
  * Hooks a host wires into a {@link LoggerProvider}. A provider built without any reads and writes
- * only its own state and never touches `globalThis`.
+ * only its own state and never touches `globalThis`, except through a console handle it is asked
+ * to install.
  */
 export interface LoggerProviderOptions {
   /**
@@ -78,6 +81,12 @@ export interface LoggerProviderOptions {
    * it changes levels and leaves every sink and processor in place. Defaults to `false`.
    */
   sinkErrorsOncePerSource?: boolean;
+
+  /**
+   * Receives a console handle's confirmation as one line when the configuration in force has no
+   * sink to write it to. When omitted, the line goes to `console.warn`.
+   */
+  warn?(message: string): void;
 }
 
 /**
@@ -121,6 +130,30 @@ export interface LoggerProvider {
 
   /** A Logger for `category`; throws a `LoggingConfigError` when it is not a Category. */
   logger(category: string): Logger;
+
+  /**
+   * Installs a console handle on this provider at `globalThis[name]` and returns the function that
+   * removes it. The handle takes a level spec string, a `{ levels }` object, `null` or nothing. A
+   * spec or `{ levels }` is validated whole — a skipped or repeated entry, or no level at all,
+   * throws a `LoggingConfigError` and changes nothing — then merged into the overrides, as
+   * `override` sets them; `null` removes every override; nothing reports the levels in force.
+   *
+   * While the build in force has browser sources, a change is also merged into the spec stored
+   * under their storage key, and `null` removes that spec; the URL is never written. Blocked
+   * storage leaves the change in force for the page alone. A stored spec comes back on the next
+   * load as a builder source, below the overrides and below any source added after
+   * `addBrowserSources`, and `reset` leaves it in storage.
+   *
+   * Every call confirms itself with one `info` record under `vipengele.logger.console`, written
+   * whatever level governs that category, through the processors and sinks in force: it lists the
+   * effective levels, names every override `VPG_LOG` takes precedence over and says whether the
+   * change was stored. With no sink in force, the same line goes to the `warn` option instead.
+   *
+   * Throws a `LoggingConfigError` when `name` is not a non-empty string, or `globalThis[name]`
+   * holds anything but `undefined` or a console handle, which is replaced. The returned function
+   * removes the handle only while `globalThis[name]` is still this one.
+   */
+  installConsole(name: string): () => void;
 }
 
 const FALLBACK_LEVEL = "warn";
@@ -267,6 +300,36 @@ export function createLoggerProvider(configure?: ConfigureCallback, options: Log
     }
   }
 
+  /** The configuration in force, with the environment layer brought in. */
+  function current(): LoggingSettings {
+    if (!settled) {
+      settle();
+    }
+    return settings;
+  }
+
+  /** Commits `overrides` as the overrides layer over the rest of the configuration in force. */
+  function setOverrides(overrides: Readonly<Record<string, Threshold>>): LoggingSettings {
+    const next = commit(createSettings({ ...settings.layers, overrides, environment: environmentFor(ignoring) }, settings));
+    reportEnvironmentIssues();
+    return next;
+  }
+
+  const warnLine = options.warn === undefined ? (message: string) => console.warn(message) : options.warn.bind(options);
+
+  /**
+   * The console handle's write path: one `info` record under {@link CONSOLE_HANDLE_CATEGORY} through
+   * the sinks in force, with no level check, so the category's own level never suppresses it; with
+   * no sink, one line to the warn hook.
+   */
+  function confirm(message: string): void {
+    if (emitSettings.sinks.length === 0) {
+      warnLine(message);
+    } else {
+      emitRecord(emitSettings, "info", CONSOLE_HANDLE_CATEGORY, message, undefined, undefined);
+    }
+  }
+
   function apply(next: LoggingSettings): void {
     settings = next;
     emitSettings = emitSettingsOf(next);
@@ -352,9 +415,7 @@ export function createLoggerProvider(configure?: ConfigureCallback, options: Log
       } else {
         overrides[key] = validateThreshold(level);
       }
-      const next = commit(createSettings({ ...settings.layers, overrides, environment: environmentFor(ignoring) }, settings));
-      reportEnvironmentIssues();
-      return next;
+      return setOverrides(overrides);
     },
     reset(): LoggingSettings {
       reported = new WeakSet();
@@ -367,6 +428,9 @@ export function createLoggerProvider(configure?: ConfigureCallback, options: Log
     },
     logger(category: string): Logger {
       return createLogger(category, resolve, emit);
+    },
+    installConsole(name: string): () => void {
+      return installConsoleHandle(name, { settings: current, setOverrides, confirm });
     },
   });
 }

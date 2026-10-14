@@ -280,7 +280,9 @@ function runProcessors(settings: EmitSettings, processors: readonly LogProcessor
 
 /**
  * Turns one enabled Logger call into a {@link LogRecord} and writes it, with the Resource in
- * force, to every sink of `settings`. Never throws.
+ * force, to every sink of `settings`. Never throws. It checks no level: a Logger checks before
+ * calling it, and a provider calls it directly for a console handle's confirmation, which no
+ * category's level may suppress.
  *
  * `bindings` are the attributes the Logger carries from `with`, already normalized and frozen.
  * They lie over the current Scope's attributes, and the call's `attributes` win over both key by
