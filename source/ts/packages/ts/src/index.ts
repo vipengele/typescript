@@ -20,6 +20,8 @@ export {
 export type {
   DateSegment,
   DateSegmentType,
+  DateTimeSegment,
+  DateTimeSegmentType,
   DateTimeTryParseResult,
   Disambiguation,
   IsoDayOfWeek,

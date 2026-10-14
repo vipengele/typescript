@@ -15,6 +15,7 @@ export type { DateSegment, DateSegmentType } from "./local-date";
 export { LocalDate } from "./local-date";
 export type { TimeSegment, TimeSegmentType } from "./local-time";
 export { LocalTime } from "./local-time";
+export type { DateTimeSegment, DateTimeSegmentType } from "./local-date-time";
 export { LocalDateTime } from "./local-date-time";
 export { ZonedDateTime, type ZonedDateTimeOptions } from "./zoned-date-time";
 export { ZoneId } from "./zone-id";

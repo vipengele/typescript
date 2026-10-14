@@ -8,8 +8,8 @@ depends on a single package. It re-exports:
   `LocalDate`, `LocalTime`, `LocalDateTime`, `Instant`, `ZoneId` and `ZonedDateTime` (with
   `DateTimeParseError`, `InvalidDateTimeError`, `UnknownZoneError`, `ZoneResolutionError`,
   `isDateTimeParseError`, `isInvalidDateTimeError`, `isUnknownZoneError`, `isZoneResolutionError` and
-  the `DateSegment`, `DateSegmentType`, `TimeSegment`, `TimeSegmentType`, `DateTimeTryParseResult`,
-  `Disambiguation`, `IsoDayOfWeek` and `ZonedDateTimeOptions` types);
+  the `DateSegment`, `DateSegmentType`, `DateTimeSegment`, `DateTimeSegmentType`, `TimeSegment`,
+  `TimeSegmentType`, `DateTimeTryParseResult`, `Disambiguation`, `IsoDayOfWeek` and `ZonedDateTimeOptions` types);
 - `Scope`, `normalizeAttributes` (with its types) and `VipengeleError`;
 - from redaction, `redact`, `secretKeys`, `composePolicies`, `redactUrl`, `redactQueryString` and
   `redactHeaders` (with `RedactionPolicy`, `KeyMatcher`, `RedactOptions`, `RedactStringOptions`,
@@ -67,9 +67,10 @@ ISO 8601 `parse`, `tryParse` and `toString`, `LocalDate` and `LocalDateTime` ari
 `now()`. `format`, `parseLocalized` and `tryParseLocalized` take a `Locale` and fall back to
 `Locale.default()`; `LocalDate#segments` returns the locale's date pattern as `year`, `month`, `day`
 and `literal` segments, and `LocalTime#segments` its time pattern as `hour`, `minute`, `second`,
-`dayPeriod` and `literal` segments. A time is hour and minute unless `{ seconds: true }` is passed
-to `format`, `parseLocalized`, `tryParseLocalized` or `segments`; `LocalTime.dayPeriods` returns the
-locale's AM and PM labels.
+`dayPeriod` and `literal` segments; `LocalDateTime#segments` joins the two patterns. A time is hour
+and minute unless `{ seconds: true }` is passed to `format`, `parseLocalized`, `tryParseLocalized`
+or `segments` on a `LocalTime` or a `LocalDateTime`; `LocalTime.dayPeriods` returns the locale's AM
+and PM labels.
 
 ```ts
 import { LocalDate, LocalTime, Locale } from "@vipengele/ts";

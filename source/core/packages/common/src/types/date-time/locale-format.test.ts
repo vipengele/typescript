@@ -815,6 +815,30 @@ describe("resolveDateTimeLayout", () => {
   test("two Locale instances for the same canonical tag share one cached layout", () => {
     expect(resolveDateTimeLayout(new Locale("en-us"))).toBe(resolveDateTimeLayout(enUS));
   });
+
+  test("a layout with seconds is cached apart from the one without", () => {
+    expect(resolveDateTimeLayout(enUS, { seconds: true })).not.toBe(resolveDateTimeLayout(enUS));
+    expect(resolveDateTimeLayout(new Locale("en-us"), { seconds: true })).toBe(resolveDateTimeLayout(enUS, { seconds: true }));
+    expect(resolveDateTimeLayout(enUS, { seconds: false })).toBe(resolveDateTimeLayout(enUS));
+  });
+
+  test("en-US and de-DE keep their comma between with seconds", () => {
+    expect(resolveDateTimeLayout(enUS, { seconds: true })).toEqual({ timeFirst: false, literals: ["", ", ", ""] });
+    expect(resolveDateTimeLayout(deDE, { seconds: true })).toEqual({ timeFirst: false, literals: ["", ", ", ""] });
+  });
+
+  test("vi keeps the time first with seconds", () => {
+    expect(resolveDateTimeLayout(vi, { seconds: true }).timeFirst).toBe(true);
+  });
+
+  test.for(["en-US", "de-DE", "vi", "eu", "ar-EG", "fa-IR", "ko-KR", "ja-JP"])(
+    "%s places the halves and the text around them the same with and without seconds",
+    (tag) => {
+      const locale = new Locale(tag);
+
+      expect(resolveDateTimeLayout(locale, { seconds: true })).toEqual(resolveDateTimeLayout(locale));
+    },
+  );
 });
 
 describe("formatDateTime", () => {
@@ -849,6 +873,35 @@ describe("formatDateTime", () => {
       );
 
       expect(formatDateTime(date, { hour: 9, minute: 5 }, locale)).toBe(intl);
+    },
+  );
+
+  test("writes the second only when asked for it", () => {
+    expect(spaced(formatDateTime(date, { hour: 13, minute: 5, second: 9 }, enUS, { seconds: true }))).toBe("02/03/2026, 01:05:09 PM");
+    expect(formatDateTime(date, { hour: 13, minute: 5 }, deDE, { seconds: true })).toBe("03.02.2026, 13:05:00");
+    expect(formatDateTime(date, { hour: 13, minute: 5, second: 9 }, deDE)).toBe("03.02.2026, 13:05");
+    expect(formatDateTime(date, { hour: 13, minute: 5, second: 9 }, deDE, { seconds: false })).toBe("03.02.2026, 13:05");
+  });
+
+  test.for(["en-US", "en-GB", "de-DE", "ja-JP", "ar-EG", "fa-IR", "he-IL", "ko-KR", "vi", "eu", "en-GB-u-hc-h12", "en-US-u-hc-h23"])(
+    "matches Intl's own spelling with seconds in %s",
+    (tag) => {
+      const locale = new Locale(tag);
+      const intl = intlParts(
+        tag,
+        {
+          year: "numeric",
+          month: "2-digit",
+          day: "2-digit",
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+          hourCycle: locale.uses24Hour ? "h23" : "h12",
+        },
+        Date.UTC(2026, 1, 3, 9, 5, 7),
+      );
+
+      expect(formatDateTime(date, { hour: 9, minute: 5, second: 7 }, locale, { seconds: true })).toBe(intl);
     },
   );
 });
@@ -903,5 +956,42 @@ describe("parseDateTime", () => {
 
   test("reads the locale's own 24-hour layout", () => {
     expect(parseDateTime("03/02/2026, 00:00", enGB)).toEqual({ date: "03/02/2026", time: "00:00" });
+  });
+
+  test("splits a date-time with seconds into the date and the time", () => {
+    const seconds = { seconds: true };
+
+    expect(parseDateTime("02/03/2026, 01:05:09 PM", enUS, seconds)).toEqual({ date: "02/03/2026", time: "01:05:09 PM" });
+    expect(parseDateTime("03.02.2026, 13:05:09", deDE, seconds)).toEqual({ date: "03.02.2026", time: "13:05:09" });
+    expect(parseDateTime("13:05:09 03/02/2026", vi, seconds)).toEqual({ date: "03/02/2026", time: "13:05:09" });
+  });
+
+  test("reads a non-Latin-digit locale's layout with seconds, bidi marks removed", () => {
+    const seconds = { seconds: true };
+    const [, between] = resolveDateTimeLayout(arEG, seconds).literals;
+
+    expect(parseDateTime(` 03‏/02‏/2026${between}01:05:09 م `, arEG, seconds)).toEqual({
+      date: "03/02/2026",
+      time: "01:05:09 م",
+    });
+  });
+
+  test("reads what formatDateTime writes with seconds", () => {
+    const date = { year: 2026, month: 2, day: 3 };
+    const time = { hour: 21, minute: 4, second: 58 };
+    const seconds = { seconds: true };
+
+    for (const locale of [enUS, deDE, vi, arEG, koKR, jaJP]) {
+      const halves = parseDateTime(formatDateTime(date, time, locale, seconds), locale, seconds);
+
+      expect(parseDate(halves?.date ?? "", locale)).toEqual(date);
+      expect(parseTime(halves?.time ?? "", locale, seconds)).toEqual(time);
+    }
+  });
+
+  test("requires the second with seconds and rejects it without", () => {
+    expect(parseDateTime("02/03/2026, 01:05 PM", enUS, { seconds: true })).toBeUndefined();
+    expect(parseDateTime("02/03/2026, 01:05:09 PM", enUS)).toBeUndefined();
+    expect(parseDateTime("02/03/2026, 01:05:09 PM", enUS, { seconds: false })).toBeUndefined();
   });
 });

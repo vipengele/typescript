@@ -22,6 +22,8 @@ import type {
   AttributeValue,
   DateSegment,
   DateSegmentType,
+  DateTimeSegment,
+  DateTimeSegmentType,
   DateTimeTryParseResult,
   Detector,
   Disambiguation,
@@ -147,6 +149,17 @@ test("LocalTime segments a time and names the day periods in a locale", () => {
   expect(types).toContain("hour");
   expect(LocalTime.dayPeriods(locale)).toEqual(CoreLocalTime.dayPeriods(locale));
   expect(LocalTime.dayPeriods(locale)).toEqual({ am: "AM", pm: "PM" });
+});
+
+test("LocalDateTime segments a date and time in a locale and takes the seconds option", () => {
+  const locale = new Locale("en-US");
+  const dateTime = LocalDateTime.of(LocalDate.of(2026, 2, 3), LocalTime.of(14, 5, 9));
+  const segments: DateTimeSegment[] = dateTime.segments(locale, { seconds: true });
+  const types: DateTimeSegmentType[] = segments.map((segment) => segment.type);
+
+  expect(segments.map((segment) => segment.value).join("")).toBe(dateTime.format(locale, { seconds: true }));
+  expect(types).toContain("second");
+  expect(dateTime.segments(locale).map((segment) => segment.type)).not.toContain("second");
 });
 
 test("the date-time errors are raised and recognised through the umbrella guards", () => {
