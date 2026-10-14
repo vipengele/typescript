@@ -59,7 +59,9 @@ Error Event, Scope, Breadcrumb, Transport) before naming things.
     error reporter (`./errors`), two entry points of one package. `./logger`'s `Logging` facade
     configures the default `LoggerProvider` through a layered builder or a spec string
     (`parseSpec`; a bad entry in a spec string is skipped with a warning, a bad level given in code
-    throws `LoggingConfigError`); the level table and the default provider live in two
+    throws `LoggingConfigError`); a `VPG_LOG` spec read from `process.env` sits above overrides,
+    `addBrowserSources` reads a URL parameter and `localStorage`, and `installConsole` puts a
+    handle on `globalThis` for changing levels live (all opt-in); the level table and the default provider live in two
     `globalThis` slots (`vipengele.logger.levels`, `vipengele.logger.provider.v1`) so every
     resolved copy of the package agrees (ADR-0005), and a category with nothing configured
     resolves to `warn`. A `Logger`'s `trace`..`fatal` calls that pass the level check build a

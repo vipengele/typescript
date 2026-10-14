@@ -528,3 +528,75 @@ describe("sink errors", () => {
     expect(warn).toHaveBeenCalledWith("A log sink threw while writing a record: Error: down");
   });
 });
+
+describe("installConsole", () => {
+  const NAME = "__vpgLoggingConsoleHandle";
+
+  afterEach(() => {
+    Reflect.deleteProperty(globalThis, NAME);
+  });
+
+  function handle(spec?: string | null): void {
+    (registry as unknown as Record<string, (spec?: string | null) => void>)[NAME]?.(spec);
+  }
+
+  test("installs a handle on the default provider that changes the shared levels", () => {
+    const target = vi.fn();
+    setWarnTarget(target);
+    const logger = Logging.logger("app");
+    const uninstall = Logging.installConsole(NAME);
+
+    handle("app:debug");
+
+    expect(logger.enabled("debug")).toBe(true);
+    expect(resolveSharedEntry("app").level).toBe("debug");
+    uninstall();
+    expect(Object.hasOwn(globalThis, NAME)).toBe(false);
+  });
+
+  test("with no sink, the default provider's confirmation goes to the warn target", () => {
+    const target = vi.fn();
+    setWarnTarget(target);
+    Logging.installConsole(NAME);
+
+    handle();
+
+    expect(target).toHaveBeenCalledOnce();
+    expect(target.mock.lastCall?.[0]).toMatch(/^Logger levels: \*:warn\. /);
+  });
+
+  test("with a sink, the confirmation is a record, not a warning", () => {
+    const target = vi.fn();
+    setWarnTarget(target);
+    const write = vi.fn();
+    Logging.configure((b) => b.addLevels({ "*": "off" }).addSink({ write }));
+    Logging.installConsole(NAME);
+
+    handle(null);
+
+    expect(target).not.toHaveBeenCalled();
+    expect(write).toHaveBeenCalledOnce();
+    expect(write.mock.lastCall?.[0]).toMatchObject({
+      category: "vipengele.logger.console",
+      message: "Logger overrides removed. Levels: *:off.",
+    });
+  });
+
+  test("a created provider's confirmation goes to the warn target when it has no sink", () => {
+    const target = vi.fn();
+    setWarnTarget(target);
+    Logging.createProvider().installConsole(NAME);
+
+    handle("a:info");
+
+    expect(target).toHaveBeenCalledWith(expect.stringMatching(/^Logger levels changed: \*:warn, a:info\. /));
+  });
+
+  test("throws when the default provider comes from a copy without a console handle", () => {
+    registry[PROVIDER_SLOT] = { logger: () => undefined };
+
+    expect(() => Logging.installConsole(NAME)).toThrow(expect.toSatisfy(isLoggingConfigError));
+    expect(() => Logging.installConsole(NAME)).toThrow("created by a copy of the logger without installConsole");
+    expect(Object.hasOwn(globalThis, NAME)).toBe(false);
+  });
+});

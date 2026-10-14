@@ -1,20 +1,33 @@
 import { type Clock, systemClock, type Threshold } from "@vipengele/ts-core-common";
+import { type BrowserSourcesOptions, clearStoredSpec, readBrowserSources } from "./browser-sources";
 import { validateCategoryKey } from "./categories";
 import { LoggingConfigError } from "./config-error";
 import { validateThreshold } from "./levels";
 import type { LogProcessor, RedactionSetting, Sink, SinkRegistration } from "./record";
-import { DEFAULT_LEVELS, defaultRedaction, EMPTY_LAYER, freezeLayer, freezeRegistration, type LevelLayer } from "./settings";
-import { parseSpec } from "./spec";
+import {
+  type BrowserSourcesSetting,
+  DEFAULT_LEVELS,
+  defaultRedaction,
+  EMPTY_LAYER,
+  freezeLayer,
+  freezeRegistration,
+  type LevelLayer,
+} from "./settings";
+import { type ParsedSpec, parseSpec } from "./spec";
 
 /**
  * What {@link LoggingBuilder.build} produces: the `defaults` and `builder` layers of a
- * `LoggingSettings`; `sinks`, `processors`, `clock` and `redaction`, what its Loggers emit through; and
- * `issues`, one human-readable string per spec entry an `addSpec` call skipped or overrode, in the
- * order the specs were added. Issues never fail a build; reporting them is the caller's job.
+ * `LoggingSettings`; `ignoreEnvironment`, whether the environment layer is left out; `sinks`,
+ * `processors`, `clock` and `redaction`, what its Loggers emit through; `browserSources`, where
+ * `addBrowserSources` read; and `issues`, one human-readable string per spec entry an `addSpec` or
+ * `addBrowserSources` call skipped or overrode, in the order the specs were added. Issues never
+ * fail a build; reporting them is the caller's job.
  */
 export interface LoggingBuild {
   readonly defaults: LevelLayer;
   readonly builder: LevelLayer;
+  /** `true` once `ignoreEnvironment` was called: the configuration built leaves `VPG_LOG` out. */
+  readonly ignoreEnvironment: boolean;
   /**
    * The sinks passed to `addSink`, in the order they were added, each with the processors passed
    * alongside it; the list, each registration and each processor list are frozen.
@@ -24,6 +37,11 @@ export interface LoggingBuild {
   readonly processors: readonly LogProcessor[];
   readonly clock: Clock;
   readonly redaction: RedactionSetting;
+  /**
+   * The storage key of the last `addBrowserSources` call that ran in a browser, frozen; `null` when
+   * there was none.
+   */
+  readonly browserSources: BrowserSourcesSetting | null;
   readonly issues: readonly string[];
 }
 
@@ -49,6 +67,13 @@ export interface LoggingBuilder {
   clearDefaults(): LoggingBuilder;
 
   /**
+   * Leaves the environment layer (`VPG_LOG`) out of the configuration built, for as long as it is
+   * in force. It is the only way to remove that layer: `clearDefaults` keeps it, and the next
+   * `configure` whose builder does not call this, or a `reset`, brings it back.
+   */
+  ignoreEnvironment(): LoggingBuilder;
+
+  /**
    * Adds `levels`, category key (a Category or the root `*`) to `Threshold`, as a source. Its own
    * enumerable entries are copied when this is called, so a later change to `levels` has no
    * effect; they are validated by `build`, which throws a `LoggingConfigError` on an invalid key
@@ -61,6 +86,19 @@ export interface LoggingBuilder {
    * skipped, never thrown: it is carried to `build`'s `issues`.
    */
   addSpec(spec: string): LoggingBuilder;
+
+  /**
+   * Adds the browser's level specs as sources: the one stored in `localStorage` under
+   * `options.storageKey` (`vipengele.log`), then the one in the URL parameter `options.urlParameter`
+   * (`log`), so the URL's entry for a category beats the stored one. Both are read when this is
+   * called; outside a browser it adds nothing. Every read is guarded: a throw, a missing `location`
+   * or blocked storage means no source, and an empty stored string counts as absent. A bad entry is
+   * skipped and carried to `build`'s `issues`, naming the URL parameter or the storage key it came
+   * from. A non-empty stored spec that holds no level is removed from storage once a provider's
+   * configuration built from this builder is in force, never by `build` itself and never because
+   * of the URL. Malformed `options` make `build` throw a `LoggingConfigError`.
+   */
+  addBrowserSources(options?: BrowserSourcesOptions): LoggingBuilder;
 
   /**
    * Appends `sink` to the sinks every record is written to, in the order they were added, with
@@ -95,18 +133,43 @@ export interface LoggingBuilder {
   /**
    * Validates every source and sink and returns the resulting build. Throws a `LoggingConfigError`
    * on the first invalid category key or threshold passed to `addLevels`, even one a later source
-   * replaces, or on an `addLevels` argument that is not an object; once every source is valid, on
-   * the first invalid `addSink` sink, options or per-sink processor, in the order the sinks were
-   * added; and once every sink is valid, on the first `addProcessor` argument that is not a
-   * function. Reads the builder without changing it: calling it again gives an equal result.
+   * replaces, on an `addLevels` argument that is not an object, or on malformed `addBrowserSources`
+   * options, in the order the sources were added; once every source is valid, on the first
+   * invalid `addSink` sink, options or per-sink processor, in the order the sinks were added; and
+   * once every sink is valid, on the first `addProcessor` argument that is not a function. Reads the builder without changing it, and touches no storage: calling it again
+   * gives an equal result.
    */
   build(): LoggingBuild;
 }
 
-/** A source as recorded when it is added; validated only by `build`. */
+/** A source as recorded when it is added; validated only by `build`, which throws an `invalid` one's `message`. */
 type Source =
   | { readonly kind: "levels"; readonly entries: readonly (readonly [string, unknown])[] }
-  | { readonly kind: "invalid"; readonly value: unknown };
+  | { readonly kind: "invalid"; readonly message: string };
+
+/** A stored spec to remove once a configuration built from it is in force. */
+interface StoredSpecClear {
+  readonly storageKey: string;
+  readonly value: string;
+}
+
+/**
+ * The stored specs each build found unreadable, keyed by the build. A build carries them here
+ * rather than as a field, so `LoggingBuild` stays a plain value and only the provider that commits
+ * it acts on them.
+ */
+const unreadableStoredSpecs = new WeakMap<LoggingBuild, readonly StoredSpecClear[]>();
+
+/**
+ * Removes from storage each stored spec `build`'s `addBrowserSources` calls found unreadable, when
+ * it is still the value read. The provider calls this once `build`'s configuration is in force;
+ * a build no provider commits removes nothing. Never throws.
+ */
+export function clearUnreadableStoredSpecs(build: LoggingBuild): void {
+  for (const clear of unreadableStoredSpecs.get(build) ?? []) {
+    clearStoredSpec(clear.storageKey, clear.value);
+  }
+}
 
 /** A sink as recorded when it is added; validated only by `build`. */
 interface RecordedSink {
@@ -164,30 +227,55 @@ function validateSink(recorded: RecordedSink): SinkRegistration {
 /** A new {@link LoggingBuilder} holding the defaults, no sources and no sinks. */
 export function createLoggingBuilder(): LoggingBuilder {
   let defaults = DEFAULT_LEVELS;
+  let ignoreEnvironment = false;
   const sources: Source[] = [];
   const sinks: RecordedSink[] = [];
   const processors: unknown[] = [];
   let clock: Clock = systemClock;
   let redaction: RedactionSetting | undefined;
   const issues: string[] = [];
+  let browserSources: BrowserSourcesSetting | null = null;
+  const clears: StoredSpecClear[] = [];
+
+  function addParsed(parsed: ParsedSpec): void {
+    sources.push({ kind: "levels", entries: Object.keys(parsed.levels).map((key) => [key, parsed.levels[key]] as const) });
+    issues.push(...parsed.issues);
+  }
 
   const builder: LoggingBuilder = {
     clearDefaults() {
       defaults = EMPTY_LAYER;
       return builder;
     },
+    ignoreEnvironment() {
+      ignoreEnvironment = true;
+      return builder;
+    },
     addLevels(levels) {
       if (typeof levels !== "object" || levels === null) {
-        sources.push({ kind: "invalid", value: levels });
+        sources.push({ kind: "invalid", message: `Invalid logger levels of type ${typeName(levels)}: expected an object.` });
       } else {
         sources.push({ kind: "levels", entries: Object.keys(levels).map((key) => [key, levels[key]] as const) });
       }
       return builder;
     },
     addSpec(spec) {
-      const parsed = parseSpec(spec);
-      sources.push({ kind: "levels", entries: Object.keys(parsed.levels).map((key) => [key, parsed.levels[key]] as const) });
-      issues.push(...parsed.issues);
+      addParsed(parseSpec(spec));
+      return builder;
+    },
+    addBrowserSources(options) {
+      const reading = readBrowserSources(options);
+      if (reading.kind === "invalid") {
+        sources.push({ kind: "invalid", message: reading.message });
+      } else if (reading.kind === "read") {
+        for (const parsed of reading.specs) {
+          addParsed(parsed);
+        }
+        browserSources = Object.freeze({ storageKey: reading.storageKey });
+        if (reading.unreadableStored !== undefined) {
+          clears.push({ storageKey: reading.storageKey, value: reading.unreadableStored });
+        }
+      }
       return builder;
     },
     addSink(sink, options) {
@@ -210,8 +298,7 @@ export function createLoggingBuilder(): LoggingBuilder {
       const merged: Record<string, Threshold> = Object.create(null);
       for (const source of sources) {
         if (source.kind === "invalid") {
-          const value = source.value;
-          throw new LoggingConfigError(`Invalid logger levels of type ${typeName(value)}: expected an object.`);
+          throw new LoggingConfigError(source.message);
         }
         for (const [key, threshold] of source.entries) {
           merged[validateCategoryKey(key)] = validateThreshold(threshold);
@@ -219,15 +306,21 @@ export function createLoggingBuilder(): LoggingBuilder {
       }
       const registrations = sinks.map(validateSink);
       const global = processors.map((processor) => validateProcessor(processor, "processor"));
-      return Object.freeze({
+      const build: LoggingBuild = Object.freeze({
         defaults,
         builder: freezeLayer(merged),
+        ignoreEnvironment,
         sinks: Object.freeze(registrations),
         processors: Object.freeze(global),
         clock,
         redaction: redaction === undefined ? defaultRedaction() : redaction,
+        browserSources,
         issues: Object.freeze([...issues]),
       });
+      if (clears.length > 0) {
+        unreadableStoredSpecs.set(build, Object.freeze([...clears]));
+      }
+      return build;
     },
   };
   return builder;

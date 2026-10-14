@@ -11,6 +11,15 @@ Run commands from `source/core` (`pnpm build`, `pnpm type-check`, `pnpm test`, `
   `onSinkError`. `sinks`/`clock`/`redaction` are builder state (`builder.ts`); `resource` and
   `onSinkError` are provider options wired from `logging.ts` (`logger.ts` cannot import it).
 - With no sink, `emitRecord` reads nothing (not the clock, attributes or error).
+- Level layers, lowest first: defaults, builder, overrides, environment (`VPG_LOG`). The environment
+  layer is read once per provider, lazily (`environment-source.ts`), survives `clearDefaults()` and
+  `reset()`, and only `ignoreEnvironment()` drops it. Every `Logger` call checks the level, then calls
+  `emitRecord`; the console handle's confirmation (`console-handle.ts`) is the one internal caller
+  that skips the level check, through the provider's `confirm` path, and with no sink it goes to the
+  provider's `warn` option instead.
+- `build()` is side-effect free: it reads browser storage but never writes it. A stored spec found
+  unreadable is cleared only after the provider commits the build, so a rejected `configure` clears
+  nothing. The published level table is replaced whole and frozen, never mutated.
 - `Logger#with(attributes)` returns a frozen Logger whose closure holds the bindings, normalized and
   deeply frozen at `with()` time (`{}` returns the same Logger); `emitRecord` takes them as its last
   argument. A child shares the parent's level resolver and `emit` settings getter, so live level

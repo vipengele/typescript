@@ -14,9 +14,9 @@ export type LevelLayer = Readonly<Record<string, Threshold>>;
 /**
  * The layers of a {@link LoggingSettings}, lowest precedence first: a later layer's entry for a
  * category replaces an earlier layer's entry for the same category. The environment layer
- * (`VPG_LOG`, ADR-0005) belongs after `overrides`, so it always has the last word.
+ * (`VPG_LOG`, ADR-0005) comes after `overrides`, so the operator always has the last word.
  */
-export const LAYER_ORDER = Object.freeze(["defaults", "builder", "overrides"] as const);
+export const LAYER_ORDER = Object.freeze(["defaults", "builder", "overrides", "environment"] as const);
 
 /** The name of one layer in {@link LAYER_ORDER}. */
 export type LayerName = (typeof LAYER_ORDER)[number];
@@ -27,6 +27,9 @@ export type LayerName = (typeof LAYER_ORDER)[number];
  * - `defaults` — `{ "*": "warn" }`, or empty once a builder calls `clearDefaults()`.
  * - `builder` — the builder's sources, flattened in the order they were added.
  * - `overrides` — live overrides set on top of the build.
+ * - `environment` — the level spec in `VPG_LOG`, its bad entries skipped; empty when the variable
+ *   is unset or unreadable, when the provider was given no environment to read, or when the build
+ *   in force called `ignoreEnvironment()`.
  */
 export type LoggingLayers = Readonly<Record<LayerName, LevelLayer>>;
 
@@ -37,9 +40,21 @@ export type LoggingLayers = Readonly<Record<LayerName, LevelLayer>>;
  */
 export type OutputSettings = Pick<EmitSettings, "sinks" | "processors" | "clock" | "redaction">;
 
+/** The browser sources of the build in force: the `localStorage` key its level spec is read from. */
+export interface BrowserSourcesSetting {
+  readonly storageKey: string;
+}
+
+/**
+ * What a {@link LoggingSettings} carries from the build in force besides its layers: the
+ * {@link OutputSettings} and, optionally, its browser sources (`null` when omitted).
+ */
+export type BuildSettings = OutputSettings & { readonly browserSources?: BrowserSourcesSetting | null };
+
 /**
  * A snapshot of the configuration in force: each layer as it stood, `levels`, the effective table
- * those layers flatten to, and the {@link OutputSettings} of the build in force. Every part this
+ * those layers flatten to, the {@link OutputSettings} of the build in force and its
+ * `browserSources`. Every part this
  * module creates is frozen and none is shared with the state it was taken from, so a snapshot
  * never changes after it is returned; the sinks, the processors, the clock and the redaction
  * policy themselves are the caller's own objects, held by reference.
@@ -50,6 +65,11 @@ export type OutputSettings = Pick<EmitSettings, "sinks" | "processors" | "clock"
 export interface LoggingSettings extends OutputSettings {
   readonly layers: LoggingLayers;
   readonly levels: LevelTable;
+  /**
+   * The browser sources of the build in force: the storage key of its last `addBrowserSources`
+   * call, or `null` when it made none or ran outside a browser.
+   */
+  readonly browserSources: BrowserSourcesSetting | null;
 }
 
 /** The defaults layer: every category at `warn` unless something above it says otherwise. */
@@ -111,13 +131,14 @@ export function flattenLayers(layers: readonly LevelLayer[]): LevelTable {
  * {@link freezeLayer}, so the snapshot is independent of the objects passed in, and a layer that
  * holds an invalid category key or threshold throws a `LoggingConfigError`. `levels` is the
  * layers flattened in {@link LAYER_ORDER}. The sink list, each registration's processor list and
- * the global processor list are copied into frozen arrays; `output` defaults to
- * {@link defaultOutput}.
+ * the global processor list are copied into frozen arrays, and `browserSources` into a frozen
+ * object (`null` when `output` has none); `output` defaults to {@link defaultOutput}.
  */
 export function createSettings(
   layers: Readonly<Record<LayerName, Readonly<Record<string, unknown>>>>,
-  output: OutputSettings = defaultOutput(),
+  output: BuildSettings = defaultOutput(),
 ): LoggingSettings {
+  const browserSources = output.browserSources ?? null;
   const copied = {} as Record<LayerName, LevelLayer>;
   for (const name of LAYER_ORDER) {
     copied[name] = freezeLayer(layers[name]);
@@ -129,5 +150,6 @@ export function createSettings(
     processors: Object.freeze([...output.processors]),
     clock: output.clock,
     redaction: output.redaction,
+    browserSources: browserSources === null ? null : Object.freeze({ storageKey: browserSources.storageKey }),
   });
 }
