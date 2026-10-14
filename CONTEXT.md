@@ -76,6 +76,21 @@ _Avoid_: logging platform (vipengele is the platform), logger factory, settings
 A dotted name (`services.editing`) identifying where a record comes from. Levels are configured per
 category prefix, and the longest matching prefix wins.
 
+**Level Spec**:
+A short string of `category:level` entries naming how verbose each Category is
+(`*:warn,react:debug`). A bad entry is skipped with a warning rather than failing the rest.
+_Avoid_: settings, filter string
+
+**Level Source**:
+A place a Level Spec is read from: the Node environment (the operator's last word, always applied
+last), the page URL, or browser storage (the last two opt-in, never read by a library on its own).
+Distinct from a Sink, which is where records go.
+
+**Console Handle**:
+A function the application installs on the global object so a developer can change Levels live from
+a browser or Node console. It confirms every change with a Log Record of its own, and says when a
+Level Source with higher precedence holds a Category's Level.
+
 **Log Record**:
 One structured log entry: time, level, category, message, attributes and optionally an error.
 _Avoid_: line, log line (a record is not text until a Formatter makes it so)
