@@ -1,4 +1,5 @@
 import { expect, test } from "vitest";
+import { Locale } from "../../locale";
 import * as civil from "./civil";
 import * as errors from "./errors";
 import * as dateTime from "./index";
@@ -31,6 +32,13 @@ test("exports ZonedDateTime", () => {
 
 test("exports Instant", () => {
   expect(dateTime.Instant).toBe(instant.Instant);
+});
+
+test("exports the date-time segment types", () => {
+  const types: dateTime.DateTimeSegmentType[] = ["year", "month", "day", "hour", "minute", "second", "dayPeriod", "literal"];
+  const segments: dateTime.DateTimeSegment[] = dateTime.LocalDateTime.ofFields(2026, 2, 3, 13, 30).segments(new Locale("en-US"));
+
+  expect(segments.every((segment) => types.includes(segment.type))).toBe(true);
 });
 
 test("exports the errors and the guards", () => {

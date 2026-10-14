@@ -4,10 +4,34 @@ import type { IsoDayOfWeek } from "./civil";
 import { DateTimeParseError, type DateTimeTryParseResult } from "./errors";
 import { LocalDate } from "./local-date";
 import { LocalTime } from "./local-time";
-import { formatDateTime, parseDateTime, type TimeOptions } from "./locale-format";
+import {
+  type DateSegmentType,
+  formatDateTime,
+  parseDateTime,
+  resolveDateTimeLayout,
+  type TimeOptions,
+  type TimeSegmentType,
+} from "./locale-format";
 import { civilNow } from "./now";
 import type { ZoneId } from "./zone-id";
 import { ZonedDateTime, type ZonedDateTimeOptions } from "./zoned-date-time";
+
+/** What a {@link DateTimeSegment} holds: one of the date's or the time's fields, or the text between them. */
+export type DateTimeSegmentType = DateSegmentType | TimeSegmentType;
+
+/**
+ * One run of a formatted date-time: a date or time field's padded digits, the day-period marker,
+ * or a literal exactly as the locale writes it.
+ */
+export interface DateTimeSegment {
+  readonly type: DateTimeSegmentType;
+  readonly value: string;
+}
+
+/** `value` as a literal segment, or no segment when it is empty. */
+function literalSegment(value: string): DateTimeSegment[] {
+  return value === "" ? [] : [{ type: "literal", value }];
+}
 
 /** The date-time `str` spells in ISO 8601 `<date>T<time>` form, or `undefined` when it spells none. */
 function parseValue(str: string): LocalDateTime | undefined {
@@ -228,6 +252,26 @@ export class LocalDateTime {
    */
   format(locale: Locale = Locale.default(), options: TimeOptions = {}): string {
     return formatDateTime(this.date, this.time, locale, options);
+  }
+
+  /**
+   * The parts of {@link LocalDateTime#format}'s output under `locale`, or `Locale.default()` when
+   * `locale` is omitted, and `options`, in the order the locale writes them: the date's segments
+   * as {@link LocalDate#segments} splits them, the time's as {@link LocalTime#segments} splits
+   * them under the same `options`, and each `literal` the locale's date-time layout places before,
+   * between or after the two. `2026-02-03T13:30` in `en-US` is month `02`, literal `/`, day `03`,
+   * literal `/`, year `2026`, literal `, `, hour `01`, literal `:`, minute `30`, a literal space,
+   * day period `PM`; in `vi` the time's segments come first. A literal the locale leaves empty is
+   * omitted, and the values joined are exactly {@link LocalDateTime#format}'s output, bidi marks
+   * and the locale's own space characters included.
+   */
+  segments(locale: Locale = Locale.default(), options: TimeOptions = {}): DateTimeSegment[] {
+    const { timeFirst, literals } = resolveDateTimeLayout(locale, options);
+    const date: DateTimeSegment[] = this.date.segments(locale);
+    const time: DateTimeSegment[] = this.time.segments(locale, options);
+    const [first, second] = timeFirst ? [time, date] : [date, time];
+    const [before, between, after] = literals;
+    return [...literalSegment(before), ...first, ...literalSegment(between), ...second, ...literalSegment(after)];
   }
 
   /**

@@ -287,6 +287,122 @@ describe("LocalDateTime#format with seconds", () => {
   });
 });
 
+describe("LocalDateTime#segments", () => {
+  const LOCALES = ["en-US", "en-GB", "de-DE", "vi", "ar-EG", "he-IL", "ko-KR", "ja-JP", "ja-JP-u-hc-h12", "fa-IR", "en-US-u-hc-h23"];
+  const VALUES = [
+    LocalDateTime.ofFields(2026, 2, 3, 13, 30, 45, 999_999_999),
+    LocalDateTime.ofFields(1, 1, 1, 0, 0),
+    LocalDateTime.ofFields(9999, 12, 31, 23, 59, 59),
+  ];
+  const joined = (segments: readonly { readonly value: string }[]): string => segments.map((segment) => segment.value).join("");
+  const value = LocalDateTime.ofFields(2026, 2, 3, 13, 30, 45);
+
+  test.for(LOCALES)("joins to format's output in %s, with and without seconds", (tag) => {
+    const locale = new Locale(tag);
+
+    for (const dateTime of VALUES) {
+      for (const options of [{}, { seconds: true }, { seconds: false }]) {
+        expect(joined(dateTime.segments(locale, options))).toBe(dateTime.format(locale, options));
+      }
+    }
+  });
+
+  test.for(LOCALES)("holds no segment with an empty value in %s", (tag) => {
+    const locale = new Locale(tag);
+
+    for (const options of [{}, { seconds: true }]) {
+      expect(value.segments(locale, options).filter((segment) => segment.value === "")).toEqual([]);
+    }
+  });
+
+  test.for(LOCALES)("places the date's and the time's own segments in the locale's layout in %s", (tag) => {
+    const locale = new Locale(tag);
+
+    for (const options of [{}, { seconds: true }]) {
+      const { timeFirst, literals } = resolveDateTimeLayout(locale, options);
+      const date = value.date.segments(locale);
+      const time = value.time.segments(locale, options);
+      const [first, second] = timeFirst ? [time, date] : [date, time];
+      const literal = (text: string) => (text === "" ? [] : [{ type: "literal", value: text }]);
+
+      expect(value.segments(locale, options)).toEqual([
+        ...literal(literals[0]),
+        ...first,
+        ...literal(literals[1]),
+        ...second,
+        ...literal(literals[2]),
+      ]);
+    }
+  });
+
+  test("omits the layout's empty literals before the date and after the time in en-US", () => {
+    const locale = new Locale("en-US");
+    const { timeFirst, literals } = resolveDateTimeLayout(locale);
+    const segments = value.segments(locale);
+
+    expect(timeFirst).toBe(false);
+    expect(literals[0]).toBe("");
+    expect(literals[2]).toBe("");
+    expect(segments.map((segment) => segment.type)).toEqual([
+      "month",
+      "literal",
+      "day",
+      "literal",
+      "year",
+      "literal",
+      "hour",
+      "literal",
+      "minute",
+      "literal",
+      "dayPeriod",
+    ]);
+    expect(segments[5]).toEqual({ type: "literal", value: literals[1] });
+  });
+
+  test("writes the time's segments first where the locale writes the time first", () => {
+    const locale = new Locale("vi");
+    const time = value.time.segments(locale);
+    const segments = value.segments(locale);
+    const timeAt = segments.findIndex((segment) => segment.type === "hour");
+    const dateAt = segments.findIndex((segment) => segment.type === "day");
+
+    expect(resolveDateTimeLayout(locale).timeFirst).toBe(true);
+    expect(timeAt).toBeLessThan(dateAt);
+    expect(segments.slice(timeAt, timeAt + time.length)).toEqual(time);
+  });
+
+  test("writes the hour and the minute but no second by default", () => {
+    const locale = new Locale("de-DE");
+    const types = value.segments(locale).map((segment) => segment.type);
+
+    expect(types).toContain("hour");
+    expect(types).toContain("minute");
+    expect(types).not.toContain("second");
+    expect(value.segments(locale, { seconds: true }).find((segment) => segment.type === "second")).toEqual({ type: "second", value: "45" });
+    expect(value.segments(locale, { seconds: false })).toEqual(value.segments(locale));
+  });
+
+  test.for(LOCALES)("reads back through parseLocalized with seconds in %s", (tag) => {
+    const locale = new Locale(tag);
+    const dateTime = LocalDateTime.ofFields(2026, 2, 3, 13, 30, 45, 999_999_999);
+
+    expect(LocalDateTime.parseLocalized(joined(dateTime.segments(locale, { seconds: true })), locale, { seconds: true })).toEqual(
+      LocalDateTime.ofFields(2026, 2, 3, 13, 30, 45),
+    );
+  });
+
+  test("an omitted locale writes in Locale.default()", () => {
+    const spy = vi.spyOn(Locale, "default").mockReturnValue(new Locale("de-DE"));
+
+    try {
+      expect(value.segments()).toEqual(value.segments(new Locale("de-DE")));
+      expect(value.segments(undefined, { seconds: true })).toEqual(value.segments(new Locale("de-DE"), { seconds: true }));
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
 describe("LocalDateTime.parseLocalized and tryParseLocalized", () => {
   const LOCALES = [
     "en-US",
