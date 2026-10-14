@@ -5,7 +5,7 @@ import { describe, expect, test, vi } from "vitest";
 import { isLoggingConfigError } from "./config-error";
 import { entryFor } from "./levels";
 import { createLogger, type Logger } from "./logger";
-import { createLoggerProvider } from "./provider";
+import { createLoggerProvider, type LoggerProvider } from "./provider";
 import type { EmitSettings, LogProcessor, Sink } from "./record";
 import type { LoggingSettings } from "./settings";
 
@@ -22,6 +22,7 @@ function layersOf(settings: LoggingSettings): Record<string, Record<string, Thre
     defaults: { ...settings.layers.defaults },
     builder: { ...settings.layers.builder },
     overrides: { ...settings.layers.overrides },
+    environment: { ...settings.layers.environment },
   };
 }
 
@@ -153,7 +154,7 @@ describe("configure", () => {
 
     const settings = provider.configure((b) => b.addLevels({ b: "debug" }));
 
-    expect(layersOf(settings)).toEqual({ defaults: { "*": "warn" }, builder: { b: "debug" }, overrides: {} });
+    expect(layersOf(settings)).toEqual({ defaults: { "*": "warn" }, builder: { b: "debug" }, overrides: {}, environment: {} });
     expect(provider.logger("a").enabled("info")).toBe(false);
   });
 
@@ -302,7 +303,7 @@ describe("reset", () => {
 
     const settings = provider.reset();
 
-    expect(layersOf(settings)).toEqual({ defaults: { "*": "warn" }, builder: {}, overrides: {} });
+    expect(layersOf(settings)).toEqual({ defaults: { "*": "warn" }, builder: {}, overrides: {}, environment: {} });
     expect(provider.logger("a").enabled("info")).toBe(false);
     expect(provider.logger("b").enabled("info")).toBe(false);
   });
@@ -326,9 +327,9 @@ describe("snapshots", () => {
     provider.reset();
 
     expect(first).not.toBe(second);
-    expect(layersOf(first)).toEqual({ defaults: { "*": "warn" }, builder: { a: "info" }, overrides: {} });
+    expect(layersOf(first)).toEqual({ defaults: { "*": "warn" }, builder: { a: "info" }, overrides: {}, environment: {} });
     expect(first.levels.a).toEqual(entryFor("info"));
-    expect(layersOf(second)).toEqual({ defaults: { "*": "warn" }, builder: { a: "info" }, overrides: { a: "trace" } });
+    expect(layersOf(second)).toEqual({ defaults: { "*": "warn" }, builder: { a: "info" }, overrides: { a: "trace" }, environment: {} });
     expect(second.levels.a).toEqual(entryFor("trace"));
   });
 
@@ -727,5 +728,232 @@ describe("failure reports", () => {
 
     expect(onFirst).toHaveBeenCalledOnce();
     expect(onSecond).toHaveBeenCalledOnce();
+  });
+});
+
+describe("the environment layer", () => {
+  test("sits above every other layer: environment over overrides over builder over defaults", () => {
+    const provider = createLoggerProvider((b) => b.addLevels({ "*": "info", a: "error", b: "error", c: "error" }), {
+      environment: () => "a:trace,b:off",
+    });
+    provider.override("a", "fatal");
+    const settings = provider.override("c", "debug");
+
+    expect(layersOf(settings)).toEqual({
+      defaults: { "*": "warn" },
+      builder: { "*": "info", a: "error", b: "error", c: "error" },
+      overrides: { a: "fatal", c: "debug" },
+      environment: { a: "trace", b: "off" },
+    });
+    expect(provider.logger("a").enabled("trace")).toBe(true);
+    expect(provider.logger("b").enabled("fatal")).toBe(false);
+    expect(provider.logger("c").enabled("debug")).toBe(true);
+    expect(provider.logger("d").enabled("info")).toBe(true);
+  });
+
+  test("is read once, on the first level check, and not when the provider or a Logger is created", () => {
+    const environment = vi.fn(() => "a:debug");
+    const provider = createLoggerProvider((b) => b.addLevels({ b: "info" }), { environment });
+    const logger = provider.logger("a");
+    expect(environment).not.toHaveBeenCalled();
+
+    expect(logger.enabled("debug")).toBe(true);
+    expect(logger.enabled("trace")).toBe(false);
+    provider.override("b", "trace");
+    provider.configure((b) => b.addLevels({ c: "info" }));
+    provider.reset();
+
+    expect(environment).toHaveBeenCalledOnce();
+  });
+
+  test.for([
+    ["configure", (provider: LoggerProvider) => provider.configure(() => {})],
+    ["override", (provider: LoggerProvider) => provider.override("b", "info")],
+    ["reset", (provider: LoggerProvider) => provider.reset()],
+  ] as const)("is read once by a first %s, whose snapshot carries it", ([, operation]) => {
+    const environment = vi.fn(() => "a:debug");
+    const provider = createLoggerProvider(undefined, { environment });
+
+    const settings = operation(provider);
+    provider.logger("a").enabled("debug");
+
+    expect({ ...settings.layers.environment }).toEqual({ a: "debug" });
+    expect(settings.levels.a).toEqual(entryFor("debug"));
+    expect(environment).toHaveBeenCalledOnce();
+  });
+
+  test("survives clearDefaults and reset", () => {
+    const provider = createLoggerProvider(undefined, { environment: () => "a:debug" });
+
+    const cleared = provider.configure((b) => b.clearDefaults().addLevels({ a: "error" }));
+    expect({ ...cleared.layers.environment }).toEqual({ a: "debug" });
+    expect(provider.logger("a").enabled("debug")).toBe(true);
+
+    const reset = provider.reset();
+    expect({ ...reset.layers.environment }).toEqual({ a: "debug" });
+    expect(provider.logger("a").enabled("debug")).toBe(true);
+  });
+
+  test("ignoreEnvironment removes it until a configure without it, or a reset, restores it", () => {
+    const environment = vi.fn(() => "a:debug");
+    const provider = createLoggerProvider(undefined, { environment });
+
+    const ignored = provider.configure((b) => b.ignoreEnvironment());
+    expect(Object.keys(ignored.layers.environment)).toEqual([]);
+    expect(provider.logger("a").enabled("debug")).toBe(false);
+    expect(Object.keys(provider.override("b", "info").layers.environment)).toEqual([]);
+    expect(environment).not.toHaveBeenCalled();
+
+    const restored = provider.configure(() => {});
+    expect({ ...restored.layers.environment }).toEqual({ a: "debug" });
+    expect(provider.logger("a").enabled("debug")).toBe(true);
+
+    provider.configure((b) => b.ignoreEnvironment());
+    expect({ ...provider.reset().layers.environment }).toEqual({ a: "debug" });
+    expect(environment).toHaveBeenCalledOnce();
+  });
+
+  test("a starting configure that ignores it leaves it unread through level checks", () => {
+    const environment = vi.fn(() => "a:debug");
+    const provider = createLoggerProvider((b) => b.ignoreEnvironment(), { environment });
+
+    expect(provider.logger("a").enabled("debug")).toBe(false);
+    expect(environment).not.toHaveBeenCalled();
+  });
+
+  test("a rejected configure leaves it unread", () => {
+    const environment = vi.fn(() => "a:debug");
+    const provider = createLoggerProvider(undefined, { environment });
+
+    expect(() => provider.configure((b) => b.addLevels({ a: "loud" as Threshold }))).toThrow(isConfigError);
+    expect(environment).not.toHaveBeenCalled();
+  });
+
+  test("is empty without an environment option", () => {
+    const provider = createLoggerProvider();
+
+    expect(provider.logger("a").enabled("warn")).toBe(true);
+    expect(Object.keys(provider.reset().layers.environment)).toEqual([]);
+  });
+
+  const unreadable: readonly (readonly [string, () => string | undefined])[] = [
+    ["undefined", () => undefined],
+    ["a value that is not a string", () => 42 as unknown as string],
+    [
+      "a throw",
+      () => {
+        throw new Error("denied");
+      },
+    ],
+    ["an empty string", () => ""],
+  ];
+
+  test.for(unreadable)("reads %s as no spec, reporting nothing", ([, environment]) => {
+    const onIssues = vi.fn();
+    const provider = createLoggerProvider(undefined, { environment, onIssues });
+
+    expect(provider.logger("a").enabled("info")).toBe(false);
+    expect(Object.keys(provider.reset().layers.environment)).toEqual([]);
+    expect(onIssues).not.toHaveBeenCalled();
+  });
+
+  test("calls environment on the options object", () => {
+    const options = {
+      environment(): string {
+        expect(this).toBe(options);
+        return "a:debug";
+      },
+    };
+
+    expect(createLoggerProvider(undefined, options).logger("a").enabled("debug")).toBe(true);
+  });
+
+  test("skips a bad entry, reporting it once through onIssues naming VPG_LOG", () => {
+    const onIssues = vi.fn();
+    const provider = createLoggerProvider(undefined, { environment: () => "a:loud,b:debug", onIssues });
+    const logger = provider.logger("b");
+
+    expect(logger.enabled("debug")).toBe(true);
+    expect(logger.enabled("debug")).toBe(true);
+    provider.reset();
+
+    expect(onIssues.mock.calls).toEqual([[['VPG_LOG: Level spec entry "a:loud" is skipped: invalid level "loud".']]]);
+  });
+
+  test("reports its issues on their own, after the configure is in force and before the build's", () => {
+    const calls: string[][] = [];
+    const provider: LoggerProvider = createLoggerProvider(undefined, {
+      environment: () => "a:loud",
+      onIssues: (issues): void => {
+        expect(provider.logger("b").enabled("debug")).toBe(true);
+        calls.push([...issues]);
+      },
+    });
+
+    provider.configure((b) => b.addSpec("b:debug,c"));
+
+    expect(calls).toEqual([
+      ['VPG_LOG: Level spec entry "a:loud" is skipped: invalid level "loud".'],
+      ['Level spec entry "c" is skipped: expected "category:level" with exactly one ":".'],
+    ]);
+  });
+
+  test("a throwing onIssues never reaches a level check or an override", () => {
+    const onIssues = vi.fn(() => {
+      throw new Error("warn target down");
+    });
+    const first = createLoggerProvider(undefined, { environment: () => "a:loud,b:debug", onIssues });
+    const second = createLoggerProvider(undefined, { environment: () => "a:loud,b:debug", onIssues });
+
+    expect(first.logger("b").enabled("debug")).toBe(true);
+    expect(second.override("c", "info").levels.b).toEqual(entryFor("debug"));
+    expect(onIssues).toHaveBeenCalledTimes(2);
+  });
+
+  test("a first level check publishes the configuration with it when it holds a level", () => {
+    const publish = vi.fn();
+    const provider = createLoggerProvider((b) => b.addLevels({ c: "info" }), { environment: () => "a:debug", publish });
+
+    provider.logger("a").enabled("debug");
+    provider.logger("a").enabled("debug");
+
+    expect(publish).toHaveBeenCalledOnce();
+    const published = publish.mock.calls[0]?.[0] as LoggingSettings;
+    expect(layersOf(published)).toEqual({ defaults: { "*": "warn" }, builder: { c: "info" }, overrides: {}, environment: { a: "debug" } });
+    expect(published.levels.a).toEqual(entryFor("debug"));
+  });
+
+  test("a first level check publishes nothing when it holds no level", () => {
+    const publish = vi.fn();
+    const provider = createLoggerProvider(undefined, { environment: () => "a:loud", publish });
+
+    provider.logger("a").enabled("debug");
+
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  test("a throwing publish on a first level check leaves it in force and never reaches the caller", () => {
+    const publish = vi.fn(() => {
+      throw new Error("slot down");
+    });
+    const provider = createLoggerProvider(undefined, { environment: () => "a:debug", publish });
+    const logger = provider.logger("a");
+
+    expect(logger.enabled("debug")).toBe(true);
+    expect(logger.enabled("debug")).toBe(true);
+    expect(publish).toHaveBeenCalledOnce();
+  });
+
+  test("a supplied resolve is asked after the first level check has published it", () => {
+    let published: LoggingSettings | undefined;
+    const provider = createLoggerProvider(undefined, {
+      environment: () => "a:debug",
+      publish: (settings) => {
+        published = settings;
+      },
+      resolve: (category) => entryFor(published?.levels[category]?.level ?? "warn"),
+    });
+
+    expect(provider.logger("a").enabled("debug")).toBe(true);
   });
 });

@@ -1,5 +1,6 @@
 import type { Threshold } from "@vipengele/ts-core-common";
 import { Scope } from "@vipengele/ts-core-common/scope";
+import { readEnvironmentSpec } from "./environment-source";
 import type { Logger } from "./logger";
 import { type ConfigureCallback, createLoggerProvider, type LoggerProvider } from "./provider";
 import type { LogProcessor, Sink } from "./record";
@@ -28,8 +29,8 @@ export type WarnTarget = (issue: string) => void;
 let warnTarget: WarnTarget | undefined;
 
 /**
- * Redirects where `Logging.configure` reports spec issues and where a failed sink write or log
- * processor is reported, or restores `console.warn` when given `undefined`. The target is read when something
+ * Redirects where `Logging.configure` reports spec issues, where a bad entry in `VPG_LOG` is
+ * reported, and where a failed sink write or log processor is reported, or restores `console.warn` when given `undefined`. The target is read when something
  * is reported, never captured, so it governs the default provider whenever that provider was
  * created.
  */
@@ -45,7 +46,10 @@ function warn(message: string): void {
   }
 }
 
-/** Reports each distinct issue of one configure call once, through the current warn target. */
+/**
+ * Reports each distinct issue of one configure call, or of the one read of `VPG_LOG`, once through
+ * the current warn target.
+ */
 function reportIssues(issues: readonly string[]): void {
   for (const issue of new Set(issues)) {
     warn(issue);
@@ -107,7 +111,9 @@ function warnOnForeignProtocols(): void {
  * The realm's default provider, created on first use behind the provider slot so importing this
  * module touches nothing on `globalThis`. Its Loggers resolve through the shared levels slot on
  * every call and every change is published to it, which is how copies of the package agree; only
- * the level table is published, never the sinks. Its records carry `Scope.resource()`, and the
+ * the level table is published, never the sinks. `VPG_LOG` is read once per realm, by the first
+ * operation or Logger level check, and the table published then carries it, so a module-scope
+ * Logger in any copy sees it with no `configure` call. Its records carry `Scope.resource()`, and the
  * first failure of each sink or processor per configuration is reported through the warn target.
  * The first call in this copy also warns when another record protocol is present in the realm.
  */
@@ -123,6 +129,7 @@ function defaultProvider(): LoggerProvider {
       resource: Scope.resource,
       onSinkError: reportSinkError,
       sinkErrorsOncePerSource: true,
+      environment: readEnvironmentSpec,
     }),
   );
 }
@@ -150,7 +157,7 @@ export const Logging = Object.freeze({
     return defaultProvider().override(category, level);
   },
 
-  /** Drops the default provider's overrides and builder layer, restoring the defaults. */
+  /** Drops the default provider's overrides and builder layer, restoring the defaults; `VPG_LOG` stays. */
   reset(): LoggingSettings {
     return defaultProvider().reset();
   },
@@ -161,7 +168,8 @@ export const Logging = Object.freeze({
    * any other. Its spec issues, from `configure` and from every later `configure` call, are
    * reported once each per call through the warn target, as is the first failure of each of its
    * sinks and processors per configuration; its records carry `Scope.resource()`, as the default
-   * provider's do.
+   * provider's do. It reads `VPG_LOG` once, on its own first operation or level check, and applies
+   * it above every other layer unless its build calls `ignoreEnvironment()`.
    */
   createProvider(configure?: ConfigureCallback): LoggerProvider {
     return createLoggerProvider(configure, {
@@ -169,6 +177,7 @@ export const Logging = Object.freeze({
       resource: Scope.resource,
       onSinkError: reportSinkError,
       sinkErrorsOncePerSource: true,
+      environment: readEnvironmentSpec,
     });
   },
 });

@@ -8,13 +8,16 @@ import { parseSpec } from "./spec";
 
 /**
  * What {@link LoggingBuilder.build} produces: the `defaults` and `builder` layers of a
- * `LoggingSettings`; `sinks`, `processors`, `clock` and `redaction`, what its Loggers emit through; and
- * `issues`, one human-readable string per spec entry an `addSpec` call skipped or overrode, in the
- * order the specs were added. Issues never fail a build; reporting them is the caller's job.
+ * `LoggingSettings`; `ignoreEnvironment`, whether the environment layer is left out; `sinks`,
+ * `processors`, `clock` and `redaction`, what its Loggers emit through; and `issues`, one
+ * human-readable string per spec entry an `addSpec` call skipped or overrode, in the order the
+ * specs were added. Issues never fail a build; reporting them is the caller's job.
  */
 export interface LoggingBuild {
   readonly defaults: LevelLayer;
   readonly builder: LevelLayer;
+  /** `true` once `ignoreEnvironment` was called: the configuration built leaves `VPG_LOG` out. */
+  readonly ignoreEnvironment: boolean;
   /**
    * The sinks passed to `addSink`, in the order they were added, each with the processors passed
    * alongside it; the list, each registration and each processor list are frozen.
@@ -47,6 +50,13 @@ export interface LoggingBuilder {
    * effective table has no root; see `LoggingSettings`.
    */
   clearDefaults(): LoggingBuilder;
+
+  /**
+   * Leaves the environment layer (`VPG_LOG`) out of the configuration built, for as long as it is
+   * in force. It is the only way to remove that layer: `clearDefaults` keeps it, and the next
+   * `configure` whose builder does not call this, or a `reset`, brings it back.
+   */
+  ignoreEnvironment(): LoggingBuilder;
 
   /**
    * Adds `levels`, category key (a Category or the root `*`) to `Threshold`, as a source. Its own
@@ -164,6 +174,7 @@ function validateSink(recorded: RecordedSink): SinkRegistration {
 /** A new {@link LoggingBuilder} holding the defaults, no sources and no sinks. */
 export function createLoggingBuilder(): LoggingBuilder {
   let defaults = DEFAULT_LEVELS;
+  let ignoreEnvironment = false;
   const sources: Source[] = [];
   const sinks: RecordedSink[] = [];
   const processors: unknown[] = [];
@@ -174,6 +185,10 @@ export function createLoggingBuilder(): LoggingBuilder {
   const builder: LoggingBuilder = {
     clearDefaults() {
       defaults = EMPTY_LAYER;
+      return builder;
+    },
+    ignoreEnvironment() {
+      ignoreEnvironment = true;
       return builder;
     },
     addLevels(levels) {
@@ -222,6 +237,7 @@ export function createLoggingBuilder(): LoggingBuilder {
       return Object.freeze({
         defaults,
         builder: freezeLayer(merged),
+        ignoreEnvironment,
         sinks: Object.freeze(registrations),
         processors: Object.freeze(global),
         clock,

@@ -14,9 +14,9 @@ export type LevelLayer = Readonly<Record<string, Threshold>>;
 /**
  * The layers of a {@link LoggingSettings}, lowest precedence first: a later layer's entry for a
  * category replaces an earlier layer's entry for the same category. The environment layer
- * (`VPG_LOG`, ADR-0005) belongs after `overrides`, so it always has the last word.
+ * (`VPG_LOG`, ADR-0005) comes after `overrides`, so the operator always has the last word.
  */
-export const LAYER_ORDER = Object.freeze(["defaults", "builder", "overrides"] as const);
+export const LAYER_ORDER = Object.freeze(["defaults", "builder", "overrides", "environment"] as const);
 
 /** The name of one layer in {@link LAYER_ORDER}. */
 export type LayerName = (typeof LAYER_ORDER)[number];
@@ -27,6 +27,9 @@ export type LayerName = (typeof LAYER_ORDER)[number];
  * - `defaults` — `{ "*": "warn" }`, or empty once a builder calls `clearDefaults()`.
  * - `builder` — the builder's sources, flattened in the order they were added.
  * - `overrides` — live overrides set on top of the build.
+ * - `environment` — the level spec in `VPG_LOG`, its bad entries skipped; empty when the variable
+ *   is unset or unreadable, when the provider was given no environment to read, or when the build
+ *   in force called `ignoreEnvironment()`.
  */
 export type LoggingLayers = Readonly<Record<LayerName, LevelLayer>>;
 

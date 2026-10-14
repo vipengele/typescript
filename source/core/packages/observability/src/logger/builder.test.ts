@@ -26,6 +26,7 @@ describe("createLoggingBuilder", () => {
     expect(build.processors).toEqual([]);
     expect(build.clock).toBe(systemClock);
     expect(build.redaction).toBe(secretKeys);
+    expect(build.ignoreEnvironment).toBe(false);
     expect(build.issues).toEqual([]);
   });
 
@@ -33,6 +34,7 @@ describe("createLoggingBuilder", () => {
     const builder = createLoggingBuilder();
 
     expect(builder.clearDefaults()).toBe(builder);
+    expect(builder.ignoreEnvironment()).toBe(builder);
     expect(builder.addLevels({ a: "info" })).toBe(builder);
     expect(builder.addSpec("b:debug")).toBe(builder);
     expect(builder.addSink(sink())).toBe(builder);
@@ -52,6 +54,20 @@ describe("createLoggingBuilder", () => {
     expect(Object.isFrozen(build.issues)).toBe(true);
     expect(Object.isFrozen(build.sinks)).toBe(true);
     expect(Object.isFrozen(build.processors)).toBe(true);
+  });
+});
+
+describe("ignoreEnvironment", () => {
+  test("marks the build as leaving the environment layer out, whatever else it sets", () => {
+    const build = createLoggingBuilder().addLevels({ a: "info" }).ignoreEnvironment().clearDefaults().build();
+
+    expect(build.ignoreEnvironment).toBe(true);
+    expect({ ...build.builder }).toEqual({ a: "info" });
+    expect(Object.keys(build.defaults)).toEqual([]);
+  });
+
+  test("clearDefaults alone keeps the environment layer", () => {
+    expect(createLoggingBuilder().clearDefaults().build().ignoreEnvironment).toBe(false);
   });
 });
 
@@ -427,7 +443,7 @@ describe("build", () => {
 
   test("feeds a settings snapshot, the builder layer above the defaults", () => {
     const { defaults, builder } = createLoggingBuilder().addLevels({ "*": "error", a: "debug" }).build();
-    const settings = createSettings({ defaults, builder, overrides: {} });
+    const settings = createSettings({ defaults, builder, overrides: {}, environment: {} });
 
     expect(settings.levels["*"]?.level).toBe("error");
     expect(settings.levels.a?.level).toBe("debug");
@@ -444,7 +460,7 @@ describe("build", () => {
       .clock(clock)
       .redaction(null)
       .build();
-    const settings = createSettings({ defaults: build.defaults, builder: build.builder, overrides: {} }, build);
+    const settings = createSettings({ defaults: build.defaults, builder: build.builder, overrides: {}, environment: {} }, build);
 
     expect(settings.sinks).toEqual([{ sink: only, processors: [perSink] }]);
     expect(settings.processors).toEqual([global]);

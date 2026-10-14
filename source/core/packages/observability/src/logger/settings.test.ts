@@ -20,8 +20,8 @@ import {
 const proto = "__proto__";
 
 describe("LAYER_ORDER", () => {
-  test("lists defaults, builder and overrides, lowest precedence first", () => {
-    expect(LAYER_ORDER).toEqual(["defaults", "builder", "overrides"]);
+  test("lists defaults, builder, overrides and environment, lowest precedence first", () => {
+    expect(LAYER_ORDER).toEqual(["defaults", "builder", "overrides", "environment"]);
     expect(Object.isFrozen(LAYER_ORDER)).toBe(true);
   });
 });
@@ -105,34 +105,41 @@ describe("flattenLayers", () => {
 });
 
 describe("createSettings", () => {
-  test("exposes every layer and the effective table, overrides winning over builder over defaults", () => {
+  test("exposes every layer and the effective table, environment winning over overrides over builder over defaults", () => {
     const settings = createSettings({
       defaults: { "*": "warn" },
-      builder: { "*": "info", react: "debug", vue: "error" },
-      overrides: { react: "trace" },
+      builder: { "*": "info", react: "debug", vue: "error", svelte: "info" },
+      overrides: { react: "trace", vue: "debug" },
+      environment: { vue: "off", svelte: "fatal" },
     });
 
     expect({ ...settings.layers.defaults }).toEqual({ "*": "warn" });
-    expect({ ...settings.layers.builder }).toEqual({ "*": "info", react: "debug", vue: "error" });
-    expect({ ...settings.layers.overrides }).toEqual({ react: "trace" });
-    expect({ ...settings.levels }).toEqual({ "*": entryFor("info"), react: entryFor("trace"), vue: entryFor("error") });
+    expect({ ...settings.layers.builder }).toEqual({ "*": "info", react: "debug", vue: "error", svelte: "info" });
+    expect({ ...settings.layers.overrides }).toEqual({ react: "trace", vue: "debug" });
+    expect({ ...settings.layers.environment }).toEqual({ vue: "off", svelte: "fatal" });
+    expect({ ...settings.levels }).toEqual({
+      "*": entryFor("info"),
+      react: entryFor("trace"),
+      vue: entryFor("off"),
+      svelte: entryFor("fatal"),
+    });
   });
 
   test("a lower layer shows through where no higher layer sets the category", () => {
-    const settings = createSettings({ defaults: DEFAULT_LEVELS, builder: { a: "debug" }, overrides: {} });
+    const settings = createSettings({ defaults: DEFAULT_LEVELS, builder: { a: "debug" }, overrides: {}, environment: {} });
 
     expect(resolveEntry(settings.levels, "b")).toEqual(entryFor("warn"));
     expect(resolveEntry(settings.levels, "a.x")).toEqual(entryFor("debug"));
   });
 
   test("a table with no root resolves an ungoverned category to undefined", () => {
-    const settings = createSettings({ defaults: EMPTY_LAYER, builder: { a: "debug" }, overrides: {} });
+    const settings = createSettings({ defaults: EMPTY_LAYER, builder: { a: "debug" }, overrides: {}, environment: {} });
 
     expect(resolveEntry(settings.levels, "b")).toBeUndefined();
   });
 
   test("is frozen throughout and prototype-less where it is keyed by category", () => {
-    const settings = createSettings({ defaults: DEFAULT_LEVELS, builder: { a: "info" }, overrides: { b: "off" } });
+    const settings = createSettings({ defaults: DEFAULT_LEVELS, builder: { a: "info" }, overrides: { b: "off" }, environment: {} });
 
     expect(Object.isFrozen(settings)).toBe(true);
     expect(Object.isFrozen(settings.layers)).toBe(true);
@@ -146,7 +153,7 @@ describe("createSettings", () => {
 
   test("is independent of later changes to the objects it was built from", () => {
     const overrides: Record<string, Threshold> = { a: "debug" };
-    const settings = createSettings({ defaults: DEFAULT_LEVELS, builder: {}, overrides });
+    const settings = createSettings({ defaults: DEFAULT_LEVELS, builder: {}, overrides, environment: {} });
     overrides.a = "fatal";
     overrides.b = "trace";
 
@@ -155,7 +162,7 @@ describe("createSettings", () => {
   });
 
   test("throws a LoggingConfigError when a layer holds an invalid entry", () => {
-    expect(() => createSettings({ defaults: DEFAULT_LEVELS, builder: {}, overrides: { a: "loud" } })).toThrow(
+    expect(() => createSettings({ defaults: DEFAULT_LEVELS, builder: {}, overrides: { a: "loud" }, environment: {} })).toThrow(
       expect.toSatisfy(isLoggingConfigError),
     );
   });
@@ -163,7 +170,7 @@ describe("createSettings", () => {
 
 describe("createSettings output", () => {
   test("defaults to no sinks, no processors, the system clock and the secretKeys redaction", () => {
-    const settings = createSettings({ defaults: DEFAULT_LEVELS, builder: {}, overrides: {} });
+    const settings = createSettings({ defaults: DEFAULT_LEVELS, builder: {}, overrides: {}, environment: {} });
 
     expect(settings.sinks).toEqual([]);
     expect(Object.isFrozen(settings.sinks)).toBe(true);
@@ -185,7 +192,7 @@ describe("createSettings output", () => {
     const policy = { keys: ["ssn"] };
 
     const settings = createSettings(
-      { defaults: DEFAULT_LEVELS, builder: {}, overrides: {} },
+      { defaults: DEFAULT_LEVELS, builder: {}, overrides: {}, environment: {} },
       { sinks, processors, clock, redaction: policy },
     );
     sinks.push({ sink: { write: () => {} }, processors: [] });
@@ -206,7 +213,10 @@ describe("createSettings output", () => {
   });
 
   test("carries a null redaction through", () => {
-    const settings = createSettings({ defaults: DEFAULT_LEVELS, builder: {}, overrides: {} }, { ...defaultOutput(), redaction: null });
+    const settings = createSettings(
+      { defaults: DEFAULT_LEVELS, builder: {}, overrides: {}, environment: {} },
+      { ...defaultOutput(), redaction: null },
+    );
 
     expect(settings.redaction).toBeNull();
   });
