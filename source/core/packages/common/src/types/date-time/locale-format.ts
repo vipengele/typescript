@@ -682,15 +682,15 @@ function formatAfternoon(locale: Locale, options: Intl.DateTimeFormatOptions): s
     .join("");
 }
 
-function resolveDateTime(locale: Locale): ResolvedDateTimeLayout {
+function resolveDateTime(locale: Locale, seconds: boolean): ResolvedDateTimeLayout {
   const cycle = clockCycle(locale);
-  const key = cacheKey(locale, cycle, false);
+  const key = cacheKey(locale, cycle, seconds);
   const cached = DATE_TIME_CACHE.get(key);
   if (cached !== undefined) {
     return cached;
   }
 
-  const timeOptions = timeFormatOptions(cycle, false);
+  const timeOptions = timeFormatOptions(cycle, seconds);
   const layout = layoutDateTime(
     formatAfternoon(locale, { ...DATE_OPTIONS, ...timeOptions }),
     formatAfternoon(locale, DATE_OPTIONS),
@@ -702,7 +702,7 @@ function resolveDateTime(locale: Locale): ResolvedDateTimeLayout {
   const timeStart: MarkToken = { kind: "mark" };
   const timeEnd: MarkToken = { kind: "mark" };
   const date = [dateStart, ...resolve(locale).tokens, dateEnd];
-  const time = [timeStart, ...resolveTime(locale, cycle, false).tokens, timeEnd];
+  const time = [timeStart, ...resolveTime(locale, cycle, seconds).tokens, timeEnd];
   const [before, between, after] = layout.literals;
   const [first, second] = layout.timeFirst ? [time, date] : [date, time];
   const matcher = anchored([...spacedTokens(before), ...first, ...spacedTokens(between), ...second, ...spacedTokens(after)]);
@@ -721,20 +721,22 @@ function resolveDateTime(locale: Locale): ResolvedDateTimeLayout {
  * them, read from `Intl`'s own combined `formatToParts` output: the date-only and time-only
  * outputs are located within it, and what surrounds them is kept exactly as `Intl` emits it. When
  * the combined output does not hold the two as separate runs, the date comes first and a single
- * space separates them.
+ * space separates them. With `seconds`, the time-only and combined outputs both write the second,
+ * and the layout is read from those.
  */
-export function resolveDateTimeLayout(locale: Locale): DateTimeLayout {
-  return resolveDateTime(locale).layout;
+export function resolveDateTimeLayout(locale: Locale, options: TimeOptions = {}): DateTimeLayout {
+  return resolveDateTime(locale, options.seconds ?? false).layout;
 }
 
 /**
  * The date in `locale`'s numeric pattern ({@link formatDate}) and the time in its time pattern
- * ({@link formatTime}), placed as the locale's {@link resolveDateTimeLayout} places them.
+ * ({@link formatTime}, with `seconds` the second too), placed as the locale's
+ * {@link resolveDateTimeLayout} places them.
  */
-export function formatDateTime(date: CivilDate, time: ClockTime, locale: Locale): string {
-  const { timeFirst, literals } = resolveDateTime(locale).layout;
+export function formatDateTime(date: CivilDate, time: ClockTime, locale: Locale, options: TimeOptions = {}): string {
+  const { timeFirst, literals } = resolveDateTime(locale, options.seconds ?? false).layout;
   const dateText = formatDate(date, locale);
-  const timeText = formatTime(time, locale);
+  const timeText = formatTime(time, locale, options);
   const [first, second] = timeFirst ? [timeText, dateText] : [dateText, timeText];
   return literals[0] + first + literals[1] + second + literals[2];
 }
@@ -743,10 +745,11 @@ export function formatDateTime(date: CivilDate, time: ClockTime, locale: Locale)
  * The date text and the time text `str` holds in `locale`'s date-time layout, bidi marks removed,
  * or `undefined` when it does not follow the layout. Each half matches {@link parseDate}'s or
  * {@link parseTime}'s pattern but is not read into fields: the caller reads each with the parser
- * for its half. The text around the halves is matched as {@link parseTime} matches literals.
+ * for its half, with the same `options` for the time. The text around the halves is matched as
+ * {@link parseTime} matches literals.
  */
-export function parseDateTime(str: string, locale: Locale): DateTimeText | undefined {
-  const { matcher, date, time } = resolveDateTime(locale);
+export function parseDateTime(str: string, locale: Locale, options: TimeOptions = {}): DateTimeText | undefined {
+  const { matcher, date, time } = resolveDateTime(locale, options.seconds ?? false);
   const input = stripBidiMarks(str);
   const matches = matchTokens(matcher, input);
   if (matches === undefined) {
