@@ -178,6 +178,29 @@ describe("createSettings output", () => {
     expect(Object.isFrozen(settings.processors)).toBe(true);
     expect(settings.clock).toBe(systemClock);
     expect(settings.redaction).toBe(secretKeys);
+    expect(settings.browserSources).toBeNull();
+  });
+
+  test("copies the browser sources into a frozen object", () => {
+    const browserSources = { storageKey: "app.log" };
+
+    const settings = createSettings(
+      { defaults: DEFAULT_LEVELS, builder: {}, overrides: {}, environment: {} },
+      { ...defaultOutput(), browserSources },
+    );
+    browserSources.storageKey = "other.log";
+
+    expect(settings.browserSources).toEqual({ storageKey: "app.log" });
+    expect(Object.isFrozen(settings.browserSources)).toBe(true);
+  });
+
+  test("carries null browser sources through", () => {
+    const settings = createSettings(
+      { defaults: DEFAULT_LEVELS, builder: {}, overrides: {}, environment: {} },
+      { ...defaultOutput(), browserSources: null },
+    );
+
+    expect(settings.browserSources).toBeNull();
   });
 
   test("copies the sink registrations and processor lists into frozen arrays and holds the clock and policy by reference", () => {

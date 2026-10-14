@@ -1,3 +1,4 @@
+export type { BrowserSourcesOptions } from "./browser-sources";
 export type { LoggingBuild, LoggingBuilder, SinkOptions } from "./builder";
 export { type ConsoleSinkOptions, createConsoleSink } from "./console-sink";
 export { isLoggingConfigError, LOGGING_CONFIG_ERROR_CODE, LoggingConfigError } from "./config-error";
@@ -11,5 +12,5 @@ export { Logging, setWarnTarget, type WarnTarget } from "./logging";
 export type { ConfigureCallback, LoggerProvider, LoggerProviderOptions } from "./provider";
 export { redactionProcessor } from "./redaction-processor";
 export type { LogProcessor, LogRecord, RedactionSetting, Sink, SinkRegistration } from "./record";
-export type { LayerName, LevelLayer, LoggingLayers, LoggingSettings, OutputSettings } from "./settings";
+export type { BrowserSourcesSetting, LayerName, LevelLayer, LoggingLayers, LoggingSettings, OutputSettings } from "./settings";
 export { type ParsedSpec, parseSpec } from "./spec";

@@ -1,6 +1,6 @@
 import type { Threshold } from "@vipengele/ts-core-common";
 import type { Resource } from "@vipengele/ts-core-common/scope";
-import { createLoggingBuilder, type LoggingBuild, type LoggingBuilder } from "./builder";
+import { clearUnreadableStoredSpecs, createLoggingBuilder, type LoggingBuild, type LoggingBuilder } from "./builder";
 import { validateCategoryKey } from "./categories";
 import { parseEnvironmentSpec } from "./environment-source";
 import { entryFor, type LevelEntry, resolveEntry, validateThreshold } from "./levels";
@@ -94,8 +94,10 @@ export interface LoggerProvider {
    * an earlier `configure`. Live overrides are kept; only `reset` drops them. The environment
    * layer is kept unless the builder calls `ignoreEnvironment()`, and comes back with the next
    * `configure` that does not. Throws a `LoggingConfigError` on an invalid level, category or
-   * sink, leaving the configuration in force untouched. Returns a snapshot of the new
-   * configuration, the environment layer included.
+   * sink, leaving the configuration in force untouched. A stored browser spec the build found
+   * unreadable is removed from storage once the new configuration is in force and published; a
+   * rejected `configure` removes nothing. Returns a snapshot of the new configuration, the
+   * environment layer included.
    */
   configure(configure: ConfigureCallback): LoggingSettings;
 
@@ -110,9 +112,10 @@ export interface LoggerProvider {
 
   /**
    * Drops every override and the builder layer and restores the defaults (`{ "*": "warn" }`), and
-   * with them the output of a build that sets none: no sinks, `systemClock` and the `secretKeys`
-   * redaction. The environment layer is kept, and restored when the build in force ignored it.
-   * Returns a snapshot of the new configuration, the environment layer included.
+   * with them the output of a build that sets none: no sinks, `systemClock`, the `secretKeys`
+   * redaction and no browser sources. Storage is left as it is. The environment layer is kept,
+   * and restored when the build in force ignored it. Returns a snapshot of the new configuration,
+   * the environment layer included.
    */
   reset(): LoggingSettings;
 
@@ -141,9 +144,11 @@ function emptyResource(): Resource {
 
 /**
  * A new {@link LoggerProvider} starting from the defaults, then from `configure` when one is
- * given; an invalid starting configuration throws a `LoggingConfigError`. Its state is its own —
- * its sink list included, which no other provider shares: nothing outside it is read or written
- * except through `options`.
+ * given; an invalid starting configuration throws a `LoggingConfigError`. A stored browser spec the
+ * starting build found unreadable is removed from storage once that configuration is in force,
+ * before its issues are reported. Its state is its own — its sink list included, which no other
+ * provider shares: nothing outside it is read or written except through `options` and the browser
+ * storage its builds read.
  */
 export function createLoggerProvider(configure?: ConfigureCallback, options: LoggerProviderOptions = {}): LoggerProvider {
   let settings = createSettings({ defaults: DEFAULT_LEVELS, builder: EMPTY_LAYER, overrides: EMPTY_LAYER, environment: EMPTY_LAYER });
@@ -306,10 +311,14 @@ export function createLoggerProvider(configure?: ConfigureCallback, options: Log
     }
   }
 
+  // The starting configuration is committed once `apply` has run: a provider publishes nothing it
+  // starts with, so being in force is the whole commit, and an unreadable stored spec is removed
+  // only past that point, as `configure` removes one only past its own commit.
   if (configure !== undefined) {
     const build = buildOf(configure);
     apply(createSettings({ defaults: build.defaults, builder: build.builder, overrides: EMPTY_LAYER, environment: EMPTY_LAYER }, build));
     ignoring = build.ignoreEnvironment;
+    clearUnreadableStoredSpecs(build);
     reportIssues(build.issues);
   }
 
@@ -328,6 +337,8 @@ export function createLoggerProvider(configure?: ConfigureCallback, options: Log
       ignoring = build.ignoreEnvironment;
       reported = new WeakSet();
       commit(next);
+      // Committed: in force and published. A throwing `build` or `publish` never gets here.
+      clearUnreadableStoredSpecs(build);
       reportEnvironmentIssues();
       reportIssues(build.issues);
       return next;

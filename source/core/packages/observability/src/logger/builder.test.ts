@@ -27,6 +27,7 @@ describe("createLoggingBuilder", () => {
     expect(build.clock).toBe(systemClock);
     expect(build.redaction).toBe(secretKeys);
     expect(build.ignoreEnvironment).toBe(false);
+    expect(build.browserSources).toBeNull();
     expect(build.issues).toEqual([]);
   });
 
@@ -37,6 +38,7 @@ describe("createLoggingBuilder", () => {
     expect(builder.ignoreEnvironment()).toBe(builder);
     expect(builder.addLevels({ a: "info" })).toBe(builder);
     expect(builder.addSpec("b:debug")).toBe(builder);
+    expect(builder.addBrowserSources({ urlParameter: "unused.parameter", storageKey: "unused.key" })).toBe(builder);
     expect(builder.addSink(sink())).toBe(builder);
     expect(builder.addSink(sink(), { processors: [processor()] })).toBe(builder);
     expect(builder.addProcessor(processor())).toBe(builder);
@@ -68,6 +70,30 @@ describe("ignoreEnvironment", () => {
 
   test("clearDefaults alone keeps the environment layer", () => {
     expect(createLoggingBuilder().clearDefaults().build().ignoreEnvironment).toBe(false);
+  });
+});
+
+describe("addBrowserSources", () => {
+  test("malformed options make build throw a LoggingConfigError, in the order the sources were added", () => {
+    const options = [null, "log", { urlParameter: "" }, { storageKey: 1 }] as unknown[];
+    for (const option of options) {
+      expect(() =>
+        createLoggingBuilder()
+          .addBrowserSources(option as never)
+          .build(),
+      ).toThrow(expect.toSatisfy(isLoggingConfigError));
+    }
+
+    expect(() =>
+      createLoggingBuilder()
+        .addBrowserSources(null as never)
+        .addLevels({ a: "loud" as Threshold })
+        .build(),
+    ).toThrow("Invalid logger browser sources options of type null: expected an object.");
+  });
+
+  test("malformed options are recorded, never thrown when the call is made", () => {
+    expect(() => createLoggingBuilder().addBrowserSources(null as never)).not.toThrow();
   });
 });
 
