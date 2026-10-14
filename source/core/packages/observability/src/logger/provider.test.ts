@@ -3,7 +3,7 @@ import type { Resource } from "@vipengele/ts-core-common/scope";
 import { secretKeys } from "@vipengele/ts-core-redaction";
 import { describe, expect, test, vi } from "vitest";
 import { isLoggingConfigError } from "./config-error";
-import { entryFor } from "./levels";
+import { entryFor, type LevelEntry } from "./levels";
 import { createLogger, type Logger } from "./logger";
 import { createLoggerProvider, type LoggerProvider } from "./provider";
 import type { EmitSettings, LogProcessor, Sink } from "./record";
@@ -110,6 +110,17 @@ describe("resolution through loggers", () => {
 
     expect(logger.enabled("info")).toBe(false);
     expect(logger.enabled("warn")).toBe(true);
+  });
+
+  test("a category with no key and no root resolves to one shared fallback entry", () => {
+    const provider = createLoggerProvider((b) => b.clearDefaults().addLevels({ a: "trace" }));
+    const logger = provider.logger("b");
+    const index = vi.mocked(createLogger).mock.results.findIndex((result) => result.value === logger);
+    const resolve = vi.mocked(createLogger).mock.calls[index]?.[1] as (category: string) => LevelEntry;
+
+    expect(resolve("b")).toEqual(entryFor("warn"));
+    expect(resolve("b")).toBe(resolve("c"));
+    expect(Object.isFrozen(resolve("b"))).toBe(true);
   });
 
   test("loggers created before a change see it", () => {

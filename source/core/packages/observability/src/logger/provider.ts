@@ -5,10 +5,11 @@ import { validateCategoryKey } from "./categories";
 import { CONSOLE_HANDLE_CATEGORY, installConsoleHandle } from "./console-handle";
 import { emitRecord } from "./emit";
 import { parseEnvironmentSpec } from "./environment-source";
-import { entryFor, type LevelEntry, resolveEntry, validateThreshold } from "./levels";
+import { type LevelEntry, resolveEntry, validateThreshold } from "./levels";
 import { createLogger, type Logger } from "./logger";
 import type { EmitSettings, LogProcessor, Sink } from "./record";
 import { DEFAULT_LEVELS, EMPTY_LAYER, createSettings, freezeLayer, type LevelLayer, type LoggingSettings } from "./settings";
+import { FALLBACK_ENTRY } from "./slots";
 
 /**
  * Composes a provider's configuration on the fresh builder it is handed. Its return value is
@@ -156,8 +157,6 @@ export interface LoggerProvider {
   installConsole(name: string): () => void;
 }
 
-const FALLBACK_LEVEL = "warn";
-
 /** The Resource of a provider given no `resource`: every key reserved, none set. */
 function emptyResource(): Resource {
   return Object.freeze({
@@ -203,7 +202,7 @@ export function createLoggerProvider(configure?: ConfigureCallback, options: Log
 
   const resolveLevel =
     options.resolve === undefined
-      ? (category: string): LevelEntry => resolveEntry(settings.levels, category) ?? entryFor(FALLBACK_LEVEL)
+      ? (category: string): LevelEntry => resolveEntry(settings.levels, category) ?? FALLBACK_ENTRY
       : options.resolve.bind(options);
 
   function resolve(category: string): LevelEntry {

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { entryFor, type LevelTable, OFF_SEVERITY, resolveEntry } from "./levels";
 import {
+  FALLBACK_ENTRY,
   findForeignProviderProtocols,
   getOrCreateDefaultProvider,
   normalizeEntry,
@@ -242,6 +243,15 @@ describe("resolveSharedEntry", () => {
     publishLevelTable(table);
     expect(resolveSharedEntry("other")).toEqual(entryFor("warn"));
     expect(resolveSharedEntry("app")).toEqual(entryFor("debug"));
+  });
+
+  test("returns one frozen fallback entry for every miss", () => {
+    publishLevelTable({ app: entryFor("debug") });
+    const first = resolveSharedEntry("other");
+    expect(resolveSharedEntry("other")).toBe(first);
+    expect(resolveSharedEntry("elsewhere")).toBe(first);
+    expect(first).toBe(FALLBACK_ENTRY);
+    expect(Object.isFrozen(first)).toBe(true);
   });
 });
 
