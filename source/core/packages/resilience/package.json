@@ -1,6 +1,6 @@
 {
   "name": "@vipengele/ts-core-resilience",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Resilience primitives for the browser and Node — timeouts, retries and the typed errors they raise.",
   "keywords": [
     "vipengele",
