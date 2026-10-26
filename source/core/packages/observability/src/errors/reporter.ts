@@ -57,10 +57,11 @@ function fillRuntimeContext(): void {
 
 /**
  * Creates a {@link Reporter} from a builder that starts from the defaults — no transport, the
- * high-resolution epoch clock, no integrations, the `secretKeys` redaction preset — and that
- * `configure` adds to. Without integrations, creating one installs nothing beyond the runtime
- * context it fills into the Resource: every other piece of state lives in the returned object. Each integration is set up here, and whatever global state it installs belongs to the reporter
- * until `close()` removes it.
+ * high-resolution epoch clock, no integrations, the `secretKeys` redaction preset, no processors
+ * and no `beforeSend` — and that `configure` adds to. Without integrations, creating one installs
+ * nothing beyond the runtime context it fills into the Resource: every other piece of state lives
+ * in the returned object. Each integration is set up here, and whatever global state it installs
+ * belongs to the reporter until `close()` removes it.
  *
  * Creating one detects the runtime, operating system, browser and device once and writes each
  * detected key to the Resource only when the Resource holds no value for it, so a value an
@@ -70,11 +71,11 @@ function fillRuntimeContext(): void {
  */
 export function createReporter(configure?: (builder: ReporterBuilder) => ReporterBuilder): Reporter {
   const initial = new ReporterBuilder();
-  const { transport, clock, projectRoot, integrations, redaction, limits, enabledEnvironments } = (
+  const { transport, clock, projectRoot, integrations, redaction, limits, enabledEnvironments, processors, beforeSend } = (
     configure === undefined ? initial : configure(initial)
   ).build();
   fillRuntimeContext();
-  const capture = createCapture({ clock, transport, projectRoot, redaction, limits, enabledEnvironments, processors: [], filters: [] });
+  const capture = createCapture({ clock, transport, projectRoot, redaction, limits, enabledEnvironments, processors, beforeSend });
   const flush = async (timeoutMs?: number): Promise<boolean> => (transport === undefined ? true : transport.flush(timeoutMs));
   const teardown = setupIntegrations(integrations, {
     capture(error, { mechanism, level, attributes }) {

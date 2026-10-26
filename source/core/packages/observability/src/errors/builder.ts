@@ -2,6 +2,7 @@ import { type Clock, type SerializeErrorOptions, systemClock } from "@vipengele/
 import { secretKeys } from "@vipengele/ts-core-redaction";
 import type { RedactionSetting } from "../redaction";
 import type { Integration } from "./integration";
+import type { ErrorEventProcessor } from "./pipeline";
 import { ReporterConfigError } from "./reporter-config-error";
 import type { Transport } from "./transport";
 
@@ -31,6 +32,10 @@ export interface ReporterSettings {
    * every capture. Absent when none was set; every environment is then enabled.
    */
   readonly enabledEnvironments?: readonly string[];
+  /** Run on every event after redaction, in the order they were added; frozen. */
+  readonly processors: readonly ErrorEventProcessor[];
+  /** Run on every event after every processor. Absent when none was set. */
+  readonly beforeSend?: ErrorEventProcessor;
 }
 
 /** The options {@link ReporterBuilder.limits} accepts, in the order they are validated. */
@@ -45,10 +50,17 @@ function describe(value: unknown): string {
   return typeof value === "number" ? String(value) : `of type ${value === null ? "null" : typeof value}`;
 }
 
+function validateProcessor(processor: unknown, what: string): ErrorEventProcessor {
+  if (typeof processor !== "function") {
+    throw new ReporterConfigError(`Invalid reporter ${what} ${describe(processor)}: expected a function.`);
+  }
+  return processor as ErrorEventProcessor;
+}
+
 /**
  * Composes a Reporter's settings, starting from the defaults: no transport, the high-resolution
- * epoch clock, no integrations, and the `secretKeys` redaction preset. Every method returns the
- * builder, so calls chain.
+ * epoch clock, no integrations, the `secretKeys` redaction preset, no processors and no
+ * `beforeSend`. Every method returns the builder, so calls chain.
  */
 export class ReporterBuilder {
   #transport: Transport | undefined;
@@ -58,6 +70,8 @@ export class ReporterBuilder {
   readonly #integrations = new Map<string, Integration>();
   #limits: Readonly<SerializeErrorOptions> = Object.freeze({});
   #enabledEnvironments: readonly string[] | undefined;
+  #processors: readonly ErrorEventProcessor[] = Object.freeze([]);
+  #beforeSend: ErrorEventProcessor | undefined;
 
   /** Where captured events go. A later call replaces the transport an earlier one set. */
   transport(transport: Transport): this {
@@ -156,6 +170,30 @@ export class ReporterBuilder {
     return this;
   }
 
+  /**
+   * A processor run on every event after redaction, after every processor added before it, and
+   * before `beforeSend`. It returns the event to pass on, or `null` to drop it; a throw drops the
+   * event too. Every call adds one more processor.
+   *
+   * @throws {ReporterConfigError} When `processor` is not a function; the builder is then left as it was.
+   */
+  addProcessor(processor: ErrorEventProcessor): this {
+    this.#processors = Object.freeze([...this.#processors, validateProcessor(processor, "processor")]);
+    return this;
+  }
+
+  /**
+   * The hook run on every event after every processor, last before the transport. It returns the
+   * event to send, or `null` to drop it; a throw drops the event too. A later call replaces the hook
+   * an earlier one set.
+   *
+   * @throws {ReporterConfigError} When `hook` is not a function; the builder is then left as it was.
+   */
+  beforeSend(hook: ErrorEventProcessor): this {
+    this.#beforeSend = validateProcessor(hook, "beforeSend hook");
+    return this;
+  }
+
   /** The settings composed so far, as a snapshot a later call on this builder does not change. */
   build(): ReporterSettings {
     return {
@@ -167,6 +205,8 @@ export class ReporterBuilder {
       redaction: this.#redaction === undefined ? secretKeys : this.#redaction,
       limits: this.#limits,
       enabledEnvironments: this.#enabledEnvironments,
+      processors: this.#processors,
+      beforeSend: this.#beforeSend,
     };
   }
 }

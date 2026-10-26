@@ -2,6 +2,7 @@ import { systemClock } from "@vipengele/ts-core-common";
 import { secretKeys } from "@vipengele/ts-core-redaction";
 import { describe, expect, it } from "vitest";
 import { ReporterBuilder } from "./builder";
+import type { ErrorEvent } from "./event";
 import type { Integration } from "./integration";
 import { isReporterConfigError } from "./reporter-config-error";
 
@@ -17,7 +18,7 @@ function anIntegration(name: string): Integration {
 }
 
 describe("ReporterBuilder", () => {
-  it("starts with no transport, the system clock, no integrations, the secretKeys redaction, no limits and no enabled environments", () => {
+  it("starts with no transport, the system clock, no integrations, the secretKeys redaction, no limits, no enabled environments, no processors and no beforeSend", () => {
     const settings = new ReporterBuilder().build();
 
     expect(settings).toEqual({
@@ -27,8 +28,12 @@ describe("ReporterBuilder", () => {
       redaction: secretKeys,
       limits: {},
       enabledEnvironments: undefined,
+      processors: [],
+      beforeSend: undefined,
     });
     expect(settings).toHaveProperty("enabledEnvironments", undefined);
+    expect(settings).toHaveProperty("beforeSend", undefined);
+    expect(Object.isFrozen(settings.processors)).toBe(true);
   });
 
   it("keeps the redaction set last, null included", () => {
@@ -228,6 +233,71 @@ describe("ReporterBuilder", () => {
 
       expect(() => builder.enabledEnvironments([])).toThrow(expect.toSatisfy(isReporterConfigError));
       expect(builder.build().enabledEnvironments).toBeUndefined();
+    });
+  });
+
+  describe("addProcessor", () => {
+    const first = (event: ErrorEvent): ErrorEvent => event;
+    const second = (): null => null;
+
+    it("keeps processors in the order added, and returns the builder", () => {
+      const builder = new ReporterBuilder();
+
+      expect(builder.addProcessor(first)).toBe(builder);
+      builder.addProcessor(second).addProcessor(first);
+
+      expect(builder.build().processors).toEqual([first, second, first]);
+    });
+
+    it("builds a frozen snapshot a later addProcessor does not change", () => {
+      const builder = new ReporterBuilder().addProcessor(first);
+      const { processors } = builder.build();
+
+      builder.addProcessor(second);
+
+      expect(processors).toEqual([first]);
+      expect(Object.isFrozen(processors)).toBe(true);
+      expect(builder.build().processors).toEqual([first, second]);
+    });
+
+    it.for([null, undefined, 5, "processor", {}])("rejects %o and leaves the builder as it was", (value) => {
+      const builder = new ReporterBuilder().addProcessor(first);
+
+      expect(() => builder.addProcessor(value as never)).toThrow(expect.toSatisfy(isReporterConfigError));
+      expect(builder.build().processors).toEqual([first]);
+    });
+
+    it("names what it rejects", () => {
+      expect(() => new ReporterBuilder().addProcessor(null as never)).toThrow(
+        "Invalid reporter processor of type null: expected a function.",
+      );
+      expect(() => new ReporterBuilder().addProcessor(5 as never)).toThrow("Invalid reporter processor 5: expected a function.");
+    });
+  });
+
+  describe("beforeSend", () => {
+    const first = (event: ErrorEvent): ErrorEvent => event;
+    const last = (): null => null;
+
+    it("keeps the hook set last, and returns the builder", () => {
+      const builder = new ReporterBuilder();
+
+      expect(builder.beforeSend(first)).toBe(builder);
+      expect(builder.build().beforeSend).toBe(first);
+      expect(builder.beforeSend(last).build().beforeSend).toBe(last);
+    });
+
+    it.for([null, undefined, 5, "hook", {}])("rejects %o and leaves the builder as it was", (value) => {
+      const builder = new ReporterBuilder().beforeSend(first);
+
+      expect(() => builder.beforeSend(value as never)).toThrow(expect.toSatisfy(isReporterConfigError));
+      expect(builder.build().beforeSend).toBe(first);
+    });
+
+    it("names what it rejects", () => {
+      expect(() => new ReporterBuilder().beforeSend("hook" as never)).toThrow(
+        "Invalid reporter beforeSend hook of type string: expected a function.",
+      );
     });
   });
 });

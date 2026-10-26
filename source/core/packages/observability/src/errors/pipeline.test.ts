@@ -505,3 +505,69 @@ describe("the limits an event is cut to", () => {
     expect(exception?.cause?.cause?.type).toBe("[Truncated]");
   });
 });
+
+describe("processors and beforeSend", () => {
+  function tagging(tag: string): (event: ErrorEvent) => ErrorEvent {
+    return (event) => ({ ...event, attributes: { ...event.attributes, order: `${event.attributes.order ?? ""}${tag}` } });
+  }
+
+  it("runs the builder's processors in the order added, then beforeSend, before the transport", () => {
+    const transport = createTestTransport();
+    const reporter = createReporter((b) =>
+      b.transport(transport).beforeSend(tagging("s")).addProcessor(tagging("a")).addProcessor(tagging("b")),
+    );
+
+    expect(reporter.captureMessage("m")).toMatch(EVENT_ID);
+
+    expect(onlyEvent(transport.events).attributes.order).toBe("abs");
+  });
+
+  it("runs only the beforeSend hook set last", () => {
+    const transport = createTestTransport();
+    const first = vi.fn(tagging("first"));
+    const reporter = createReporter((b) => b.transport(transport).beforeSend(first).beforeSend(tagging("last")));
+
+    reporter.captureMessage("m");
+
+    expect(first).not.toHaveBeenCalled();
+    expect(onlyEvent(transport.events).attributes.order).toBe("last");
+  });
+
+  it("drops an event beforeSend returns null for, and still returns its id", () => {
+    const transport = createTestTransport();
+    const reporter = createReporter((b) => b.transport(transport).beforeSend(() => null));
+
+    expect(reporter.captureException(new Error("boom"))).toMatch(EVENT_ID);
+    expect(transport.events).toEqual([]);
+  });
+
+  it("hands processors and beforeSend an event already redacted", () => {
+    const transport = createTestTransport();
+    const seen: unknown[] = [];
+    const record = (event: ErrorEvent): ErrorEvent => {
+      seen.push(event.attributes.password);
+      return event;
+    };
+    const reporter = createReporter((b) => b.transport(transport).addProcessor(record).beforeSend(record));
+
+    reporter.captureMessage("m");
+    Scope.isolated("request", { password: "hunter2" }, () =>
+      reporter.captureException(new Error("boom"), { attributes: { password: "hunter2" } }),
+    );
+
+    expect(seen).toEqual([undefined, undefined, "[REDACTED]", "[REDACTED]"]);
+    expect(transport.events[1]?.attributes.password).toBe("[REDACTED]");
+  });
+
+  it("never throws out of a capture when a processor throws, and drops the event", () => {
+    const transport = createTestTransport();
+    const reporter = createReporter((b) =>
+      b.transport(transport).addProcessor(() => {
+        throw new Error("processor failed");
+      }),
+    );
+
+    expect(() => reporter.captureMessage("m")).not.toThrow();
+    expect(transport.events).toEqual([]);
+  });
+});
