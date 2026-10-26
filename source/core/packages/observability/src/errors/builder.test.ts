@@ -478,6 +478,7 @@ describe("ReporterBuilder", () => {
       ["an object without burst", { perMinute: 60 }],
       ["an object without perMinute", { burst: 60 }],
       ["a zero burst", { burst: 0, perMinute: 60 }],
+      ["a fractional burst below 1", { burst: 0.5, perMinute: 60 }],
       ["a negative perMinute", { burst: 60, perMinute: -1 }],
       ["an infinite burst", { burst: Number.POSITIVE_INFINITY, perMinute: 60 }],
       ["a NaN perMinute", { burst: 60, perMinute: Number.NaN }],
@@ -494,7 +495,10 @@ describe("ReporterBuilder", () => {
         "Invalid reporter rate limit of type boolean: expected false or an object.",
       );
       expect(() => new ReporterBuilder().rateLimit({ burst: 0, perMinute: 60 })).toThrow(
-        "Invalid reporter rate limit burst 0: expected a positive finite number.",
+        "Invalid reporter rate limit burst 0: expected a finite number of at least 1.",
+      );
+      expect(() => new ReporterBuilder().rateLimit({ burst: 0.5, perMinute: 60 })).toThrow(
+        "Invalid reporter rate limit burst 0.5: expected a finite number of at least 1.",
       );
       expect(() => new ReporterBuilder().rateLimit({ burst: 60 } as never)).toThrow(
         "Invalid reporter rate limit perMinute of type undefined: expected a positive finite number.",

@@ -500,7 +500,7 @@ type ErrorEventProcessor = (event: ErrorEvent) => ErrorEvent | null;
 | `dedupe(enabled: boolean)` | `true` | Drops an event that repeats the last one that passed. |
 | `rateLimit(limit: false \| RateLimitOptions)` | `{ burst: 60, perMinute: 60 }` | A token bucket; `false` turns it off. |
 
-`RateLimitOptions` is `{ burst: number; perMinute: number }`, both positive finite numbers. An invalid
+`RateLimitOptions` is `{ burst: number; perMinute: number }`: `burst` a finite number of at least 1, since a bucket holding less than one token never lets an event pass, and `perMinute` a positive finite number. An invalid
 argument throws `ReporterConfigError` and leaves the builder unchanged.
 
 - **Processors and `beforeSend`** — each returns the event to pass on, or `null` to drop it; one that

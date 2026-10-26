@@ -72,9 +72,12 @@ function isSampleRate(value: unknown): value is number {
 /** The options {@link ReporterBuilder.rateLimit} requires, in the order they are validated. */
 const RATE_LIMIT_KEYS = ["burst", "perMinute"] as const;
 
-/** A rate limit option is a positive finite number. */
-function isRateLimitOption(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value) && value > 0;
+/** The smallest value of each rate limit option: a bucket that holds under one token never lets an event pass. */
+const RATE_LIMIT_MINIMUM = { burst: 1, perMinute: Number.MIN_VALUE } as const;
+
+/** A rate limit option is a finite number of at least its minimum. */
+function isRateLimitOption(value: unknown, key: (typeof RATE_LIMIT_KEYS)[number]): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= RATE_LIMIT_MINIMUM[key];
 }
 
 function validateProcessor(processor: unknown, what: string): ErrorEventProcessor {
@@ -304,8 +307,8 @@ export class ReporterBuilder {
    * unhandled event skips it and takes no token. `false` turns it off. A burst of 60 refilled at 60
    * tokens per minute applies unless set. A later call replaces the setting an earlier one made.
    *
-   * @throws {ReporterConfigError} When `limit` is neither `false` nor an object, or its `burst` or
-   * `perMinute` is not a positive finite number; the builder is then left as it was.
+   * @throws {ReporterConfigError} When `limit` is neither `false` nor an object, or its `burst` is not a
+   * finite number of at least 1 or its `perMinute` is not a positive finite number; the builder is then left as it was.
    */
   rateLimit(limit: false | RateLimitOptions): this {
     if (limit === false) {
@@ -317,8 +320,9 @@ export class ReporterBuilder {
     }
     for (const key of RATE_LIMIT_KEYS) {
       const value: unknown = limit[key];
-      if (!isRateLimitOption(value)) {
-        throw new ReporterConfigError(`Invalid reporter rate limit ${key} ${describe(value)}: expected a positive finite number.`);
+      if (!isRateLimitOption(value, key)) {
+        const expected = key === "burst" ? "a finite number of at least 1" : "a positive finite number";
+        throw new ReporterConfigError(`Invalid reporter rate limit ${key} ${describe(value)}: expected ${expected}.`);
       }
     }
     this.#rateLimit = Object.freeze({ burst: limit.burst, perMinute: limit.perMinute });
