@@ -161,7 +161,8 @@ Node (heap growth of 1e5 disabled calls with one hoisted thunk stays under 256 K
 **Sinks** — a `Sink` is an object with `write(record, resource)`, where `resource` is the `Resource`
 in force when the record was emitted; that `(record, resource)` arity is part of the
 `vipengele.logger.provider.v1` protocol. `builder.addSink(sink)` adds one, and every sink receives
-every record in the order added:
+every record in the order added (`createTestSink` is the sink for asserting on them in a test, see
+**The test sink** below):
 
 ```ts
 const records: LogRecord[] = [];
@@ -250,6 +251,38 @@ Built-in redaction is the first stage, ahead of every processor, so a processor 
 record. `redactionProcessor(policy = secretKeys)` is the opt-in extra for a different policy on one
 sink: it redacts `attributes` and the error chain with that policy and does not scan `message`.
 
+**The test sink** — `createTestSink()` returns a `Sink` that keeps every record and its `Resource`,
+so a test asserts on logging without spying on `console`. `records` and `resources` are live arrays,
+oldest first and aligned by index; `find(criteria)` returns a fresh array of the records that match
+every field given, and `find({})` returns a copy of all of them:
+
+```ts
+import { Logging, createTestSink } from "@vipengele/ts-core-observability/logger";
+
+const sink = createTestSink();
+const provider = Logging.createProvider((builder) => builder.addLevels({ "*": "info" }).addSink(sink));
+
+provider.logger("app.db.pool").info("connected", { host: "db1" });
+provider.logger("app.http").info("listening", { port: 8080 });
+
+const found = sink.find({ category: "app.db", attributes: { host: "db1" } });
+
+expect(found).toHaveLength(1);
+expect(found[0]?.message).toBe("connected");
+```
+
+- **`level`** matches exactly: `{ level: "warn" }` finds `warn` records only, not `error`.
+- **`category`** is a case-sensitive prefix on a dot boundary: `app.db` matches `app.db` and
+  `app.db.pool`, not `app.dbx`. An invalid category, `*` included, throws a `LoggingConfigError`.
+- **`message`** is an exact match for a string; a `RegExp` is tested against the message, whatever
+  its `g` or `y` flags.
+- **`attributes`** is a shallow subset: each given key must be strictly equal to the record's value.
+  A nested object or array never matches, because it is never the same reference.
+- **`clear()`** empties `records` and `resources` in place, so a reference to either stays valid.
+- **After redaction and processors** — the sink receives the record the built-in redaction and the
+  processors ahead of it produced, so a secret-keyed value is redacted and `find` for its original
+  value finds nothing under the default policy.
+
 **Formatters and the console sink** — a `Formatter` is an object with `format(record, resource)`
 that returns the arguments of one console call. It never picks the console method: the console sink
 routes by level (`error` and `fatal` to `console.error`, `warn` to `console.warn`, `info` to
@@ -273,6 +306,8 @@ Logging.configure((b) => b.addSink(createConsoleSink()));
   has `error`, `warn`, `info` and `debug`.
 - **Failure** — a formatter that throws propagates out of `write` to the provider's `onSinkError`,
   as any sink's failure does.
+
+To assert on records instead of printing them, use the test sink (**The test sink**, above).
 
 The three formatters:
 

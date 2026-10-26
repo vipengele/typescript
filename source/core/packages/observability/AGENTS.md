@@ -80,6 +80,8 @@ Run commands from `source/core` (`pnpm build`, `pnpm type-check`, `pnpm test`, `
   resolved once at creation. Without an injected `source`, `detectCapability` memoises per module
   copy, so tests inject a `source` (or a `formatter`) to control the outcome; a bare call is only
   asserted to return one of the three formatters.
+- `createTestSink` (`test-sink.ts`) is the in-memory sink: live `records`/`resources` arrays plus
+  `find` and `clear`; it stores the shared frozen records by reference.
 - `ConsoleLike` has no `log`. The routing table in `formatter.ts` is a private copy that mirrors
   the errors console transport; ADR-0007 "Levels" is the authority. `./logger` and `./errors` must
   not import each other.

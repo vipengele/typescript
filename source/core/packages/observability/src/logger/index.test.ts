@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import * as entry from "./index";
-import type { ConsoleLike, ConsoleSinkOptions, Formatter, LogProcessor, LogRecord, Sink, SinkOptions, SinkRegistration } from "./index";
+import type { ConsoleLike, ConsoleSinkOptions, Formatter, LogProcessor, SinkOptions, SinkRegistration } from "./index";
 
 test("the entry point exports exactly the public runtime surface", () => {
   expect(Object.keys(entry).sort()).toEqual([
@@ -10,6 +10,7 @@ test("the entry point exports exactly the public runtime surface", () => {
     "ansiFormatter",
     "browserFormatter",
     "createConsoleSink",
+    "createTestSink",
     "isLoggingConfigError",
     "jsonLinesFormatter",
     "parseSpec",
@@ -26,17 +27,17 @@ test("a Logger from the exported facade answers level queries", () => {
 });
 
 test("a provider built with a sink delivers a record and the resource to it", () => {
-  const received: { record: LogRecord; resource: unknown }[] = [];
-  const sink: Sink = { write: (record, resource) => received.push({ record, resource }) };
+  const sink = entry.createTestSink();
   const provider = entry.Logging.createProvider((b) => b.addLevels({ "*": "info" }).addSink(sink));
 
   provider.logger("x").info("hi", { a: 1 });
 
-  expect(received).toHaveLength(1);
-  expect(received[0]?.record).toMatchObject({ level: "info", category: "x", message: "hi", attributes: { a: 1 } });
-  expect(typeof received[0]?.record.time).toBe("number");
-  expect(received[0]?.record.error).toBeUndefined();
-  expect(received[0]?.resource).toBeTypeOf("object");
+  expect(sink.records).toHaveLength(1);
+  expect(sink.resources).toHaveLength(1);
+  expect(sink.records[0]).toMatchObject({ level: "info", category: "x", message: "hi", attributes: { a: 1 } });
+  expect(typeof sink.records[0]?.time).toBe("number");
+  expect(sink.records[0]?.error).toBeUndefined();
+  expect(sink.resources[0]).toBeTypeOf("object");
 });
 
 test("the processor and sink registration types are exported", () => {

@@ -15,3 +15,4 @@ export { redactionProcessor } from "./redaction-processor";
 export type { LogProcessor, LogRecord, RedactionSetting, Sink, SinkRegistration } from "./record";
 export type { BrowserSourcesSetting, LayerName, LevelLayer, LoggingLayers, LoggingSettings, OutputSettings } from "./settings";
 export { type ParsedSpec, parseSpec } from "./spec";
+export { createTestSink, type FindCriteria, type TestSink } from "./test-sink";
