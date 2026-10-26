@@ -71,11 +71,34 @@ function fillRuntimeContext(): void {
  */
 export function createReporter(configure?: (builder: ReporterBuilder) => ReporterBuilder): Reporter {
   const initial = new ReporterBuilder();
-  const { transport, clock, projectRoot, integrations, redaction, limits, enabledEnvironments, processors, beforeSend } = (
-    configure === undefined ? initial : configure(initial)
-  ).build();
+  const {
+    transport,
+    clock,
+    projectRoot,
+    integrations,
+    redaction,
+    limits,
+    enabledEnvironments,
+    processors,
+    beforeSend,
+    sampleRate,
+    random,
+    ignoreErrors,
+  } = (configure === undefined ? initial : configure(initial)).build();
   fillRuntimeContext();
-  const capture = createCapture({ clock, transport, projectRoot, redaction, limits, enabledEnvironments, processors, beforeSend });
+  const capture = createCapture({
+    clock,
+    transport,
+    projectRoot,
+    redaction,
+    limits,
+    enabledEnvironments,
+    processors,
+    beforeSend,
+    sampleRate,
+    random,
+    ignoreErrors,
+  });
   const flush = async (timeoutMs?: number): Promise<boolean> => (transport === undefined ? true : transport.flush(timeoutMs));
   const teardown = setupIntegrations(integrations, {
     capture(error, { mechanism, level, attributes }) {

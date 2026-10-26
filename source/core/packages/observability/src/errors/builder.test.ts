@@ -18,7 +18,7 @@ function anIntegration(name: string): Integration {
 }
 
 describe("ReporterBuilder", () => {
-  it("starts with no transport, the system clock, no integrations, the secretKeys redaction, no limits, no enabled environments, no processors and no beforeSend", () => {
+  it("starts with no transport, the system clock, no integrations, the secretKeys redaction, no limits, no enabled environments, no processors, no beforeSend, a sample rate of 1 drawn with Math.random and no ignored errors", () => {
     const settings = new ReporterBuilder().build();
 
     expect(settings).toEqual({
@@ -30,10 +30,14 @@ describe("ReporterBuilder", () => {
       enabledEnvironments: undefined,
       processors: [],
       beforeSend: undefined,
+      sampleRate: 1,
+      random: Math.random,
+      ignoreErrors: [],
     });
     expect(settings).toHaveProperty("enabledEnvironments", undefined);
     expect(settings).toHaveProperty("beforeSend", undefined);
     expect(Object.isFrozen(settings.processors)).toBe(true);
+    expect(Object.isFrozen(settings.ignoreErrors)).toBe(true);
   });
 
   it("keeps the redaction set last, null included", () => {
@@ -297,6 +301,119 @@ describe("ReporterBuilder", () => {
     it("names what it rejects", () => {
       expect(() => new ReporterBuilder().beforeSend("hook" as never)).toThrow(
         "Invalid reporter beforeSend hook of type string: expected a function.",
+      );
+    });
+  });
+
+  describe("random", () => {
+    it("keeps the source set last, and returns the builder", () => {
+      const builder = new ReporterBuilder();
+      const first = (): number => 0.1;
+      const last = (): number => 0.9;
+
+      expect(builder.random(first)).toBe(builder);
+      expect(builder.build().random).toBe(first);
+      expect(builder.random(last).build().random).toBe(last);
+    });
+  });
+
+  describe("sampleRate", () => {
+    it("keeps the rate set last, and returns the builder", () => {
+      const builder = new ReporterBuilder();
+
+      expect(builder.sampleRate(0.25)).toBe(builder);
+      expect(builder.build().sampleRate).toBe(0.25);
+      expect(builder.sampleRate(0.5).build().sampleRate).toBe(0.5);
+    });
+
+    it.for([0, 1, 0.5])("accepts %d", (rate) => {
+      expect(new ReporterBuilder().sampleRate(rate).build().sampleRate).toBe(rate);
+    });
+
+    it.for([
+      ["NaN", Number.NaN],
+      ["a negative number", -0.1],
+      ["a number above 1", 1.01],
+      ["infinity", Number.POSITIVE_INFINITY],
+      ["a numeric string", "0.5"],
+      ["null", null],
+      ["undefined", undefined],
+      ["a bigint", 1n],
+    ] as const)("rejects %s and leaves the builder as it was", ([, value]) => {
+      const builder = new ReporterBuilder().sampleRate(0.3);
+
+      expect(() => builder.sampleRate(value as never)).toThrow(expect.toSatisfy(isReporterConfigError));
+      expect(builder.build().sampleRate).toBe(0.3);
+    });
+
+    it("names the value it rejects", () => {
+      expect(() => new ReporterBuilder().sampleRate(2)).toThrow("Invalid reporter sample rate 2: expected a number from 0 to 1.");
+      expect(() => new ReporterBuilder().sampleRate(Number.NaN)).toThrow(
+        "Invalid reporter sample rate NaN: expected a number from 0 to 1.",
+      );
+      expect(() => new ReporterBuilder().sampleRate("1" as never)).toThrow(
+        "Invalid reporter sample rate of type string: expected a number from 0 to 1.",
+      );
+    });
+  });
+
+  describe("ignoreErrors", () => {
+    it("keeps the patterns set, and returns the builder", () => {
+      const builder = new ReporterBuilder();
+      const pattern = /^Timeout/;
+
+      expect(builder.ignoreErrors(["ResizeObserver", pattern])).toBe(builder);
+      expect(builder.build().ignoreErrors).toEqual(["ResizeObserver", pattern]);
+      expect(builder.build().ignoreErrors[1]).toBe(pattern);
+    });
+
+    it("replaces an earlier list with a later one, the empty list included", () => {
+      const builder = new ReporterBuilder().ignoreErrors(["first"]).ignoreErrors(["second"]);
+
+      expect(builder.build().ignoreErrors).toEqual(["second"]);
+      expect(builder.ignoreErrors([]).build().ignoreErrors).toEqual([]);
+    });
+
+    it("builds a frozen copy a later change to the caller's array does not reach", () => {
+      const patterns: (string | RegExp)[] = ["first"];
+      const builder = new ReporterBuilder().ignoreErrors(patterns);
+
+      patterns.push("second");
+      patterns[0] = "changed";
+      const { ignoreErrors } = builder.build();
+
+      expect(ignoreErrors).toEqual(["first"]);
+      expect(ignoreErrors).not.toBe(patterns);
+      expect(Object.isFrozen(ignoreErrors)).toBe(true);
+    });
+
+    it.for([
+      ["a number entry", ["first", 5]],
+      ["an undefined entry", [undefined]],
+      ["a null entry", [null]],
+      ["a hole", sparse()],
+      ["a function entry", [() => true]],
+      ["an object entry", [{ test: () => true }]],
+    ] as const)("rejects %s and leaves the builder as it was", ([, value]) => {
+      const builder = new ReporterBuilder().ignoreErrors(["kept"]);
+
+      expect(() => builder.ignoreErrors(value as never)).toThrow(expect.toSatisfy(isReporterConfigError));
+      expect(builder.build().ignoreErrors).toEqual(["kept"]);
+    });
+
+    it.for([null, undefined, "pattern", /pattern/, { 0: "pattern", length: 1 }])("rejects %o in place of an array", (value) => {
+      const builder = new ReporterBuilder().ignoreErrors(["kept"]);
+
+      expect(() => builder.ignoreErrors(value as never)).toThrow(expect.toSatisfy(isReporterConfigError));
+      expect(builder.build().ignoreErrors).toEqual(["kept"]);
+    });
+
+    it("names what it rejects", () => {
+      expect(() => new ReporterBuilder().ignoreErrors(["first", 7 as never])).toThrow(
+        "Invalid reporter ignoreErrors pattern at index 1 7: expected a string or a RegExp.",
+      );
+      expect(() => new ReporterBuilder().ignoreErrors(null as never)).toThrow(
+        "Invalid reporter ignoreErrors of type null: expected an array of strings and RegExps.",
       );
     });
   });

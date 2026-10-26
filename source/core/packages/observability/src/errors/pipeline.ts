@@ -59,6 +59,18 @@ export interface Pipeline {
    * Every environment is enabled when absent.
    */
   readonly enabledEnvironments?: readonly string[] | undefined;
+  /**
+   * The share of events kept, checked right after the environment gate: an event is kept when
+   * `random()` returns less than it. Every event is kept when absent.
+   */
+  readonly sampleRate?: number | undefined;
+  /** The source of the number every event is sampled with, in `[0, 1)`; `Math.random` when absent. */
+  readonly random?: (() => number) | undefined;
+  /**
+   * Matched against every event after normalization and before enrichment; a match drops the event.
+   * No event is dropped when absent.
+   */
+  readonly ignoreErrors?: readonly (string | RegExp)[] | undefined;
 }
 
 /** `serializeError`'s default `maxBreadth`, which `frames` take when no `maxBreadth` is set. */
@@ -116,6 +128,37 @@ function scopeAttributes(pipeline: Pipeline): Attributes {
   } catch {
     return {};
   }
+}
+
+/** Stage 2: whether the event is inside the sample, drawing one number for it when a `sampleRate` is set. */
+function isSampled(pipeline: Pipeline): boolean {
+  return pipeline.sampleRate === undefined || (pipeline.random ?? Math.random)() < pipeline.sampleRate;
+}
+
+/**
+ * Whether `pattern` matches `text`: a string as a substring, a RegExp tested from index 0, so a `g`
+ * or `y` flag never carries a position from one test to the next.
+ */
+function matchesPattern(pattern: string | RegExp, text: string): boolean {
+  if (typeof pattern === "string") {
+    return text.includes(pattern);
+  }
+  pattern.lastIndex = 0;
+  return pattern.test(text);
+}
+
+/**
+ * Stage 4: whether any `ignoreErrors` pattern matches the normalized event. An exception is matched
+ * through its top exception, the outermost link of the chain, as `"<type>: <message>"` and as its
+ * message alone, so a RegExp anchored to the start of the message matches too; a captured message
+ * is matched as its text.
+ */
+function isIgnored(payload: NormalizedPayload, pipeline: Pipeline): boolean {
+  const texts =
+    payload.exception === undefined
+      ? [payload.message as string]
+      : [`${payload.exception.type}: ${payload.exception.message}`, payload.exception.message];
+  return pipeline.ignoreErrors?.some((pattern) => texts.some((text) => matchesPattern(pattern, text))) === true;
 }
 
 /**
@@ -215,8 +258,8 @@ function runProcessors(event: ErrorEvent, pipeline: Pipeline): ErrorEvent | null
  * Runs one event through ADR-0020's stages in order, returning at the first one that drops it.
  * The transport receives `resource` — the Resource the environment gate read, so a
  * `Scope.setResource` made while the event runs through the stages never changes what it is sent
- * with. The step numbers are ADR-0020's; the gaps in them are its stages 2 (sampling), 4
- * (`ignoreErrors`), 9 (deduplication) and 10 (rate limit), which this pipeline does not run.
+ * with. The step numbers are ADR-0020's; the gaps in them are its stages 9 (deduplication) and
+ * 10 (rate limit), which this pipeline does not run.
  */
 function run(input: CaptureInput, mechanism: Mechanism, id: string, pipeline: Pipeline): void {
   // Stage 1: the environment gate.
@@ -224,8 +267,16 @@ function run(input: CaptureInput, mechanism: Mechanism, id: string, pipeline: Pi
   if (!isEnvironmentEnabled(resource, pipeline)) {
     return;
   }
+  // Stage 2: sampling.
+  if (!isSampled(pipeline)) {
+    return;
+  }
   // Stage 3: normalize.
   const payload = normalize(input, pipeline);
+  // Stage 4: ignoreErrors.
+  if (isIgnored(payload, pipeline)) {
+    return;
+  }
   // Stage 5: enrich.
   const enriched = enrich(payload, input, mechanism, id, pipeline);
   // Stage 6: redaction.
@@ -249,9 +300,10 @@ function run(input: CaptureInput, mechanism: Mechanism, id: string, pipeline: Pi
  * Creates the function every capture goes through — `captureException`, `captureMessage`, and any
  * handler that hands the reporter an error with its own {@link Mechanism}. It reads the Resource
  * once and drops the event before any stage when its environment is not enabled; otherwise it runs
- * normalize, enrich, redaction, the processors, `beforeSend` and the transport, in that order. A
- * stage or a `transport.send` that throws drops the event silently, as does a processor or
- * `beforeSend` that returns `null`: the id is returned either way, since a transport is
+ * sampling, normalize, `ignoreErrors`, enrich, redaction, the processors, `beforeSend` and the
+ * transport, in that order. A stage or a `transport.send` that throws drops the event silently, as
+ * does an event outside the sample, one an `ignoreErrors` pattern matches, or one a processor or
+ * `beforeSend` returns `null` for: the id is returned either way, since a transport is
  * fire-and-forget and the caller learns nothing of delivery (ADR-0010, ADR-0020).
  */
 export function createCapture(pipeline: Pipeline): Capture {

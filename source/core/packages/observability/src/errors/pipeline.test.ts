@@ -2,6 +2,7 @@ import type { SerializeErrorOptions } from "@vipengele/ts-core-common";
 import { type Resource, Scope } from "@vipengele/ts-core-common/scope";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ErrorEvent } from "./event";
+import { createCapture } from "./pipeline";
 import { createReporter } from "./reporter";
 import { createTestTransport } from "./transports/test-transport";
 
@@ -569,5 +570,239 @@ describe("processors and beforeSend", () => {
 
     expect(() => reporter.captureMessage("m")).not.toThrow();
     expect(transport.events).toEqual([]);
+  });
+});
+
+describe("sampling", () => {
+  function aSampledReporter(rate: number, random: () => number, clock: () => number = () => 1) {
+    const transport = createTestTransport();
+    return { transport, reporter: createReporter((b) => b.transport(transport).clock(clock).sampleRate(rate).random(random)) };
+  }
+
+  it("sends an event when random() returns less than the rate", () => {
+    const { transport, reporter } = aSampledReporter(0.5, () => 0.49);
+
+    const id = reporter.captureMessage("kept");
+
+    expect(onlyEvent(transport.events).id).toBe(id);
+  });
+
+  it("drops an event when random() returns exactly the rate, and still returns an id", () => {
+    const { transport, reporter } = aSampledReporter(0.5, () => 0.5);
+
+    expect(reporter.captureMessage("dropped")).toMatch(EVENT_ID);
+    expect(transport.events).toEqual([]);
+  });
+
+  it("draws one number per event, and keeps or drops each on its own", () => {
+    const draws = [0.1, 0.9, 0.2];
+    const random = vi.fn(() => draws.shift() as number);
+    const { transport, reporter } = aSampledReporter(0.5, random);
+
+    reporter.captureMessage("first");
+    reporter.captureMessage("second");
+    reporter.captureMessage("third");
+
+    expect(random).toHaveBeenCalledTimes(3);
+    expect(transport.events.map((event) => event.message)).toEqual(["first", "third"]);
+  });
+
+  it("drops an event outside the sample before normalizing it, and runs no later stage", () => {
+    const clock = vi.fn(() => 1);
+    const processor = vi.fn((event: ErrorEvent) => event);
+    const beforeSend = vi.fn((event: ErrorEvent) => event);
+    const transport = createTestTransport();
+    const send = vi.spyOn(transport, "send");
+    const reporter = createReporter((b) =>
+      b
+        .transport(transport)
+        .clock(clock)
+        .sampleRate(0.1)
+        .random(() => 0.5)
+        .addProcessor(processor)
+        .beforeSend(beforeSend),
+    );
+    const error = new Error("boom");
+    const read = vi.fn();
+    Object.defineProperty(error, "message", {
+      get: () => {
+        read();
+        return "boom";
+      },
+    });
+
+    expect(reporter.captureException(error)).toMatch(EVENT_ID);
+
+    expect(read).not.toHaveBeenCalled();
+    expect(clock).not.toHaveBeenCalled();
+    expect(processor).not.toHaveBeenCalled();
+    expect(beforeSend).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("does not draw for an event the environment gate drops", () => {
+    Scope.setResource({ "deployment.environment.name": "development" });
+    const random = vi.fn(() => 0);
+    const transport = createTestTransport();
+    const reporter = createReporter((b) => b.transport(transport).enabledEnvironments(["production"]).random(random));
+
+    reporter.captureMessage("hello");
+
+    expect(random).not.toHaveBeenCalled();
+    expect(transport.events).toEqual([]);
+  });
+
+  it("keeps every event at the default rate of 1 drawn with Math.random", () => {
+    const { transport, reporter } = aReporter();
+
+    for (let index = 0; index < 20; index += 1) {
+      reporter.captureMessage(`event ${index}`);
+    }
+
+    expect(transport.events).toHaveLength(20);
+  });
+
+  it("drops every event at a rate of 0 drawn with Math.random", () => {
+    const transport = createTestTransport();
+    const reporter = createReporter((b) => b.transport(transport).sampleRate(0));
+
+    for (let index = 0; index < 20; index += 1) {
+      reporter.captureMessage(`event ${index}`);
+    }
+
+    expect(transport.events).toEqual([]);
+  });
+
+  it("keeps every event at a rate of 1 set explicitly and drawn with Math.random", () => {
+    const transport = createTestTransport();
+    const reporter = createReporter((b) => b.transport(transport).sampleRate(1));
+
+    for (let index = 0; index < 20; index += 1) {
+      reporter.captureMessage(`event ${index}`);
+    }
+
+    expect(transport.events).toHaveLength(20);
+  });
+
+  it("keeps every event at a rate of 1 even when random() returns its largest value", () => {
+    const { transport, reporter } = aSampledReporter(1, () => 1 - Number.EPSILON);
+
+    reporter.captureMessage("kept");
+
+    expect(onlyEvent(transport.events).message).toBe("kept");
+  });
+
+  it("draws with Math.random when a pipeline sets a rate and no random source", () => {
+    const transport = createTestTransport();
+    const random = vi.spyOn(Math, "random");
+    const capture = createCapture({ clock: () => 1, processors: [], transport, sampleRate: 0 });
+
+    expect(capture({ kind: "message", message: "dropped" }, { handled: true, source: "capture" })).toMatch(EVENT_ID);
+
+    expect(random).toHaveBeenCalled();
+    expect(transport.events).toEqual([]);
+  });
+
+  it("drops every event at a rate of 0 even when random() returns 0", () => {
+    const { transport, reporter } = aSampledReporter(0, () => 0);
+
+    reporter.captureMessage("dropped");
+
+    expect(transport.events).toEqual([]);
+  });
+});
+
+describe("ignoreErrors", () => {
+  function anIgnoringReporter(patterns: readonly (string | RegExp)[], processor: (event: ErrorEvent) => ErrorEvent = (event) => event) {
+    const transport = createTestTransport();
+    return { transport, reporter: createReporter((b) => b.transport(transport).ignoreErrors(patterns).addProcessor(processor)) };
+  }
+
+  class TimeoutError extends Error {
+    override name = "TimeoutError";
+  }
+
+  it("drops an exception whose type and message contain a string pattern, and still returns an id", () => {
+    const { transport, reporter } = anIgnoringReporter(["ResizeObserver loop"]);
+
+    expect(reporter.captureException(new Error("ResizeObserver loop limit exceeded"))).toMatch(EVENT_ID);
+    expect(transport.events).toEqual([]);
+  });
+
+  it("matches a string pattern against the exception's type", () => {
+    const { transport, reporter } = anIgnoringReporter(["TimeoutError: "]);
+
+    reporter.captureException(new TimeoutError("request took too long"));
+    reporter.captureException(new Error("request took too long"));
+
+    expect(onlyEvent(transport.events).exception?.type).toBe("Error");
+  });
+
+  it("drops an exception a RegExp matches in its type and message", () => {
+    const { transport, reporter } = anIgnoringReporter([/^TimeoutError: request/]);
+
+    reporter.captureException(new TimeoutError("request took too long"));
+    reporter.captureException(new Error("request took too long"));
+
+    expect(onlyEvent(transport.events).exception?.type).toBe("Error");
+  });
+
+  it("drops an exception a RegExp anchored to the start matches in its message alone", () => {
+    const { transport, reporter } = anIgnoringReporter([/^request took/]);
+
+    reporter.captureException(new TimeoutError("request took too long"));
+    reporter.captureException(new Error("the request took too long"));
+
+    expect(onlyEvent(transport.events).exception?.message).toBe("the request took too long");
+  });
+
+  it("matches only the top exception of the chain, never its cause", () => {
+    const { transport, reporter } = anIgnoringReporter(["socket hang up"]);
+
+    reporter.captureException(new Error("fetch failed", { cause: new Error("socket hang up") }));
+
+    expect(onlyEvent(transport.events).exception?.message).toBe("fetch failed");
+  });
+
+  it("drops every capture a global RegExp matches, whatever position an earlier test left it at", () => {
+    const pattern = /flaky/g;
+    const { transport, reporter } = anIgnoringReporter([pattern]);
+
+    reporter.captureException(new Error("flaky network"));
+    reporter.captureException(new Error("flaky network"));
+    pattern.lastIndex = 99;
+    reporter.captureMessage("flaky network");
+
+    expect(transport.events).toEqual([]);
+  });
+
+  it("drops a captured message whose text a pattern matches", () => {
+    const { transport, reporter } = anIgnoringReporter(["heartbeat", /^noise$/]);
+
+    reporter.captureMessage("missed heartbeat");
+    reporter.captureMessage("noise");
+    reporter.captureMessage("kept");
+
+    expect(onlyEvent(transport.events).message).toBe("kept");
+  });
+
+  it("drops nothing with an empty list", () => {
+    const { transport, reporter } = anIgnoringReporter([]);
+
+    reporter.captureException(new Error("boom"));
+    reporter.captureMessage("hello");
+
+    expect(transport.events).toHaveLength(2);
+  });
+
+  it("drops a matching event before the processors and the transport run", () => {
+    const processor = vi.fn((event: ErrorEvent) => event);
+    const { transport, reporter } = anIgnoringReporter(["boom"], processor);
+    const send = vi.spyOn(transport, "send");
+
+    expect(reporter.captureException(new Error("boom"))).toMatch(EVENT_ID);
+
+    expect(processor).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
   });
 });

@@ -36,6 +36,15 @@ export interface ReporterSettings {
   readonly processors: readonly ErrorEventProcessor[];
   /** Run on every event after every processor. Absent when none was set. */
   readonly beforeSend?: ErrorEventProcessor;
+  /** The share of events kept, from 0 to 1: an event is kept when `random()` returns less than it. */
+  readonly sampleRate: number;
+  /** The source of the number every event is sampled with, in `[0, 1)`. */
+  readonly random: () => number;
+  /**
+   * Matched against every event after normalization; a match drops it. A string matches as a
+   * substring, a RegExp as it is tested; frozen.
+   */
+  readonly ignoreErrors: readonly (string | RegExp)[];
 }
 
 /** The options {@link ReporterBuilder.limits} accepts, in the order they are validated. */
@@ -50,6 +59,11 @@ function describe(value: unknown): string {
   return typeof value === "number" ? String(value) : `of type ${value === null ? "null" : typeof value}`;
 }
 
+/** A sample rate is a number from 0 to 1, both included. */
+function isSampleRate(value: unknown): value is number {
+  return typeof value === "number" && value >= 0 && value <= 1;
+}
+
 function validateProcessor(processor: unknown, what: string): ErrorEventProcessor {
   if (typeof processor !== "function") {
     throw new ReporterConfigError(`Invalid reporter ${what} ${describe(processor)}: expected a function.`);
@@ -59,8 +73,9 @@ function validateProcessor(processor: unknown, what: string): ErrorEventProcesso
 
 /**
  * Composes a Reporter's settings, starting from the defaults: no transport, the high-resolution
- * epoch clock, no integrations, the `secretKeys` redaction preset, no processors and no
- * `beforeSend`. Every method returns the builder, so calls chain.
+ * epoch clock, no integrations, the `secretKeys` redaction preset, no processors, no
+ * `beforeSend`, a sample rate of 1 drawn with `Math.random`, and no ignored errors. Every method
+ * returns the builder, so calls chain.
  */
 export class ReporterBuilder {
   #transport: Transport | undefined;
@@ -72,6 +87,9 @@ export class ReporterBuilder {
   #enabledEnvironments: readonly string[] | undefined;
   #processors: readonly ErrorEventProcessor[] = Object.freeze([]);
   #beforeSend: ErrorEventProcessor | undefined;
+  #sampleRate = 1;
+  #random: () => number = Math.random;
+  #ignoreErrors: readonly (string | RegExp)[] = Object.freeze([]);
 
   /** Where captured events go. A later call replaces the transport an earlier one set. */
   transport(transport: Transport): this {
@@ -82,6 +100,15 @@ export class ReporterBuilder {
   /** The source of every event's `time`, in epoch ms. A later call replaces the clock an earlier one set. */
   clock(clock: Clock): this {
     this.#clock = clock;
+    return this;
+  }
+
+  /**
+   * The source of the number every event is sampled with, returning a value in `[0, 1)`. A later
+   * call replaces the source an earlier one set.
+   */
+  random(source: () => number): this {
+    this.#random = source;
     return this;
   }
 
@@ -194,6 +221,49 @@ export class ReporterBuilder {
     return this;
   }
 
+  /**
+   * The share of events the Reporter keeps, from 0 to 1. Each event is kept when `random()` returns
+   * less than `rate`, so 1 keeps every event and 0 drops every one. An event outside the sample is
+   * dropped right after the environment gate, before it is normalized, and still returns its id. A
+   * later call replaces the rate an earlier one set.
+   *
+   * @throws {ReporterConfigError} When `rate` is not a number from 0 to 1; the builder is then left as it was.
+   */
+  sampleRate(rate: number): this {
+    if (!isSampleRate(rate)) {
+      throw new ReporterConfigError(`Invalid reporter sample rate ${describe(rate)}: expected a number from 0 to 1.`);
+    }
+    this.#sampleRate = rate;
+    return this;
+  }
+
+  /**
+   * The errors the Reporter drops. Each pattern is tried against the top exception's
+   * `"<type>: <message>"` and against its message alone, or against a captured message's text: a
+   * string matches as a substring, a RegExp when its `test` passes with `lastIndex` set to 0. A
+   * matching event is dropped after normalization, before enrichment, and still returns its id. The
+   * list is copied, so a later change to `patterns` does not change it; `[]` drops nothing. A later
+   * call replaces the list an earlier one set.
+   *
+   * @throws {ReporterConfigError} When `patterns` is not an array, or holds an entry that is neither
+   * a string nor a RegExp; the builder is then left as it was.
+   */
+  ignoreErrors(patterns: readonly (string | RegExp)[]): this {
+    if (!Array.isArray(patterns)) {
+      throw new ReporterConfigError(`Invalid reporter ignoreErrors ${describe(patterns)}: expected an array of strings and RegExps.`);
+    }
+    const copy: unknown[] = [...patterns];
+    for (const [index, pattern] of copy.entries()) {
+      if (typeof pattern !== "string" && !(pattern instanceof RegExp)) {
+        throw new ReporterConfigError(
+          `Invalid reporter ignoreErrors pattern at index ${index} ${describe(pattern)}: expected a string or a RegExp.`,
+        );
+      }
+    }
+    this.#ignoreErrors = Object.freeze(copy as (string | RegExp)[]);
+    return this;
+  }
+
   /** The settings composed so far, as a snapshot a later call on this builder does not change. */
   build(): ReporterSettings {
     return {
@@ -207,6 +277,9 @@ export class ReporterBuilder {
       enabledEnvironments: this.#enabledEnvironments,
       processors: this.#processors,
       beforeSend: this.#beforeSend,
+      sampleRate: this.#sampleRate,
+      random: this.#random,
+      ignoreErrors: this.#ignoreErrors,
     };
   }
 }
