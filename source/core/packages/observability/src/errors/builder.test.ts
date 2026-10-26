@@ -18,7 +18,7 @@ function anIntegration(name: string): Integration {
 }
 
 describe("ReporterBuilder", () => {
-  it("starts with no transport, the system clock, no integrations, the secretKeys redaction, no limits, no enabled environments, no processors, no beforeSend, a sample rate of 1 drawn with Math.random and no ignored errors", () => {
+  it("starts with no transport, the system clock, no integrations, the secretKeys redaction, no limits, no enabled environments, no processors, no beforeSend, a sample rate of 1 drawn with Math.random, no ignored errors, deduplication on and a rate limit of 60 refilled at 60 per minute", () => {
     const settings = new ReporterBuilder().build();
 
     expect(settings).toEqual({
@@ -33,11 +33,14 @@ describe("ReporterBuilder", () => {
       sampleRate: 1,
       random: Math.random,
       ignoreErrors: [],
+      dedupe: true,
+      rateLimit: { burst: 60, perMinute: 60 },
     });
     expect(settings).toHaveProperty("enabledEnvironments", undefined);
     expect(settings).toHaveProperty("beforeSend", undefined);
     expect(Object.isFrozen(settings.processors)).toBe(true);
     expect(Object.isFrozen(settings.ignoreErrors)).toBe(true);
+    expect(Object.isFrozen(settings.rateLimit)).toBe(true);
   });
 
   it("keeps the redaction set last, null included", () => {
@@ -414,6 +417,87 @@ describe("ReporterBuilder", () => {
       );
       expect(() => new ReporterBuilder().ignoreErrors(null as never)).toThrow(
         "Invalid reporter ignoreErrors of type null: expected an array of strings and RegExps.",
+      );
+    });
+  });
+
+  describe("dedupe", () => {
+    it("keeps the setting made last, and returns the builder", () => {
+      const builder = new ReporterBuilder();
+
+      expect(builder.dedupe(false)).toBe(builder);
+      expect(builder.build().dedupe).toBe(false);
+      expect(builder.dedupe(true).build().dedupe).toBe(true);
+    });
+
+    it.for([
+      ["a string", "false"],
+      ["a number", 0],
+      ["null", null],
+      ["undefined", undefined],
+      ["an object", {}],
+    ] as const)("rejects %s and leaves the builder as it was", ([, value]) => {
+      const builder = new ReporterBuilder().dedupe(false);
+
+      expect(() => builder.dedupe(value as never)).toThrow(expect.toSatisfy(isReporterConfigError));
+      expect(builder.build().dedupe).toBe(false);
+    });
+
+    it("names what it rejects", () => {
+      expect(() => new ReporterBuilder().dedupe(0 as never)).toThrow("Invalid reporter dedupe 0: expected a boolean.");
+      expect(() => new ReporterBuilder().dedupe("no" as never)).toThrow("Invalid reporter dedupe of type string: expected a boolean.");
+    });
+  });
+
+  describe("rateLimit", () => {
+    it("keeps the setting made last, false included, and returns the builder", () => {
+      const builder = new ReporterBuilder();
+
+      expect(builder.rateLimit({ burst: 5, perMinute: 2 })).toBe(builder);
+      expect(builder.build().rateLimit).toEqual({ burst: 5, perMinute: 2 });
+      expect(builder.rateLimit(false).build().rateLimit).toBe(false);
+      expect(builder.rateLimit({ burst: 1, perMinute: 0.5 }).build().rateLimit).toEqual({ burst: 1, perMinute: 0.5 });
+    });
+
+    it("builds a frozen copy holding only burst and perMinute, which a later change to the caller's object does not reach", () => {
+      const limit = { burst: 5, perMinute: 2, extra: true };
+      const builder = new ReporterBuilder().rateLimit(limit);
+
+      limit.burst = 100;
+      const { rateLimit } = builder.build();
+
+      expect(rateLimit).toEqual({ burst: 5, perMinute: 2 });
+      expect(Object.isFrozen(rateLimit)).toBe(true);
+    });
+
+    it.for([
+      ["true", true],
+      ["null", null],
+      ["undefined", undefined],
+      ["a number", 60],
+      ["an object without burst", { perMinute: 60 }],
+      ["an object without perMinute", { burst: 60 }],
+      ["a zero burst", { burst: 0, perMinute: 60 }],
+      ["a negative perMinute", { burst: 60, perMinute: -1 }],
+      ["an infinite burst", { burst: Number.POSITIVE_INFINITY, perMinute: 60 }],
+      ["a NaN perMinute", { burst: 60, perMinute: Number.NaN }],
+      ["a numeric string burst", { burst: "60", perMinute: 60 }],
+    ] as const)("rejects %s and leaves the builder as it was", ([, value]) => {
+      const builder = new ReporterBuilder().rateLimit({ burst: 3, perMinute: 4 });
+
+      expect(() => builder.rateLimit(value as never)).toThrow(expect.toSatisfy(isReporterConfigError));
+      expect(builder.build().rateLimit).toEqual({ burst: 3, perMinute: 4 });
+    });
+
+    it("names what it rejects", () => {
+      expect(() => new ReporterBuilder().rateLimit(true as never)).toThrow(
+        "Invalid reporter rate limit of type boolean: expected false or an object.",
+      );
+      expect(() => new ReporterBuilder().rateLimit({ burst: 0, perMinute: 60 })).toThrow(
+        "Invalid reporter rate limit burst 0: expected a positive finite number.",
+      );
+      expect(() => new ReporterBuilder().rateLimit({ burst: 60 } as never)).toThrow(
+        "Invalid reporter rate limit perMinute of type undefined: expected a positive finite number.",
       );
     });
   });

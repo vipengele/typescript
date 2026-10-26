@@ -3,6 +3,7 @@ import { secretKeys } from "@vipengele/ts-core-redaction";
 import type { RedactionSetting } from "../redaction";
 import type { Integration } from "./integration";
 import type { ErrorEventProcessor } from "./pipeline";
+import { DEFAULT_RATE_LIMIT, type RateLimitOptions } from "./rate-limit";
 import { ReporterConfigError } from "./reporter-config-error";
 import type { Transport } from "./transport";
 
@@ -45,6 +46,10 @@ export interface ReporterSettings {
    * substring, a RegExp as it is tested; frozen.
    */
   readonly ignoreErrors: readonly (string | RegExp)[];
+  /** Whether an event that duplicates the last one passed is dropped, after `beforeSend`. */
+  readonly dedupe: boolean;
+  /** The token bucket events pass after deduplication, frozen, or `false` for none. */
+  readonly rateLimit: false | Readonly<RateLimitOptions>;
 }
 
 /** The options {@link ReporterBuilder.limits} accepts, in the order they are validated. */
@@ -64,6 +69,14 @@ function isSampleRate(value: unknown): value is number {
   return typeof value === "number" && value >= 0 && value <= 1;
 }
 
+/** The options {@link ReporterBuilder.rateLimit} requires, in the order they are validated. */
+const RATE_LIMIT_KEYS = ["burst", "perMinute"] as const;
+
+/** A rate limit option is a positive finite number. */
+function isRateLimitOption(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0;
+}
+
 function validateProcessor(processor: unknown, what: string): ErrorEventProcessor {
   if (typeof processor !== "function") {
     throw new ReporterConfigError(`Invalid reporter ${what} ${describe(processor)}: expected a function.`);
@@ -74,8 +87,9 @@ function validateProcessor(processor: unknown, what: string): ErrorEventProcesso
 /**
  * Composes a Reporter's settings, starting from the defaults: no transport, the high-resolution
  * epoch clock, no integrations, the `secretKeys` redaction preset, no processors, no
- * `beforeSend`, a sample rate of 1 drawn with `Math.random`, and no ignored errors. Every method
- * returns the builder, so calls chain.
+ * `beforeSend`, a sample rate of 1 drawn with `Math.random`, no ignored errors, deduplication on,
+ * and a rate limit with a burst of 60 refilled at 60 tokens per minute. Every method returns the
+ * builder, so calls chain.
  */
 export class ReporterBuilder {
   #transport: Transport | undefined;
@@ -90,6 +104,8 @@ export class ReporterBuilder {
   #sampleRate = 1;
   #random: () => number = Math.random;
   #ignoreErrors: readonly (string | RegExp)[] = Object.freeze([]);
+  #dedupe = true;
+  #rateLimit: false | Readonly<RateLimitOptions> = DEFAULT_RATE_LIMIT;
 
   /** Where captured events go. A later call replaces the transport an earlier one set. */
   transport(transport: Transport): this {
@@ -264,6 +280,51 @@ export class ReporterBuilder {
     return this;
   }
 
+  /**
+   * Whether the Reporter drops an event that duplicates the last one it passed: one with the same
+   * fingerprint when both carry one, or else the same message and the same top exception type,
+   * message and stack frames. Attributes are never compared, and there is no time window. It runs
+   * after `beforeSend`, skips an unhandled event, and is on unless set to `false`. A dropped event
+   * still returns its id. A later call replaces the setting an earlier one made.
+   *
+   * @throws {ReporterConfigError} When `enabled` is not a boolean; the builder is then left as it was.
+   */
+  dedupe(enabled: boolean): this {
+    if (typeof enabled !== "boolean") {
+      throw new ReporterConfigError(`Invalid reporter dedupe ${describe(enabled)}: expected a boolean.`);
+    }
+    this.#dedupe = enabled;
+    return this;
+  }
+
+  /**
+   * The token bucket every handled event passes after deduplication: it starts with `burst` tokens,
+   * holds at most `burst`, and gains `perMinute` tokens a minute of event time. Each event it passes
+   * takes one token, and an event that finds no whole token is dropped and still returns its id. An
+   * unhandled event skips it and takes no token. `false` turns it off. A burst of 60 refilled at 60
+   * tokens per minute applies unless set. A later call replaces the setting an earlier one made.
+   *
+   * @throws {ReporterConfigError} When `limit` is neither `false` nor an object, or its `burst` or
+   * `perMinute` is not a positive finite number; the builder is then left as it was.
+   */
+  rateLimit(limit: false | RateLimitOptions): this {
+    if (limit === false) {
+      this.#rateLimit = false;
+      return this;
+    }
+    if (typeof limit !== "object" || limit === null) {
+      throw new ReporterConfigError(`Invalid reporter rate limit ${describe(limit)}: expected false or an object.`);
+    }
+    for (const key of RATE_LIMIT_KEYS) {
+      const value: unknown = limit[key];
+      if (!isRateLimitOption(value)) {
+        throw new ReporterConfigError(`Invalid reporter rate limit ${key} ${describe(value)}: expected a positive finite number.`);
+      }
+    }
+    this.#rateLimit = Object.freeze({ burst: limit.burst, perMinute: limit.perMinute });
+    return this;
+  }
+
   /** The settings composed so far, as a snapshot a later call on this builder does not change. */
   build(): ReporterSettings {
     return {
@@ -280,6 +341,8 @@ export class ReporterBuilder {
       sampleRate: this.#sampleRate,
       random: this.#random,
       ignoreErrors: this.#ignoreErrors,
+      dedupe: this.#dedupe,
+      rateLimit: this.#rateLimit,
     };
   }
 }

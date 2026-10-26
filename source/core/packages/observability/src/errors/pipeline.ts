@@ -14,9 +14,11 @@ import { type Resource, Scope, snapshot } from "@vipengele/ts-core-common/scope"
 import type { RedactionPolicy } from "@vipengele/ts-core-redaction";
 import { mergeAttributes } from "../merge-attributes";
 import { type RedactionSetting, redactAttributes, redactError } from "../redaction";
+import { createDeduper, type Deduper } from "./dedupe";
 import type { ErrorEvent, ExceptionRecord, Mechanism, StackFrame } from "./event";
 import { createEventId } from "./event-id";
 import { markInApp } from "./stack/in-app";
+import { createRateLimiter, DEFAULT_RATE_LIMIT, type RateLimiter, type RateLimitOptions } from "./rate-limit";
 import { parseStack } from "./stack/parse-stack";
 import type { Transport } from "./transport";
 
@@ -71,6 +73,19 @@ export interface Pipeline {
    * No event is dropped when absent.
    */
   readonly ignoreErrors?: readonly (string | RegExp)[] | undefined;
+  /** Whether an event that duplicates the last one passed is dropped, after `beforeSend`. On when absent. */
+  readonly dedupe?: boolean | undefined;
+  /**
+   * The token bucket events pass after deduplication, or `false` for none. A burst of 60 refilled at
+   * 60 tokens per minute when absent.
+   */
+  readonly rateLimit?: false | Readonly<RateLimitOptions> | undefined;
+}
+
+/** The state one capture function keeps across the events it runs; a stage turned off has none. */
+interface PipelineState {
+  readonly deduper: Deduper | undefined;
+  readonly limiter: RateLimiter | undefined;
 }
 
 /** `serializeError`'s default `maxBreadth`, which `frames` take when no `maxBreadth` is set. */
@@ -255,13 +270,18 @@ function runProcessors(event: ErrorEvent, pipeline: Pipeline): ErrorEvent | null
 }
 
 /**
- * Runs one event through ADR-0020's stages in order, returning at the first one that drops it.
- * The transport receives `resource` — the Resource the environment gate read, so a
- * `Scope.setResource` made while the event runs through the stages never changes what it is sent
- * with. The step numbers are ADR-0020's; the gaps in them are its stages 9 (deduplication) and
- * 10 (rate limit), which this pipeline does not run.
+ * Runs one event through ADR-0020's eleven stages in order, returning at the first one that drops
+ * it: the environment gate, sampling, normalize, `ignoreErrors`, enrich, redaction, the processors,
+ * `beforeSend`, deduplication, the rate limit and the transport. The transport receives `resource` —
+ * the Resource the environment gate read, so a `Scope.setResource` made while the event runs through
+ * the stages never changes what it is sent with.
+ *
+ * Deduplication and the rate limit run on the event `beforeSend` returned, and skip an event whose
+ * capture `mechanism` says it was not handled: such an event is never a duplicate, takes no token,
+ * and never becomes the event the next one is compared with. The rate limit refills from the time
+ * enrichment stamped, so the clock is read once per event.
  */
-function run(input: CaptureInput, mechanism: Mechanism, id: string, pipeline: Pipeline): void {
+function run(input: CaptureInput, mechanism: Mechanism, id: string, pipeline: Pipeline, state: PipelineState): void {
   // Stage 1: the environment gate.
   const resource = eventResource();
   if (!isEnvironmentEnabled(resource, pipeline)) {
@@ -292,6 +312,16 @@ function run(input: CaptureInput, mechanism: Mechanism, id: string, pipeline: Pi
   if (sent === null) {
     return;
   }
+  const bypass = mechanism.handled === false;
+  // Stage 9: deduplication. An event that passes here is the one the next event is compared with,
+  // whether or not the rate limit then drops it.
+  if (!bypass && state.deduper?.isDuplicate(sent) === true) {
+    return;
+  }
+  // Stage 10: the rate limit.
+  if (!bypass && state.limiter?.take(enriched.time) === false) {
+    return;
+  }
   // Stage 11: the transport.
   pipeline.transport?.send(sent, resource);
 }
@@ -300,17 +330,23 @@ function run(input: CaptureInput, mechanism: Mechanism, id: string, pipeline: Pi
  * Creates the function every capture goes through — `captureException`, `captureMessage`, and any
  * handler that hands the reporter an error with its own {@link Mechanism}. It reads the Resource
  * once and drops the event before any stage when its environment is not enabled; otherwise it runs
- * sampling, normalize, `ignoreErrors`, enrich, redaction, the processors, `beforeSend` and the
- * transport, in that order. A stage or a `transport.send` that throws drops the event silently, as
- * does an event outside the sample, one an `ignoreErrors` pattern matches, or one a processor or
- * `beforeSend` returns `null` for: the id is returned either way, since a transport is
- * fire-and-forget and the caller learns nothing of delivery (ADR-0010, ADR-0020).
+ * sampling, normalize, `ignoreErrors`, enrich, redaction, the processors, `beforeSend`,
+ * deduplication, the rate limit and the transport, in that order. The deduper's last event and the
+ * rate limit's bucket belong to the returned function alone, so two capture functions never share
+ * them. A stage or a `transport.send` that throws drops the event silently, as does an event outside
+ * the sample, one an `ignoreErrors` pattern matches, one a processor or `beforeSend` returns `null`
+ * for, a duplicate, or one that finds the bucket empty: the id is returned either way, since a
+ * transport is fire-and-forget and the caller learns nothing of delivery (ADR-0010, ADR-0020).
  */
 export function createCapture(pipeline: Pipeline): Capture {
+  const state: PipelineState = {
+    deduper: pipeline.dedupe === false ? undefined : createDeduper(),
+    limiter: pipeline.rateLimit === false ? undefined : createRateLimiter(pipeline.rateLimit ?? DEFAULT_RATE_LIMIT),
+  };
   return (input, mechanism) => {
     const id = createEventId();
     try {
-      run(input, mechanism, id, pipeline);
+      run(input, mechanism, id, pipeline, state);
     } catch {
       // The event is dropped; a capture never throws.
     }

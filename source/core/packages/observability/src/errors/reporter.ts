@@ -57,8 +57,9 @@ function fillRuntimeContext(): void {
 
 /**
  * Creates a {@link Reporter} from a builder that starts from the defaults — no transport, the
- * high-resolution epoch clock, no integrations, the `secretKeys` redaction preset, no processors
- * and no `beforeSend` — and that `configure` adds to. Without integrations, creating one installs
+ * high-resolution epoch clock, no integrations, the `secretKeys` redaction preset, no processors,
+ * no `beforeSend`, a sample rate of 1, no ignored errors, deduplication on, and a rate limit with a
+ * burst of 60 refilled at 60 tokens per minute — and that `configure` adds to. Without integrations, creating one installs
  * nothing beyond the runtime context it fills into the Resource: every other piece of state lives
  * in the returned object. Each integration is set up here, and whatever global state it installs
  * belongs to the reporter until `close()` removes it.
@@ -84,6 +85,8 @@ export function createReporter(configure?: (builder: ReporterBuilder) => Reporte
     sampleRate,
     random,
     ignoreErrors,
+    dedupe,
+    rateLimit,
   } = (configure === undefined ? initial : configure(initial)).build();
   fillRuntimeContext();
   const capture = createCapture({
@@ -98,6 +101,8 @@ export function createReporter(configure?: (builder: ReporterBuilder) => Reporte
     sampleRate,
     random,
     ignoreErrors,
+    dedupe,
+    rateLimit,
   });
   const flush = async (timeoutMs?: number): Promise<boolean> => (transport === undefined ? true : transport.flush(timeoutMs));
   const teardown = setupIntegrations(integrations, {
