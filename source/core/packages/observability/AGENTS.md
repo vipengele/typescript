@@ -98,7 +98,12 @@ Run commands from `source/core` (`pnpm build`, `pnpm type-check`, `pnpm test`, `
 - `enrich` merges `snapshot(Scope.current())` beneath the call's own attributes (the call wins on a
   shared key). Each side is normalized separately, and a throw while reading the scope yields no scope
   attributes rather than dropping the event. The Resource is never copied into events.
-- Stages: normalize, enrich, redaction, processors, filters, transport. Redaction applies
+- Stages: gate, `sampleRate`, normalize, `ignoreErrors`, enrich, redaction, processors, `beforeSend`,
+  dedupe, rate limit, transport (ADR-0020). The Reporter owns policy drops and the Transport delivery
+  drops; every drop still returns the id. `sampleRate` 1, `ignoreErrors` `[]`, `dedupe` on and
+  `rateLimit` 60 burst / 60 per minute are the defaults; dedupe compares only with the last event
+  that passed (no window, attributes excluded) and `mechanism.handled === false` bypasses dedupe and
+  the rate limit. `addProcessor` appends, `beforeSend` replaces. Redaction applies
   `builder.redaction(policy | null)` (default `secretKeys`, `null` disables) to the merged
   `attributes`, `mechanism.data` and every link of the exception chain; never the event `message`,
   `stack` or `frames`. A throwing policy drops the event silently, as the logger drops a record.

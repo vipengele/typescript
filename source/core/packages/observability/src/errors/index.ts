@@ -13,6 +13,8 @@ export type {
   GlobalProcess,
   GlobalRejectionEventLike,
 } from "./integrations/global-handlers";
+export type { ErrorEventProcessor } from "./pipeline";
+export type { RateLimitOptions } from "./rate-limit";
 export { createReporter } from "./reporter";
 export { isReporterConfigError, ReporterConfigError } from "./reporter-config-error";
 export type { CaptureContext, Reporter } from "./reporter";

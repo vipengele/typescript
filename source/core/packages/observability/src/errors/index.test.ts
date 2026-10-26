@@ -11,6 +11,7 @@ import type {
   ScopeAttributes,
   ScopeUser,
   ErrorEvent,
+  ErrorEventProcessor,
   ExitPolicy,
   GlobalErrorEventLike,
   GlobalEventTarget,
@@ -20,6 +21,7 @@ import type {
   Integration,
   IntegrationCaptureContext,
   IntegrationHost,
+  RateLimitOptions,
   ReporterBuilder,
 } from "./index";
 
@@ -72,4 +74,11 @@ test("the entry point exports the globalHandlers integration and its options", (
   expectTypeOf<GlobalHandlersOptions["process"]>().toEqualTypeOf<GlobalProcess | undefined>();
   expectTypeOf<GlobalErrorEventLike>().not.toEqualTypeOf<globalThis.ErrorEvent>();
   expectTypeOf<GlobalRejectionEventLike["reason"]>().toEqualTypeOf<unknown>();
+});
+
+test("the entry point exports the processor and rate limit types the builder accepts", () => {
+  expectTypeOf<ReporterBuilder["addProcessor"]>().parameter(0).toEqualTypeOf<ErrorEventProcessor>();
+  expectTypeOf<ReporterBuilder["beforeSend"]>().parameter(0).toEqualTypeOf<ErrorEventProcessor>();
+  expectTypeOf<ReporterBuilder["rateLimit"]>().parameter(0).toEqualTypeOf<false | RateLimitOptions>();
+  expectTypeOf<ErrorEventProcessor>().toEqualTypeOf<(event: ErrorEvent) => ErrorEvent | null>();
 });

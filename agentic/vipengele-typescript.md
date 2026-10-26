@@ -78,7 +78,9 @@ Error Event, Scope, Breadcrumb, Transport) before naming things.
     builds a `Reporter` from a `ReporterBuilder`, filling any runtime-context Resource key (runtime,
     OS, browser, device) the Resource holds no value for; `captureException`/`captureMessage` read the
     Resource once, drop the event when `enabledEnvironments` is set and excludes its environment, then run it
-    through a five-stage pipeline (normalize, enrich, processors, filter, transport) and hand
+    through an eleven-stage pipeline (gate, sampling, normalize, `ignoreErrors`, enrich, redaction, processors,
+    `beforeSend`, dedupe, rate limit, transport; dedupe and the rate limit are on by default and skip an
+    unhandled event, ADR-0020) and hand
     the survivor, with that Resource, to a `Transport`, the fire-and-forget delivery contract (ADR-0010;
     `agentic/rules/transport-send-is-fire-and-forget.md`) every transport — the built-in
     `createConsoleTransport` and `createTestTransport` included — implements.
