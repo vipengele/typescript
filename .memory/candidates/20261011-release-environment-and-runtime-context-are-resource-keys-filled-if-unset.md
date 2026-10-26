@@ -1,3 +1,4 @@
+---
 about: release, environment, dist and runtime context are the eleven reserved Resource keys, not builder options or event fields; createReporter fills the detected ones only where unset, and ReporterBuilder.enabledEnvironments gates on the Resource read once at the head of capture
 saw:
   - source/core/packages/common/src/scope/root.ts

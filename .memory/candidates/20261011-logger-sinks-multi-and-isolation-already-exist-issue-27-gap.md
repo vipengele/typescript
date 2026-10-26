@@ -1,5 +1,5 @@
 ---
-about: the logger's sink path as it stands: several sinks, per-sink isolation, global and per-sink Log Processors that fail closed, and failures reported to onSinkError(error, source), deduplicated only on the default warn path
+about: "the logger's sink path as it stands: several sinks, per-sink isolation, global and per-sink Log Processors that fail closed, and failures reported to onSinkError(error, source), deduplicated only on the default warn path"
 saw:
   - source/core/packages/observability/src/logger/emit.ts
   - source/core/packages/observability/src/logger/builder.ts
