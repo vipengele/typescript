@@ -192,7 +192,7 @@ importers:
         version: 7.0.2
       vitest:
         specifier: 5.0.0
-        version: 5.0.0(@vitest/browser-playwright@5.0.0)(@vitest/coverage-v8@5.0.0)(@vitest/ui@5.0.0)(vite@8.3.0(esbuild@0.27.7))
+        version: 5.0.0(@opentelemetry/api@1.9.1)(@vitest/browser-playwright@5.0.0)(@vitest/coverage-v8@5.0.0)(@vitest/ui@5.0.0)(vite@8.3.0(esbuild@0.27.7))
 
   packages/common: {}
 
@@ -204,6 +204,10 @@ importers:
       '@vipengele/ts-core-redaction':
         specifier: workspace:*
         version: link:../redaction
+    devDependencies:
+      '@opentelemetry/api':
+        specifier: 1.9.1
+        version: 1.9.1
 
   packages/redaction: {}
 
@@ -471,6 +475,10 @@ packages:
     cpu: [x64]
     os: [linux]
     libc: [glibc]
+
+  '@opentelemetry/api@1.9.1':
+    resolution: {integrity: sha512-gLyJlPHPZYdAk1JENA9LeHejZe1Ti77/pTeFm/nMXmQH/HFZlcS/O2XJB+L8fkbrNSqhdtlvjBVjxwUYanNH5Q==}
+    engines: {node: '>=8.0.0'}
 
   '@oxc-project/types@0.149.0':
     resolution: {integrity: sha512-Efcc+iF0j3Bf67YjEqIqWXbX5XddXoK/Mw4K1/JuXwRCZ8N16VR7iT23nlCc9XrveFVh/E5Rqs2StT0V8v9LdA==}
@@ -1567,6 +1575,8 @@ snapshots:
   '@napi-rs/lzma-linux-x64-gnu@1.5.1':
     optional: true
 
+  '@opentelemetry/api@1.9.1': {}
+
   '@oxc-project/types@0.149.0': {}
 
   '@polka/url@1.0.0-next.29': {}
@@ -1786,7 +1796,7 @@ snapshots:
       '@vitest/mocker': 5.0.0(vite@8.3.0(esbuild@0.27.7))
       playwright: 1.64.0
       tinyrainbow: 3.1.1
-      vitest: 5.0.0(@vitest/browser-playwright@5.0.0)(@vitest/coverage-v8@5.0.0)(@vitest/ui@5.0.0)(vite@8.3.0(esbuild@0.27.7))
+      vitest: 5.0.0(@opentelemetry/api@1.9.1)(@vitest/browser-playwright@5.0.0)(@vitest/coverage-v8@5.0.0)(@vitest/ui@5.0.0)(vite@8.3.0(esbuild@0.27.7))
     transitivePeerDependencies:
       - bufferutil
       - msw
@@ -1803,7 +1813,7 @@ snapshots:
       pngjs: 7.0.0
       sirv: 3.0.2
       tinyrainbow: 3.1.1
-      vitest: 5.0.0(@vitest/browser-playwright@5.0.0)(@vitest/coverage-v8@5.0.0)(@vitest/ui@5.0.0)(vite@8.3.0(esbuild@0.27.7))
+      vitest: 5.0.0(@opentelemetry/api@1.9.1)(@vitest/browser-playwright@5.0.0)(@vitest/coverage-v8@5.0.0)(@vitest/ui@5.0.0)(vite@8.3.0(esbuild@0.27.7))
       ws: 8.21.3
     transitivePeerDependencies:
       - bufferutil
@@ -1821,7 +1831,7 @@ snapshots:
       obug: 2.2.1
       std-env: 4.2.0
       tinyrainbow: 3.1.1
-      vitest: 5.0.0(@vitest/browser-playwright@5.0.0)(@vitest/coverage-v8@5.0.0)(@vitest/ui@5.0.0)(vite@8.3.0(esbuild@0.27.7))
+      vitest: 5.0.0(@opentelemetry/api@1.9.1)(@vitest/browser-playwright@5.0.0)(@vitest/coverage-v8@5.0.0)(@vitest/ui@5.0.0)(vite@8.3.0(esbuild@0.27.7))
     optionalDependencies:
       '@vitest/browser': 5.0.0(vite@8.3.0(esbuild@0.27.7))(vitest@5.0.0)
 
@@ -1854,7 +1864,7 @@ snapshots:
       pathe: 2.0.3
       sirv: 3.0.2
       tinyrainbow: 3.1.1
-      vitest: 5.0.0(@vitest/browser-playwright@5.0.0)(@vitest/coverage-v8@5.0.0)(@vitest/ui@5.0.0)(vite@8.3.0(esbuild@0.27.7))
+      vitest: 5.0.0(@opentelemetry/api@1.9.1)(@vitest/browser-playwright@5.0.0)(@vitest/coverage-v8@5.0.0)(@vitest/ui@5.0.0)(vite@8.3.0(esbuild@0.27.7))
 
   '@vitest/utils@5.0.0':
     dependencies:
@@ -2268,7 +2278,7 @@ snapshots:
       esbuild: 0.27.7
       fsevents: 2.3.3
 
-  vitest@5.0.0(@vitest/browser-playwright@5.0.0)(@vitest/coverage-v8@5.0.0)(@vitest/ui@5.0.0)(vite@8.3.0(esbuild@0.27.7)):
+  vitest@5.0.0(@opentelemetry/api@1.9.1)(@vitest/browser-playwright@5.0.0)(@vitest/coverage-v8@5.0.0)(@vitest/ui@5.0.0)(vite@8.3.0(esbuild@0.27.7)):
     dependencies:
       '@types/chai': 5.2.3
       '@vitest/mocker': 5.0.0(vite@8.3.0(esbuild@0.27.7))
@@ -2285,6 +2295,7 @@ snapshots:
       vite: 8.3.0(esbuild@0.27.7)
       why-is-node-running: 2.3.0
     optionalDependencies:
+      '@opentelemetry/api': 1.9.1
       '@vitest/browser-playwright': 5.0.0(playwright@1.64.0)(vite@8.3.0(esbuild@0.27.7))(vitest@5.0.0)
       '@vitest/coverage-v8': 5.0.0(@vitest/browser@5.0.0)(vitest@5.0.0)
       '@vitest/ui': 5.0.0(vitest@5.0.0)

@@ -55,5 +55,16 @@
   "dependencies": {
     "@vipengele/ts-core-common": "workspace:*",
     "@vipengele/ts-core-redaction": "workspace:*"
+  },
+  "peerDependencies": {
+    "@opentelemetry/api": "^1.9"
+  },
+  "peerDependenciesMeta": {
+    "@opentelemetry/api": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@opentelemetry/api": "1.9.1"
   }
 }
