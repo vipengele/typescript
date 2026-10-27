@@ -56,6 +56,14 @@ Run commands from `source/core` (`pnpm build`, `pnpm type-check`, `pnpm test`, `
   sinks, a per-sink one for that sink. Returned attributes are re-normalized and the result frozen.
   `build()` throws `LoggingConfigError` for invalid processors or options. `redactionProcessor(policy)`
   (`redaction-processor.ts`) is the opt-in per-sink extra (ADR-0017).
+- `trace` (`trace.ts`): after the sink check, `readActiveTrace` reads the active span from the
+  `opentelemetry.js.api.1` registry on `globalThis`, with no import of `@opentelemetry/api`
+  (optional peer `^1.9`, ADR-0021). No registry, no active span, malformed or all-zero ids, or a
+  throw gives no `trace` key. A processor may add, replace or strip `trace`; a returned one that is
+  not `{ traceId, spanId, flags }` with valid hex ids and integer flags fails closed like any
+  malformed return. The registry and context keys are OpenTelemetry internals, pinned by
+  `trace.contract.test.ts`, which runs against the real API. The json-lines formatter writes
+  `trace_id`/`span_id`.
 - The default warn path (`sinkErrorsOncePerSource: true`) warns once per sink or processor per
   configuration (identity `WeakSet`; `configure` and `reset` clear it, `override` does not); a
   host-supplied `onSinkError` receives every failure. A copy that finds another
