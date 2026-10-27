@@ -19,6 +19,24 @@ export interface LogTrace {
 const REGISTRY_KEY = "opentelemetry.js.api.1";
 const SPAN_CONTEXT_KEY = "OpenTelemetry Context Key SPAN";
 
+/**
+ * The two symbols, resolved on first use so importing this module touches no registry. `Symbol.for`
+ * returns the same symbol for a key in every copy, so holding it here shares nothing extra and
+ * spares each written record two global symbol-registry lookups.
+ */
+let registrySymbol: symbol | undefined;
+let spanContextSymbol: symbol | undefined;
+
+function registrySlot(): symbol {
+  registrySymbol ??= Symbol.for(REGISTRY_KEY);
+  return registrySymbol;
+}
+
+function spanContextSlot(): symbol {
+  spanContextSymbol ??= Symbol.for(SPAN_CONTEXT_KEY);
+  return spanContextSymbol;
+}
+
 const TRACE_ID_PATTERN = /^[0-9a-f]{32}$/i;
 const SPAN_ID_PATTERN = /^[0-9a-f]{16}$/i;
 const ALL_ZEROS_PATTERN = /^0+$/;
@@ -61,12 +79,12 @@ export function isTraceFlags(value: unknown): value is number {
  */
 export function readActiveTrace(): LogTrace | undefined {
   try {
-    const registry = (globalThis as unknown as Record<symbol, Registry | undefined>)[Symbol.for(REGISTRY_KEY)];
+    const registry = (globalThis as unknown as Record<symbol, Registry | undefined>)[registrySlot()];
     const manager = registry?.context;
     if (manager === undefined) {
       return undefined;
     }
-    const span = manager.active().getValue(Symbol.for(SPAN_CONTEXT_KEY)) as SpanLike | undefined;
+    const span = manager.active().getValue(spanContextSlot()) as SpanLike | undefined;
     if (span === undefined) {
       return undefined;
     }
