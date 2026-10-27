@@ -1,16 +1,12 @@
 ---
-about: "ADR-0008 makes OpenTelemetry trace correlation an opt-in object from a ./otel entry point; no OTel code exists yet, so auto-attach on peer presence contradicts the ADR"
+about: "Trace correlation reads OpenTelemetry's globalThis registry (ADR-0021 amends ADR-0008's detection decision); the registry and span keys are API internals held only by trace.contract.test.ts, and ADR-0008's other four decisions still stand"
 saw:
+  - docs/adr/0021-trace-correlation-reads-the-otel-registry.md
   - docs/adr/0008-opentelemetry-is-an-opt-in-entry-point.md
-  - docs/adr/0007-the-log-record-and-error-event-data-model.md
-  - docs/adr/0005-logging-is-configured-through-a-shared-default-provider-and-a-builder.md
-  - source/core/packages/observability/package.json
-  - source/core/packages/observability/src/logger/record.ts
-  - source/ts/packages/ts/package.json
+  - source/core/packages/observability/src/logger/trace.ts
+  - source/core/packages/observability/src/logger/trace.contract.test.ts
 ---
-Explored for issue #32 planning (2026-10-26).
-
-- `grep -rIli 'opentelemetry|trace_id|traceId'` (excluding node_modules/dist): no source imports `@opentelemetry/api`; no package.json declares it (observability package.json has only a keyword; no peerDependencies/peerDependenciesMeta); `source/ts/packages/ts` has no `./otel` export (only `.`); no branch/log commit mentions otel. Only `trace?: {traceId; spanId; flags}` types exist: ADR-0007 for LogRecord and ErrorEvent, `errors/event.ts:25`; `logger/record.ts` LogRecord has NO `trace` field yet.
-- ADR-0008: API is an optional peer (`^1.9`, `peerDependenciesMeta` optional), imported ONLY by `@vipengele/ts/otel`; correlation is opted in via `add(OtelTrace.correlation({baggage}))` on the logger and reporter builders. It explicitly rejects reading `globalThis[Symbol.for('opentelemetry.js.api.1')]` (detected global) and says always read traceId/spanId/flags into the record's `trace` field at record creation; baggage only by allowlist into attributes.
-- ADR-0005 (~line 90): optional pieces are objects passed to `add`, not builder methods, because the core builder must not depend on OTel and `sideEffects:false` forbids patching prototypes.
-- Consequence: "attach when peer present, nothing when absent" inside observability/logger would contradict ADR-0008 (static import in the core bundle, or detection). Plan must either implement ADR-0008's shape or amend the ADR.
+- `readActiveTrace` in `logger/trace.ts` reads `globalThis[Symbol.for('opentelemetry.js.api.1')].context.active().getValue(Symbol.for('OpenTelemetry Context Key SPAN')).spanContext()`; no shipped `src/` imports `@opentelemetry/api`. The package declares it only as an optional peer `^1.9` plus an exact-pinned devDependency for the contract test.
+- Both keys are OpenTelemetry internals. `trace.contract.test.ts` registers a context manager on the real API and is the only thing that notices a key moving; widening the peer range means running it against the new versions. It cannot use `startActiveSpan`, because the API's no-op tracer yields all-zero ids, which the reader rejects.
+- ADR-0021 amends only the detection decision of ADR-0008. Baggage by allowlist, bridge-or-export-never-both, exceptions as log records, and Scope and OTel Context being independent are still ADR-0008's, and no `@vipengele/ts/otel` entry exists.
+- The reporter's `ErrorEvent.trace` (`errors/event.ts`) is still filled by nothing; the reader lives in the logger entry point.
