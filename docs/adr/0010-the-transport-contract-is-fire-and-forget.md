@@ -13,7 +13,11 @@ interface Transport {
 ```
 
 `send` accepts an Error Event and the Resource it is sent with, and returns at once. It never throws
-and the Reporter never awaits it: batching, retry and the decision to drop are the Transport's (CONTEXT.md). `flush` resolves `true`
+and the Reporter never awaits it: batching, retry and the delivery drop are the Transport's (CONTEXT.md).
+A delivery drop is an event the Transport cannot deliver, such as one arriving at a full queue or
+one whose retries are exhausted. Whether an event should be reported at all is the Reporter's
+policy drop, decided before `send` is called
+(`0020-the-reporter-owns-policy-drops-and-the-transport-owns-delivery-drops.md`). `flush` resolves `true`
 once everything accepted so far has been delivered or dropped, `false` when the timeout elapses
 first. `close` flushes, then turns every later `send` into a no-op.
 

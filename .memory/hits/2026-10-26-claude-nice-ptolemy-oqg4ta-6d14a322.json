@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "notes": {
+    "global-handlers-node-path-uses-local-process-type": {
+      "count": 1,
+      "first": "2026-10-26T15:27:07.672511063Z",
+      "last": "2026-10-26T15:27:07.672511063Z"
+    },
+    "integrations-replace-by-name-and-tear-down-newest-first": {
+      "count": 1,
+      "first": "2026-10-26T15:27:07.660577506Z",
+      "last": "2026-10-26T15:27:07.660577506Z"
+    },
+    "reporter-has-no-self-path-detection": {
+      "count": 1,
+      "first": "2026-10-26T15:27:07.646305968Z",
+      "last": "2026-10-26T15:27:07.646305968Z"
+    }
+  }
+}
