@@ -1,5 +1,7 @@
 # OpenTelemetry is an opt-in entry point, never a detected global
 
+Its detection decision is amended by [`0021-trace-correlation-reads-the-otel-registry.md`](0021-trace-correlation-reads-the-otel-registry.md); its other decisions stand.
+
 `@opentelemetry/api` is an optional peer (`^1.9`, marked optional in `peerDependenciesMeta`),
 imported only by the `@vipengele/ts/otel` entry point. An application without OpenTelemetry never
 imports that entry point, so its bundler never resolves the peer and it pays nothing. An
