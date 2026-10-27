@@ -14,9 +14,11 @@ import { type Resource, Scope, snapshot } from "@vipengele/ts-core-common/scope"
 import type { RedactionPolicy } from "@vipengele/ts-core-redaction";
 import { mergeAttributes } from "../merge-attributes";
 import { type RedactionSetting, redactAttributes, redactError } from "../redaction";
+import { createDeduper, type Deduper } from "./dedupe";
 import type { ErrorEvent, ExceptionRecord, Mechanism, StackFrame } from "./event";
 import { createEventId } from "./event-id";
 import { markInApp } from "./stack/in-app";
+import { createRateLimiter, DEFAULT_RATE_LIMIT, type RateLimiter, type RateLimitOptions } from "./rate-limit";
 import { parseStack } from "./stack/parse-stack";
 import type { Transport } from "./transport";
 
@@ -28,18 +30,22 @@ export type CaptureInput =
 /** Runs one event through the pipeline and returns its id, whether or not the event reached the transport. Never throws. */
 export type Capture = (input: CaptureInput, mechanism: Mechanism) => string;
 
-/** Returns the event it is given, or a replacement for it; a throw drops the event. */
-export type Processor = (event: ErrorEvent) => ErrorEvent;
-
-/** Returns `false` to drop the event; a throw drops it too. */
-export type Filter = (event: ErrorEvent) => boolean;
+/**
+ * A stage between redaction and the transport: it returns the event to pass on, the one it was
+ * handed or another, or `null` to drop it. Processors run in the order they were added, each on what
+ * the previous one returned, and `beforeSend` runs once after all of them. Each sees the event after
+ * redaction. A throw, or a result that is not an object, drops the event silently (ADR-0020).
+ */
+export type ErrorEventProcessor = (event: ErrorEvent) => ErrorEvent | null;
 
 /** Everything one Reporter's pipeline reads for every event it runs. */
 export interface Pipeline {
   readonly clock: Clock;
   readonly transport?: Transport | undefined;
-  readonly processors: readonly Processor[];
-  readonly filters: readonly Filter[];
+  /** Run in this order, after redaction and before `beforeSend`. */
+  readonly processors: readonly ErrorEventProcessor[];
+  /** Run once, after every processor and before the transport; absent when none was set. */
+  readonly beforeSend?: ErrorEventProcessor | undefined;
   /** What counts as in-app when frames are marked; every frame outside `node_modules` is in-app when absent. */
   readonly projectRoot?: string | undefined;
   /** Applied to every event between enrichment and the processors; no event is redacted when it is `null` or absent. */
@@ -55,6 +61,31 @@ export interface Pipeline {
    * Every environment is enabled when absent.
    */
   readonly enabledEnvironments?: readonly string[] | undefined;
+  /**
+   * The share of events kept, checked right after the environment gate: an event is kept when
+   * `random()` returns less than it. Every event is kept when absent.
+   */
+  readonly sampleRate?: number | undefined;
+  /** The source of the number every event is sampled with, in `[0, 1)`; `Math.random` when absent. */
+  readonly random?: (() => number) | undefined;
+  /**
+   * Matched against every event after normalization and before enrichment; a match drops the event.
+   * No event is dropped when absent.
+   */
+  readonly ignoreErrors?: readonly (string | RegExp)[] | undefined;
+  /** Whether an event that duplicates the last one passed is dropped, after `beforeSend`. On when absent. */
+  readonly dedupe?: boolean | undefined;
+  /**
+   * The token bucket events pass after deduplication, or `false` for none. A burst of 60 refilled at
+   * 60 tokens per minute when absent.
+   */
+  readonly rateLimit?: false | Readonly<RateLimitOptions> | undefined;
+}
+
+/** The state one capture function keeps across the events it runs; a stage turned off has none. */
+interface PipelineState {
+  readonly deduper: Deduper | undefined;
+  readonly limiter: RateLimiter | undefined;
 }
 
 /** `serializeError`'s default `maxBreadth`, which `frames` take when no `maxBreadth` is set. */
@@ -91,7 +122,7 @@ function boundFrames(frames: StackFrame[], pipeline: Pipeline): StackFrame[] {
 }
 
 /**
- * Stage 1: the caller's thrown value or message, in the Error Event's shape. A message longer than
+ * Stage 3: the caller's thrown value or message, in the Error Event's shape. A message longer than
  * `maxStringLength` is cut and suffixed by the same engine, and with the same `"…[truncated]"`
  * marker, as every string inside the attributes and the exception chain.
  */
@@ -114,8 +145,39 @@ function scopeAttributes(pipeline: Pipeline): Attributes {
   }
 }
 
+/** Stage 2: whether the event is inside the sample, drawing one number for it when a `sampleRate` is set. */
+function isSampled(pipeline: Pipeline): boolean {
+  return pipeline.sampleRate === undefined || (pipeline.random ?? Math.random)() < pipeline.sampleRate;
+}
+
 /**
- * Stage 2: stamps what the pipeline knows about the event rather than what the caller handed over.
+ * Whether `pattern` matches `text`: a string as a substring, a RegExp tested from index 0, so a `g`
+ * or `y` flag never carries a position from one test to the next.
+ */
+function matchesPattern(pattern: string | RegExp, text: string): boolean {
+  if (typeof pattern === "string") {
+    return text.includes(pattern);
+  }
+  pattern.lastIndex = 0;
+  return pattern.test(text);
+}
+
+/**
+ * Stage 4: whether any `ignoreErrors` pattern matches the normalized event. An exception is matched
+ * through its top exception, the outermost link of the chain, as `"<type>: <message>"` and as its
+ * message alone, so a RegExp anchored to the start of the message matches too; a captured message
+ * is matched as its text.
+ */
+function isIgnored(payload: NormalizedPayload, pipeline: Pipeline): boolean {
+  const texts =
+    payload.exception === undefined
+      ? [payload.message as string]
+      : [`${payload.exception.type}: ${payload.exception.message}`, payload.exception.message];
+  return pipeline.ignoreErrors?.some((pattern) => texts.some((text) => matchesPattern(pattern, text))) === true;
+}
+
+/**
+ * Stage 5: stamps what the pipeline knows about the event rather than what the caller handed over.
  * The scope's attributes lie beneath the call's own, the call's winning on a shared key, each side
  * normalized on its own so a large scope chain cannot push a call attribute past the breadth bound.
  */
@@ -169,7 +231,7 @@ function isEnvironmentEnabled(resource: Resource, pipeline: Pipeline): boolean {
 }
 
 /**
- * Between enrichment and the processors: a copy of `event` whose `attributes`, `mechanism.data`,
+ * Stage 6, between enrichment and the processors: a copy of `event` whose `attributes`, `mechanism.data`,
  * and every link of its exception chain are redacted by `policy`, the links as the logger redacts
  * a record's error. The event's `message`, and every link's `stack` and `frames`, are kept as they
  * are. A throwing policy throws out of here, and the event is dropped like any stage's.
@@ -185,38 +247,106 @@ function redactEvent(event: ErrorEvent, policy: RedactionPolicy): ErrorEvent {
   return redacted;
 }
 
+/** `processor`'s result for `event`, or `null` when it drops the event or returns anything but an object. */
+function applyProcessor(processor: ErrorEventProcessor, event: ErrorEvent): ErrorEvent | null {
+  const result: unknown = processor(event);
+  return typeof result === "object" ? (result as ErrorEvent | null) : null;
+}
+
 /**
- * Redaction, then stages 3 to 5: processors in order, then filters in order, then the transport,
- * which receives `resource` — the Resource the environment gate read, so a `Scope.setResource`
- * made while the event runs through the stages never changes what it is sent with. Returns without
- * sending once a filter drops the event.
+ * Stage 7: every processor in the order added, each on what the previous one returned. Returns
+ * `null`, and runs no processor after it, once one drops the event.
  */
-function deliver(event: ErrorEvent, resource: Resource, pipeline: Pipeline): void {
-  const policy = pipeline.redaction ?? null;
-  const redacted = policy === null ? event : redactEvent(event, policy);
-  const processed = pipeline.processors.reduce((current, processor) => processor(current), redacted);
-  if (!pipeline.filters.every((filter) => filter(processed))) {
+function runProcessors(event: ErrorEvent, pipeline: Pipeline): ErrorEvent | null {
+  let current = event;
+  for (const processor of pipeline.processors) {
+    const next = applyProcessor(processor, current);
+    if (next === null) {
+      return null;
+    }
+    current = next;
+  }
+  return current;
+}
+
+/**
+ * Runs one event through ADR-0020's eleven stages in order, returning at the first one that drops
+ * it: the environment gate, sampling, normalize, `ignoreErrors`, enrich, redaction, the processors,
+ * `beforeSend`, deduplication, the rate limit and the transport. The transport receives `resource` —
+ * the Resource the environment gate read, so a `Scope.setResource` made while the event runs through
+ * the stages never changes what it is sent with.
+ *
+ * Deduplication and the rate limit run on the event `beforeSend` returned, and skip an event whose
+ * capture `mechanism` says it was not handled: such an event is never a duplicate, takes no token,
+ * and never becomes the event the next one is compared with. The rate limit refills from the time
+ * enrichment stamped, so the clock is read once per event.
+ */
+function run(input: CaptureInput, mechanism: Mechanism, id: string, pipeline: Pipeline, state: PipelineState): void {
+  // Stage 1: the environment gate.
+  const resource = eventResource();
+  if (!isEnvironmentEnabled(resource, pipeline)) {
     return;
   }
-  pipeline.transport?.send(processed, resource);
+  // Stage 2: sampling.
+  if (!isSampled(pipeline)) {
+    return;
+  }
+  // Stage 3: normalize.
+  const payload = normalize(input, pipeline);
+  // Stage 4: ignoreErrors.
+  if (isIgnored(payload, pipeline)) {
+    return;
+  }
+  // Stage 5: enrich.
+  const enriched = enrich(payload, input, mechanism, id, pipeline);
+  // Stage 6: redaction.
+  const policy = pipeline.redaction ?? null;
+  const redacted = policy === null ? enriched : redactEvent(enriched, policy);
+  // Stage 7: processors.
+  const processed = runProcessors(redacted, pipeline);
+  if (processed === null) {
+    return;
+  }
+  // Stage 8: beforeSend.
+  const sent = pipeline.beforeSend === undefined ? processed : applyProcessor(pipeline.beforeSend, processed);
+  if (sent === null) {
+    return;
+  }
+  const bypass = mechanism.handled === false;
+  // Stage 9: deduplication. An event that passes here is the one the next event is compared with,
+  // whether or not the rate limit then drops it.
+  if (!bypass && state.deduper?.isDuplicate(sent) === true) {
+    return;
+  }
+  // Stage 10: the rate limit.
+  if (!bypass && state.limiter?.take(enriched.time) === false) {
+    return;
+  }
+  // Stage 11: the transport.
+  pipeline.transport?.send(sent, resource);
 }
 
 /**
  * Creates the function every capture goes through — `captureException`, `captureMessage`, and any
  * handler that hands the reporter an error with its own {@link Mechanism}. It reads the Resource
  * once and drops the event before any stage when its environment is not enabled; otherwise it runs
- * normalize, enrich, redaction, processors, filters and the transport, in that order. A stage or a
- * `transport.send` that throws drops the event silently: the id is returned either way, since a
- * transport is fire-and-forget and the caller learns nothing of delivery (ADR-0010).
+ * sampling, normalize, `ignoreErrors`, enrich, redaction, the processors, `beforeSend`,
+ * deduplication, the rate limit and the transport, in that order. The deduper's last event and the
+ * rate limit's bucket belong to the returned function alone, so two capture functions never share
+ * them. A stage or a `transport.send` that throws drops the event silently, as does an event outside
+ * the sample, one an `ignoreErrors` pattern matches, one a processor or `beforeSend` returns `null`
+ * for, a duplicate, or one that finds the bucket empty: the id is returned either way, since a
+ * transport is fire-and-forget and the caller learns nothing of delivery (ADR-0010, ADR-0020).
  */
 export function createCapture(pipeline: Pipeline): Capture {
+  const state: PipelineState = {
+    deduper: pipeline.dedupe === false ? undefined : createDeduper(),
+    limiter: pipeline.rateLimit === false ? undefined : createRateLimiter(pipeline.rateLimit ?? DEFAULT_RATE_LIMIT),
+  };
   return (input, mechanism) => {
     const id = createEventId();
     try {
-      const resource = eventResource();
-      if (isEnvironmentEnabled(resource, pipeline)) {
-        deliver(enrich(normalize(input, pipeline), input, mechanism, id, pipeline), resource, pipeline);
-      }
+      run(input, mechanism, id, pipeline, state);
     } catch {
       // The event is dropped; a capture never throws.
     }

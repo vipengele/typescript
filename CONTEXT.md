@@ -119,6 +119,29 @@ One captured error after normalization and enrichment: the exception chain with 
 frames, its mechanism (handled or unhandled, and what caught it) and its scope's attributes.
 _Avoid_: exception (that is one link of the chain), issue (a grouping on the backend)
 
+**Error Event Processor**:
+A step that sees an Error Event before the Transport does and returns it, a replacement, or nothing
+to drop it. A Reporter runs its processors in the order added, then one last processor that has the
+final word on what is sent.
+_Avoid_: filter, middleware, interceptor
+
+**Sampling**:
+Reporting only a chosen fraction of Error Events, picked at random, before any work is spent on the
+rest. A decision of the Reporter, never of a Transport.
+_Avoid_: rate limiting (a Rate Limit caps volume; Sampling keeps a fraction of any volume)
+
+**Deduplication**:
+Dropping an Error Event that repeats the one the Reporter last let through, so an error raised over
+and over in a loop is reported once per unbroken run of repeats. An unhandled Error Event is never
+deduplicated.
+_Avoid_: grouping (the backend groups events into issues)
+
+**Rate Limit**:
+A cap on how many Error Events a Reporter sends over time, allowing a short burst. It protects the
+backend from a flood of reports, not the process from the work of building them, and never holds
+back an unhandled Error Event.
+_Avoid_: throttling, sampling (Sampling keeps a fraction regardless of volume)
+
 **Frame**:
 One parsed entry of an Error Event's exception stack: a function, a file, a line and a column, each
 present only when the engine reported it. Frames are ordered as the engine prints them, so the
@@ -195,7 +218,8 @@ breadcrumb for something is creating a scope for it.
 
 **Transport**:
 What delivers Error Events (and exported Log Records) out of the process: console, HTTP JSON, OTLP.
-Owns batching, retry, `flush()` and `close()`.
+Owns batching, retry, `flush()` and `close()`. It drops an Error Event only when it cannot deliver
+it; whether an event is reported at all is the Reporter's decision.
 _Avoid_: exporter (OTel's word; use it only for OTLP specifically)
 
 **Locale**:

@@ -3,7 +3,7 @@ import { type Resource, Scope } from "@vipengele/ts-core-common/scope";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ErrorEvent, Mechanism } from "./event";
 import type { Integration, IntegrationHost } from "./integration";
-import { createCapture, type Pipeline } from "./pipeline";
+import { createCapture, type ErrorEventProcessor, type Pipeline } from "./pipeline";
 import { createReporter } from "./reporter";
 import type { RuntimeContext } from "./runtime-context";
 import type { Transport } from "./transport";
@@ -584,52 +584,76 @@ describe("createReporter", () => {
 
 describe("createCapture", () => {
   function aPipeline(overrides: Partial<Pipeline> = {}): Pipeline & { transport: ReturnType<typeof createTestTransport> } {
-    return { clock: () => 1, processors: [], filters: [], ...overrides, transport: createTestTransport() };
+    return { clock: () => 1, processors: [], ...overrides, transport: createTestTransport() };
   }
 
-  it("runs processors in order before the filters and the transport", () => {
-    const seen: string[] = [];
-    const pipeline = aPipeline({
-      processors: [(event) => ({ ...event, message: `${event.message}+a` }), (event) => ({ ...event, message: `${event.message}+b` })],
-      filters: [
-        (event) => {
-          seen.push(event.message as string);
-          return true;
-        },
-      ],
-    });
+  function appending(suffix: string, seen?: string[]): ErrorEventProcessor {
+    return (event) => {
+      seen?.push(`${suffix}:${event.message}`);
+      return { ...event, message: `${event.message}+${suffix}` };
+    };
+  }
 
+  const capture = (pipeline: Pipeline): string =>
     createCapture(pipeline)({ kind: "message", message: "m" }, { handled: false, source: "global.error" });
 
-    expect(seen).toEqual(["m+a+b"]);
+  it("runs processors in order, then beforeSend, then the transport", () => {
+    const seen: string[] = [];
+    const pipeline = aPipeline({ processors: [appending("a", seen), appending("b", seen)], beforeSend: appending("send", seen) });
+
+    capture(pipeline);
+
+    expect(seen).toEqual(["a:m", "b:m+a", "send:m+a+b"]);
     const event = onlyEvent(pipeline.transport.events);
-    expect(event.message).toBe("m+a+b");
+    expect(event.message).toBe("m+a+b+send");
     expect(event.mechanism).toEqual({ handled: false, source: "global.error" });
   });
 
-  it("does not send an event a filter drops, and runs no filter after it", () => {
-    const later = vi.fn(() => true);
-    const pipeline = aPipeline({ filters: [() => false, later] });
+  it("does not send an event a processor drops with null, and runs no processor or beforeSend after it", () => {
+    const later = vi.fn(appending("later"));
+    const beforeSend = vi.fn(appending("send"));
+    const pipeline = aPipeline({ processors: [() => null, later], beforeSend });
 
-    const id = createCapture(pipeline)({ kind: "message", message: "m" }, { handled: true, source: "capture" });
+    const id = capture(pipeline);
 
     expect(id).toMatch(EVENT_ID);
     expect(later).not.toHaveBeenCalled();
+    expect(beforeSend).not.toHaveBeenCalled();
     expect(pipeline.transport.events).toEqual([]);
   });
 
-  it("drops the event and still returns an id when a processor throws", () => {
-    const pipeline = aPipeline({
-      processors: [
-        () => {
-          throw new Error("processor failed");
-        },
-      ],
-    });
+  it("does not send an event beforeSend drops with null", () => {
+    const pipeline = aPipeline({ processors: [appending("a")], beforeSend: () => null });
 
-    const id = createCapture(pipeline)({ kind: "exception", error: new Error("boom") }, { handled: true, source: "capture" });
-
-    expect(id).toMatch(EVENT_ID);
+    expect(capture(pipeline)).toMatch(EVENT_ID);
     expect(pipeline.transport.events).toEqual([]);
+  });
+
+  it.each([
+    ["undefined", undefined],
+    ["a string", "event"],
+    ["false", false],
+  ])("drops the event when a processor or beforeSend returns %s", (_, result) => {
+    const fromProcessor = aPipeline({ processors: [() => result as never] });
+    const fromBeforeSend = aPipeline({ beforeSend: () => result as never });
+
+    expect(capture(fromProcessor)).toMatch(EVENT_ID);
+    expect(capture(fromBeforeSend)).toMatch(EVENT_ID);
+    expect(fromProcessor.transport.events).toEqual([]);
+    expect(fromBeforeSend.transport.events).toEqual([]);
+  });
+
+  it("drops the event silently and still returns an id when a processor or beforeSend throws", () => {
+    const failing = (): never => {
+      throw new Error("processor failed");
+    };
+    const fromProcessor = aPipeline({ processors: [failing] });
+    const fromBeforeSend = aPipeline({ beforeSend: failing });
+
+    const input = { kind: "exception", error: new Error("boom") } as const;
+    expect(createCapture(fromProcessor)(input, { handled: true, source: "capture" })).toMatch(EVENT_ID);
+    expect(createCapture(fromBeforeSend)(input, { handled: true, source: "capture" })).toMatch(EVENT_ID);
+    expect(fromProcessor.transport.events).toEqual([]);
+    expect(fromBeforeSend.transport.events).toEqual([]);
   });
 });

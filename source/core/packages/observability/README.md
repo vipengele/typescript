@@ -228,10 +228,9 @@ Logging.configure((b) =>
   are kept without a second pass; a copy a processor makes of it is re-normalized like any other.
 - **Validation** — `build()` throws `LoggingConfigError` for a processor that is not a function,
   `addSink` options that are not an object, or `processors` that is not an array.
-- **Not the reporter's `Processor`** — `./errors` has an internal `Processor` stage that mutates an
-  Error Event in the reporter's pipeline and is not public. The logger's `LogProcessor` is a
-  different contract: it returns the record or `null`, and dropping is part of it, so the reporter
-  has no separate filter stage to mirror.
+- **The reporter's `ErrorEventProcessor`** — `./errors` exports `ErrorEventProcessor`, the same
+  shape for an `ErrorEvent`: `(event: ErrorEvent) => ErrorEvent | null`, with `null` dropping the
+  event. The reporter's drops are described under "Pipeline control" below.
 
 **Redaction** — on by default, using the `secretKeys` preset from `@vipengele/ts-core-redaction`. A
 policy is applied to `attributes` and to every link of the error chain, when the record is created
@@ -478,7 +477,7 @@ interface Transport {
 ```
 
 `send` is fire-and-forget: it returns at once and never throws, and the reporter never awaits it —
-batching, retry and the decision to drop belong to the transport. `resource` is the `Resource` read
+batching, retry and the decision to drop an event it cannot deliver belong to the transport. `resource` is the `Resource` read
 from `Scope.resource()` once per event at capture, before any stage runs, frozen, with every key
 present; the same `Resource` the environment gate read is the one `send` receives. `flush` resolves `true` once
 everything accepted so far is delivered or dropped, `false` if `timeoutMs` elapses first; `close`
@@ -500,6 +499,68 @@ resolve `true` in that case, since there is nothing to wait on.
 
 **An unknown level** — a `CaptureContext.level` or `captureMessage` level that is not one of the six
 `Level` values (or is absent) becomes `"error"`.
+
+### Pipeline control
+
+A drop has one of two owners (ADR-0020). A delivery drop, a full queue or exhausted retries, belongs
+to the Transport. A policy drop, whether the event should be reported at all, belongs to the
+Reporter, and the builder configures it. Every capture runs these stages in order:
+
+1. the `enabledEnvironments` gate
+2. `sampleRate`
+3. normalize
+4. `ignoreErrors`
+5. enrich
+6. redaction
+7. processors
+8. `beforeSend`
+9. deduplication
+10. rate limit
+11. transport (`send(event, resource)`)
+
+Every drop, at any stage, still returns the event's `id`, and no capture method throws. A dropped
+event never blocks the `"exit"` sequence of a global handler.
+
+```ts
+type ErrorEventProcessor = (event: ErrorEvent) => ErrorEvent | null;
+```
+
+| Builder method | Default | Effect |
+| --- | --- | --- |
+| `addProcessor(processor: ErrorEventProcessor)` | none | Appends a processor, run in the order added. |
+| `beforeSend(hook: ErrorEventProcessor)` | none | Sets the one hook that runs after every processor; a later call replaces it. |
+| `sampleRate(rate: number)` | `1` | Keeps an event when `random() < rate`; `rate` is from 0 to 1. Runs before normalization. |
+| `random(source: () => number)` | `Math.random` | The number each event is sampled with, in `[0, 1)`. |
+| `ignoreErrors(patterns: readonly (string \| RegExp)[])` | `[]` | Drops an event a pattern matches. |
+| `dedupe(enabled: boolean)` | `true` | Drops an event that repeats the last one that passed. |
+| `rateLimit(limit: false \| RateLimitOptions)` | `{ burst: 60, perMinute: 60 }` | A token bucket; `false` turns it off. |
+
+`RateLimitOptions` is `{ burst: number; perMinute: number }`: `burst` a finite number of at least 1, since a bucket holding less than one token never lets an event pass, and `perMinute` a positive finite number. An invalid
+argument throws `ReporterConfigError` and leaves the builder unchanged.
+
+- **Processors and `beforeSend`** — each returns the event to pass on, or `null` to drop it; one that
+  throws drops the event silently. `addProcessor` appends, so processors accumulate, while
+  `beforeSend` replaces, so there is one hook, and it runs after every processor. Redaction runs
+  first, so both see redacted data.
+- **`ignoreErrors` matching** — a string matches as a substring and a `RegExp` is tested as it is,
+  with `lastIndex` reset to 0 first. A pattern is tried against the top exception's
+  `"<type>: <message>"` and against its message alone; for `captureMessage` it is tried against the
+  message text. It runs after normalization and before redaction.
+- **Deduplication key** — an event is compared only with the last event that passed deduplication,
+  with no time window. Two events are identical when their fingerprints are equal, or when their
+  message, top exception type and message, and stack frames are equal. Attributes are not part of
+  the key, so the same error raised for two users collapses to one event, and two identical
+  `captureMessage` calls collapse too. Deduplication runs after the processors, so one that rewrites
+  the message changes the key.
+- **Unhandled events** — an event whose `mechanism.handled` is `false` skips deduplication and the
+  rate limit and takes no token, so a burst of handled errors never drops the
+  `uncaughtException` report that follows. It still passes the gate, sampling, `ignoreErrors`, the
+  processors and `beforeSend`.
+- **The rate limit protects the backend, not the client** — an event that finds the bucket empty is
+  dropped, but only after it has paid for normalization, enrichment, redaction, the processors and
+  `beforeSend`. The bucket refills lazily from each event's `time`; there is no timer.
+
+To deliver every handled event, call `dedupe(false)` and `rateLimit(false)`.
 
 ### Scopes
 

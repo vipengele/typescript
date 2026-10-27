@@ -112,7 +112,6 @@ describe("Reporter redaction", () => {
         clock: () => 0,
         transport,
         processors: [],
-        filters: [],
         redaction: { keys: [{ segments: "token" }] },
       });
 

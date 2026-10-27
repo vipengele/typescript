@@ -2,6 +2,8 @@ import { type Clock, type SerializeErrorOptions, systemClock } from "@vipengele/
 import { secretKeys } from "@vipengele/ts-core-redaction";
 import type { RedactionSetting } from "../redaction";
 import type { Integration } from "./integration";
+import type { ErrorEventProcessor } from "./pipeline";
+import { DEFAULT_RATE_LIMIT, type RateLimitOptions } from "./rate-limit";
 import { ReporterConfigError } from "./reporter-config-error";
 import type { Transport } from "./transport";
 
@@ -31,6 +33,23 @@ export interface ReporterSettings {
    * every capture. Absent when none was set; every environment is then enabled.
    */
   readonly enabledEnvironments?: readonly string[];
+  /** Run on every event after redaction, in the order they were added; frozen. */
+  readonly processors: readonly ErrorEventProcessor[];
+  /** Run on every event after every processor. Absent when none was set. */
+  readonly beforeSend?: ErrorEventProcessor;
+  /** The share of events kept, from 0 to 1: an event is kept when `random()` returns less than it. */
+  readonly sampleRate: number;
+  /** The source of the number every event is sampled with, in `[0, 1)`. */
+  readonly random: () => number;
+  /**
+   * Matched against every event after normalization; a match drops it. A string matches as a
+   * substring, a RegExp as it is tested; frozen.
+   */
+  readonly ignoreErrors: readonly (string | RegExp)[];
+  /** Whether an event that duplicates the last one passed is dropped, after `beforeSend`. */
+  readonly dedupe: boolean;
+  /** The token bucket events pass after deduplication, frozen, or `false` for none. */
+  readonly rateLimit: false | Readonly<RateLimitOptions>;
 }
 
 /** The options {@link ReporterBuilder.limits} accepts, in the order they are validated. */
@@ -45,9 +64,34 @@ function describe(value: unknown): string {
   return typeof value === "number" ? String(value) : `of type ${value === null ? "null" : typeof value}`;
 }
 
+/** A sample rate is a number from 0 to 1, both included. */
+function isSampleRate(value: unknown): value is number {
+  return typeof value === "number" && value >= 0 && value <= 1;
+}
+
+/** The options {@link ReporterBuilder.rateLimit} requires, in the order they are validated. */
+const RATE_LIMIT_KEYS = ["burst", "perMinute"] as const;
+
+/** The smallest value of each rate limit option: a bucket that holds under one token never lets an event pass. */
+const RATE_LIMIT_MINIMUM = { burst: 1, perMinute: Number.MIN_VALUE } as const;
+
+/** A rate limit option is a finite number of at least its minimum. */
+function isRateLimitOption(value: unknown, key: (typeof RATE_LIMIT_KEYS)[number]): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= RATE_LIMIT_MINIMUM[key];
+}
+
+function validateProcessor(processor: unknown, what: string): ErrorEventProcessor {
+  if (typeof processor !== "function") {
+    throw new ReporterConfigError(`Invalid reporter ${what} ${describe(processor)}: expected a function.`);
+  }
+  return processor as ErrorEventProcessor;
+}
+
 /**
  * Composes a Reporter's settings, starting from the defaults: no transport, the high-resolution
- * epoch clock, no integrations, and the `secretKeys` redaction preset. Every method returns the
+ * epoch clock, no integrations, the `secretKeys` redaction preset, no processors, no
+ * `beforeSend`, a sample rate of 1 drawn with `Math.random`, no ignored errors, deduplication on,
+ * and a rate limit with a burst of 60 refilled at 60 tokens per minute. Every method returns the
  * builder, so calls chain.
  */
 export class ReporterBuilder {
@@ -58,6 +102,13 @@ export class ReporterBuilder {
   readonly #integrations = new Map<string, Integration>();
   #limits: Readonly<SerializeErrorOptions> = Object.freeze({});
   #enabledEnvironments: readonly string[] | undefined;
+  #processors: readonly ErrorEventProcessor[] = Object.freeze([]);
+  #beforeSend: ErrorEventProcessor | undefined;
+  #sampleRate = 1;
+  #random: () => number = Math.random;
+  #ignoreErrors: readonly (string | RegExp)[] = Object.freeze([]);
+  #dedupe = true;
+  #rateLimit: false | Readonly<RateLimitOptions> = DEFAULT_RATE_LIMIT;
 
   /** Where captured events go. A later call replaces the transport an earlier one set. */
   transport(transport: Transport): this {
@@ -68,6 +119,15 @@ export class ReporterBuilder {
   /** The source of every event's `time`, in epoch ms. A later call replaces the clock an earlier one set. */
   clock(clock: Clock): this {
     this.#clock = clock;
+    return this;
+  }
+
+  /**
+   * The source of the number every event is sampled with, returning a value in `[0, 1)`. A later
+   * call replaces the source an earlier one set.
+   */
+  random(source: () => number): this {
+    this.#random = source;
     return this;
   }
 
@@ -156,6 +216,119 @@ export class ReporterBuilder {
     return this;
   }
 
+  /**
+   * A processor run on every event after redaction, after every processor added before it, and
+   * before `beforeSend`. It returns the event to pass on, or `null` to drop it; a throw drops the
+   * event too. Every call adds one more processor.
+   *
+   * @throws {ReporterConfigError} When `processor` is not a function; the builder is then left as it was.
+   */
+  addProcessor(processor: ErrorEventProcessor): this {
+    this.#processors = Object.freeze([...this.#processors, validateProcessor(processor, "processor")]);
+    return this;
+  }
+
+  /**
+   * The hook run on every event after every processor, last before the transport. It returns the
+   * event to send, or `null` to drop it; a throw drops the event too. A later call replaces the hook
+   * an earlier one set.
+   *
+   * @throws {ReporterConfigError} When `hook` is not a function; the builder is then left as it was.
+   */
+  beforeSend(hook: ErrorEventProcessor): this {
+    this.#beforeSend = validateProcessor(hook, "beforeSend hook");
+    return this;
+  }
+
+  /**
+   * The share of events the Reporter keeps, from 0 to 1. Each event is kept when `random()` returns
+   * less than `rate`, so 1 keeps every event and 0 drops every one. An event outside the sample is
+   * dropped right after the environment gate, before it is normalized, and still returns its id. A
+   * later call replaces the rate an earlier one set.
+   *
+   * @throws {ReporterConfigError} When `rate` is not a number from 0 to 1; the builder is then left as it was.
+   */
+  sampleRate(rate: number): this {
+    if (!isSampleRate(rate)) {
+      throw new ReporterConfigError(`Invalid reporter sample rate ${describe(rate)}: expected a number from 0 to 1.`);
+    }
+    this.#sampleRate = rate;
+    return this;
+  }
+
+  /**
+   * The errors the Reporter drops. Each pattern is tried against the top exception's
+   * `"<type>: <message>"` and against its message alone, or against a captured message's text: a
+   * string matches as a substring, a RegExp when its `test` passes with `lastIndex` set to 0. A
+   * matching event is dropped after normalization, before enrichment, and still returns its id. The
+   * list is copied, so a later change to `patterns` does not change it; `[]` drops nothing. A later
+   * call replaces the list an earlier one set.
+   *
+   * @throws {ReporterConfigError} When `patterns` is not an array, or holds an entry that is neither
+   * a string nor a RegExp; the builder is then left as it was.
+   */
+  ignoreErrors(patterns: readonly (string | RegExp)[]): this {
+    if (!Array.isArray(patterns)) {
+      throw new ReporterConfigError(`Invalid reporter ignoreErrors ${describe(patterns)}: expected an array of strings and RegExps.`);
+    }
+    const copy: unknown[] = [...patterns];
+    for (const [index, pattern] of copy.entries()) {
+      if (typeof pattern !== "string" && !(pattern instanceof RegExp)) {
+        throw new ReporterConfigError(
+          `Invalid reporter ignoreErrors pattern at index ${index} ${describe(pattern)}: expected a string or a RegExp.`,
+        );
+      }
+    }
+    this.#ignoreErrors = Object.freeze(copy as (string | RegExp)[]);
+    return this;
+  }
+
+  /**
+   * Whether the Reporter drops an event that duplicates the last one it passed: one with the same
+   * fingerprint when both carry one, or else the same message and the same top exception type,
+   * message and stack frames. Attributes are never compared, and there is no time window. It runs
+   * after `beforeSend`, skips an unhandled event, and is on unless set to `false`. A dropped event
+   * still returns its id. A later call replaces the setting an earlier one made.
+   *
+   * @throws {ReporterConfigError} When `enabled` is not a boolean; the builder is then left as it was.
+   */
+  dedupe(enabled: boolean): this {
+    if (typeof enabled !== "boolean") {
+      throw new ReporterConfigError(`Invalid reporter dedupe ${describe(enabled)}: expected a boolean.`);
+    }
+    this.#dedupe = enabled;
+    return this;
+  }
+
+  /**
+   * The token bucket every handled event passes after deduplication: it starts with `burst` tokens,
+   * holds at most `burst`, and gains `perMinute` tokens a minute of event time. Each event it passes
+   * takes one token, and an event that finds no whole token is dropped and still returns its id. An
+   * unhandled event skips it and takes no token. `false` turns it off. A burst of 60 refilled at 60
+   * tokens per minute applies unless set. A later call replaces the setting an earlier one made.
+   *
+   * @throws {ReporterConfigError} When `limit` is neither `false` nor an object, or its `burst` is not a
+   * finite number of at least 1 or its `perMinute` is not a positive finite number; the builder is then left as it was.
+   */
+  rateLimit(limit: false | RateLimitOptions): this {
+    if (limit === false) {
+      this.#rateLimit = false;
+      return this;
+    }
+    if (typeof limit !== "object" || limit === null) {
+      throw new ReporterConfigError(`Invalid reporter rate limit ${describe(limit)}: expected false or an object.`);
+    }
+    for (const key of RATE_LIMIT_KEYS) {
+      const value: unknown = limit[key];
+      if (!isRateLimitOption(value, key)) {
+        const expected = key === "burst" ? "a finite number of at least 1" : "a positive finite number";
+        throw new ReporterConfigError(`Invalid reporter rate limit ${key} ${describe(value)}: expected ${expected}.`);
+      }
+    }
+    this.#rateLimit = Object.freeze({ burst: limit.burst, perMinute: limit.perMinute });
+    return this;
+  }
+
   /** The settings composed so far, as a snapshot a later call on this builder does not change. */
   build(): ReporterSettings {
     return {
@@ -167,6 +340,13 @@ export class ReporterBuilder {
       redaction: this.#redaction === undefined ? secretKeys : this.#redaction,
       limits: this.#limits,
       enabledEnvironments: this.#enabledEnvironments,
+      processors: this.#processors,
+      beforeSend: this.#beforeSend,
+      sampleRate: this.#sampleRate,
+      random: this.#random,
+      ignoreErrors: this.#ignoreErrors,
+      dedupe: this.#dedupe,
+      rateLimit: this.#rateLimit,
     };
   }
 }

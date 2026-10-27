@@ -2,6 +2,8 @@ import type { SerializeErrorOptions } from "@vipengele/ts-core-common";
 import { type Resource, Scope } from "@vipengele/ts-core-common/scope";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ErrorEvent } from "./event";
+import type { IntegrationHost } from "./integration";
+import { createCapture } from "./pipeline";
 import { createReporter } from "./reporter";
 import { createTestTransport } from "./transports/test-transport";
 
@@ -503,5 +505,581 @@ describe("the limits an event is cut to", () => {
     expect(exception?.message).toBe(`oute${CUT}`);
     expect(exception?.cause?.message).toBe(`midd${CUT}`);
     expect(exception?.cause?.cause?.type).toBe("[Truncated]");
+  });
+});
+
+describe("processors and beforeSend", () => {
+  function tagging(tag: string): (event: ErrorEvent) => ErrorEvent {
+    return (event) => ({ ...event, attributes: { ...event.attributes, order: `${event.attributes.order ?? ""}${tag}` } });
+  }
+
+  it("runs the builder's processors in the order added, then beforeSend, before the transport", () => {
+    const transport = createTestTransport();
+    const reporter = createReporter((b) =>
+      b.transport(transport).beforeSend(tagging("s")).addProcessor(tagging("a")).addProcessor(tagging("b")),
+    );
+
+    expect(reporter.captureMessage("m")).toMatch(EVENT_ID);
+
+    expect(onlyEvent(transport.events).attributes.order).toBe("abs");
+  });
+
+  it("runs only the beforeSend hook set last", () => {
+    const transport = createTestTransport();
+    const first = vi.fn(tagging("first"));
+    const reporter = createReporter((b) => b.transport(transport).beforeSend(first).beforeSend(tagging("last")));
+
+    reporter.captureMessage("m");
+
+    expect(first).not.toHaveBeenCalled();
+    expect(onlyEvent(transport.events).attributes.order).toBe("last");
+  });
+
+  it("drops an event beforeSend returns null for, and still returns its id", () => {
+    const transport = createTestTransport();
+    const reporter = createReporter((b) => b.transport(transport).beforeSend(() => null));
+
+    expect(reporter.captureException(new Error("boom"))).toMatch(EVENT_ID);
+    expect(transport.events).toEqual([]);
+  });
+
+  it("hands processors and beforeSend an event already redacted", () => {
+    const transport = createTestTransport();
+    const seen: unknown[] = [];
+    const record = (event: ErrorEvent): ErrorEvent => {
+      seen.push(event.attributes.password);
+      return event;
+    };
+    const reporter = createReporter((b) => b.transport(transport).addProcessor(record).beforeSend(record));
+
+    reporter.captureMessage("m");
+    Scope.isolated("request", { password: "hunter2" }, () =>
+      reporter.captureException(new Error("boom"), { attributes: { password: "hunter2" } }),
+    );
+
+    expect(seen).toEqual([undefined, undefined, "[REDACTED]", "[REDACTED]"]);
+    expect(transport.events[1]?.attributes.password).toBe("[REDACTED]");
+  });
+
+  it("never throws out of a capture when a processor throws, and drops the event", () => {
+    const transport = createTestTransport();
+    const reporter = createReporter((b) =>
+      b.transport(transport).addProcessor(() => {
+        throw new Error("processor failed");
+      }),
+    );
+
+    expect(() => reporter.captureMessage("m")).not.toThrow();
+    expect(transport.events).toEqual([]);
+  });
+});
+
+describe("sampling", () => {
+  function aSampledReporter(rate: number, random: () => number, clock: () => number = () => 1) {
+    const transport = createTestTransport();
+    return { transport, reporter: createReporter((b) => b.transport(transport).clock(clock).sampleRate(rate).random(random)) };
+  }
+
+  it("sends an event when random() returns less than the rate", () => {
+    const { transport, reporter } = aSampledReporter(0.5, () => 0.49);
+
+    const id = reporter.captureMessage("kept");
+
+    expect(onlyEvent(transport.events).id).toBe(id);
+  });
+
+  it("drops an event when random() returns exactly the rate, and still returns an id", () => {
+    const { transport, reporter } = aSampledReporter(0.5, () => 0.5);
+
+    expect(reporter.captureMessage("dropped")).toMatch(EVENT_ID);
+    expect(transport.events).toEqual([]);
+  });
+
+  it("draws one number per event, and keeps or drops each on its own", () => {
+    const draws = [0.1, 0.9, 0.2];
+    const random = vi.fn(() => draws.shift() as number);
+    const { transport, reporter } = aSampledReporter(0.5, random);
+
+    reporter.captureMessage("first");
+    reporter.captureMessage("second");
+    reporter.captureMessage("third");
+
+    expect(random).toHaveBeenCalledTimes(3);
+    expect(transport.events.map((event) => event.message)).toEqual(["first", "third"]);
+  });
+
+  it("drops an event outside the sample before normalizing it, and runs no later stage", () => {
+    const clock = vi.fn(() => 1);
+    const processor = vi.fn((event: ErrorEvent) => event);
+    const beforeSend = vi.fn((event: ErrorEvent) => event);
+    const transport = createTestTransport();
+    const send = vi.spyOn(transport, "send");
+    const reporter = createReporter((b) =>
+      b
+        .transport(transport)
+        .clock(clock)
+        .sampleRate(0.1)
+        .random(() => 0.5)
+        .addProcessor(processor)
+        .beforeSend(beforeSend),
+    );
+    const error = new Error("boom");
+    const read = vi.fn();
+    Object.defineProperty(error, "message", {
+      get: () => {
+        read();
+        return "boom";
+      },
+    });
+
+    expect(reporter.captureException(error)).toMatch(EVENT_ID);
+
+    expect(read).not.toHaveBeenCalled();
+    expect(clock).not.toHaveBeenCalled();
+    expect(processor).not.toHaveBeenCalled();
+    expect(beforeSend).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("does not draw for an event the environment gate drops", () => {
+    Scope.setResource({ "deployment.environment.name": "development" });
+    const random = vi.fn(() => 0);
+    const transport = createTestTransport();
+    const reporter = createReporter((b) => b.transport(transport).enabledEnvironments(["production"]).random(random));
+
+    reporter.captureMessage("hello");
+
+    expect(random).not.toHaveBeenCalled();
+    expect(transport.events).toEqual([]);
+  });
+
+  it("keeps every event at the default rate of 1 drawn with Math.random", () => {
+    const { transport, reporter } = aReporter();
+
+    for (let index = 0; index < 20; index += 1) {
+      reporter.captureMessage(`event ${index}`);
+    }
+
+    expect(transport.events).toHaveLength(20);
+  });
+
+  it("drops every event at a rate of 0 drawn with Math.random", () => {
+    const transport = createTestTransport();
+    const reporter = createReporter((b) => b.transport(transport).sampleRate(0));
+
+    for (let index = 0; index < 20; index += 1) {
+      reporter.captureMessage(`event ${index}`);
+    }
+
+    expect(transport.events).toEqual([]);
+  });
+
+  it("keeps every event at a rate of 1 set explicitly and drawn with Math.random", () => {
+    const transport = createTestTransport();
+    const reporter = createReporter((b) => b.transport(transport).sampleRate(1));
+
+    for (let index = 0; index < 20; index += 1) {
+      reporter.captureMessage(`event ${index}`);
+    }
+
+    expect(transport.events).toHaveLength(20);
+  });
+
+  it("keeps every event at a rate of 1 even when random() returns its largest value", () => {
+    const { transport, reporter } = aSampledReporter(1, () => 1 - Number.EPSILON);
+
+    reporter.captureMessage("kept");
+
+    expect(onlyEvent(transport.events).message).toBe("kept");
+  });
+
+  it("draws with Math.random when a pipeline sets a rate and no random source", () => {
+    const transport = createTestTransport();
+    const random = vi.spyOn(Math, "random");
+    const capture = createCapture({ clock: () => 1, processors: [], transport, sampleRate: 0 });
+
+    expect(capture({ kind: "message", message: "dropped" }, { handled: true, source: "capture" })).toMatch(EVENT_ID);
+
+    expect(random).toHaveBeenCalled();
+    expect(transport.events).toEqual([]);
+  });
+
+  it("drops every event at a rate of 0 even when random() returns 0", () => {
+    const { transport, reporter } = aSampledReporter(0, () => 0);
+
+    reporter.captureMessage("dropped");
+
+    expect(transport.events).toEqual([]);
+  });
+});
+
+describe("ignoreErrors", () => {
+  function anIgnoringReporter(patterns: readonly (string | RegExp)[], processor: (event: ErrorEvent) => ErrorEvent = (event) => event) {
+    const transport = createTestTransport();
+    return { transport, reporter: createReporter((b) => b.transport(transport).ignoreErrors(patterns).addProcessor(processor)) };
+  }
+
+  class TimeoutError extends Error {
+    override name = "TimeoutError";
+  }
+
+  it("drops an exception whose type and message contain a string pattern, and still returns an id", () => {
+    const { transport, reporter } = anIgnoringReporter(["ResizeObserver loop"]);
+
+    expect(reporter.captureException(new Error("ResizeObserver loop limit exceeded"))).toMatch(EVENT_ID);
+    expect(transport.events).toEqual([]);
+  });
+
+  it("matches a string pattern against the exception's type", () => {
+    const { transport, reporter } = anIgnoringReporter(["TimeoutError: "]);
+
+    reporter.captureException(new TimeoutError("request took too long"));
+    reporter.captureException(new Error("request took too long"));
+
+    expect(onlyEvent(transport.events).exception?.type).toBe("Error");
+  });
+
+  it("drops an exception a RegExp matches in its type and message", () => {
+    const { transport, reporter } = anIgnoringReporter([/^TimeoutError: request/]);
+
+    reporter.captureException(new TimeoutError("request took too long"));
+    reporter.captureException(new Error("request took too long"));
+
+    expect(onlyEvent(transport.events).exception?.type).toBe("Error");
+  });
+
+  it("drops an exception a RegExp anchored to the start matches in its message alone", () => {
+    const { transport, reporter } = anIgnoringReporter([/^request took/]);
+
+    reporter.captureException(new TimeoutError("request took too long"));
+    reporter.captureException(new Error("the request took too long"));
+
+    expect(onlyEvent(transport.events).exception?.message).toBe("the request took too long");
+  });
+
+  it("matches only the top exception of the chain, never its cause", () => {
+    const { transport, reporter } = anIgnoringReporter(["socket hang up"]);
+
+    reporter.captureException(new Error("fetch failed", { cause: new Error("socket hang up") }));
+
+    expect(onlyEvent(transport.events).exception?.message).toBe("fetch failed");
+  });
+
+  it("drops every capture a global RegExp matches, whatever position an earlier test left it at", () => {
+    const pattern = /flaky/g;
+    const { transport, reporter } = anIgnoringReporter([pattern]);
+
+    reporter.captureException(new Error("flaky network"));
+    reporter.captureException(new Error("flaky network"));
+    pattern.lastIndex = 99;
+    reporter.captureMessage("flaky network");
+
+    expect(transport.events).toEqual([]);
+  });
+
+  it("drops a captured message whose text a pattern matches", () => {
+    const { transport, reporter } = anIgnoringReporter(["heartbeat", /^noise$/]);
+
+    reporter.captureMessage("missed heartbeat");
+    reporter.captureMessage("noise");
+    reporter.captureMessage("kept");
+
+    expect(onlyEvent(transport.events).message).toBe("kept");
+  });
+
+  it("drops nothing with an empty list", () => {
+    const { transport, reporter } = anIgnoringReporter([]);
+
+    reporter.captureException(new Error("boom"));
+    reporter.captureMessage("hello");
+
+    expect(transport.events).toHaveLength(2);
+  });
+
+  it("drops a matching event before the processors and the transport run", () => {
+    const processor = vi.fn((event: ErrorEvent) => event);
+    const { transport, reporter } = anIgnoringReporter(["boom"], processor);
+    const send = vi.spyOn(transport, "send");
+
+    expect(reporter.captureException(new Error("boom"))).toMatch(EVENT_ID);
+
+    expect(processor).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+  });
+});
+
+describe("deduplication", () => {
+  const HANDLED = { handled: true, source: "capture" } as const;
+  const UNHANDLED = { handled: false, source: "global.error" } as const;
+
+  /** Every error made by one line that calls this has the same frames. */
+  function errorAt(message: string): Error {
+    return new Error(message);
+  }
+
+  function aDedupingReporter(configure: Parameters<typeof createReporter>[0] = (b) => b) {
+    const transport = createTestTransport();
+    return { transport, reporter: createReporter((b) => configure(b.transport(transport))) };
+  }
+
+  it("drops an exception identical to the one before it, and still returns its id", () => {
+    const { transport, reporter } = aDedupingReporter();
+    const ids: string[] = [];
+
+    for (let index = 0; index < 3; index += 1) {
+      ids.push(reporter.captureException(errorAt("boom"), { attributes: { index } }));
+    }
+
+    expect(onlyEvent(transport.events).id).toBe(ids[0]);
+    expect(ids[1]).toMatch(EVENT_ID);
+    expect(ids[2]).toMatch(EVENT_ID);
+  });
+
+  it("collapses a message captured twice in a row", () => {
+    const { transport, reporter } = aDedupingReporter();
+
+    reporter.captureMessage("hello");
+    reporter.captureMessage("hello");
+
+    expect(onlyEvent(transport.events).message).toBe("hello");
+  });
+
+  it("sends A, B, A, since an event is compared with the last one that passed only", () => {
+    const { transport, reporter } = aDedupingReporter();
+
+    reporter.captureMessage("A");
+    reporter.captureMessage("B");
+    reporter.captureMessage("A");
+
+    expect(transport.events.map((event) => event.message)).toEqual(["A", "B", "A"]);
+  });
+
+  it("sends errors with the same message thrown from different places", () => {
+    const { transport, reporter } = aDedupingReporter();
+
+    reporter.captureException(errorAt("boom"));
+    reporter.captureException(new Error("boom"));
+    reporter.captureException(new TypeError("boom"));
+
+    expect(transport.events).toHaveLength(3);
+  });
+
+  it("compares the event a processor returns, so a processor that rewrites the message changes what counts as a duplicate", () => {
+    const messages = ["first", "second", "second"];
+    const { transport, reporter } = aDedupingReporter((b) =>
+      b.addProcessor((event) => ({ ...event, message: messages.shift() as string })),
+    );
+
+    reporter.captureMessage("same");
+    reporter.captureMessage("same");
+    reporter.captureMessage("same");
+
+    expect(transport.events.map((event) => event.message)).toEqual(["first", "second"]);
+  });
+
+  it("drops events whose fingerprints a processor set equal, and sends those it set different", () => {
+    const fingerprints = [["a"], ["a"], ["b"]];
+    const { transport, reporter } = aDedupingReporter((b) =>
+      b.addProcessor((event) => ({ ...event, fingerprint: fingerprints.shift() as string[] })),
+    );
+
+    reporter.captureMessage("one");
+    reporter.captureMessage("two");
+    reporter.captureMessage("two");
+
+    expect(transport.events.map((event) => event.message)).toEqual(["one", "two"]);
+  });
+
+  it("sends every duplicate with dedupe(false)", () => {
+    const { transport, reporter } = aDedupingReporter((b) => b.dedupe(false));
+
+    reporter.captureMessage("hello");
+    reporter.captureMessage("hello");
+
+    expect(transport.events).toHaveLength(2);
+  });
+
+  it("runs the processors and beforeSend for a duplicate it then drops", () => {
+    const processor = vi.fn((event: ErrorEvent) => event);
+    const beforeSend = vi.fn((event: ErrorEvent) => event);
+    const { transport, reporter } = aDedupingReporter((b) => b.addProcessor(processor).beforeSend(beforeSend));
+
+    reporter.captureMessage("hello");
+    reporter.captureMessage("hello");
+
+    expect(processor).toHaveBeenCalledTimes(2);
+    expect(beforeSend).toHaveBeenCalledTimes(2);
+    expect(transport.events).toHaveLength(1);
+  });
+
+  it("never compares with an event beforeSend dropped", () => {
+    let drop = true;
+    const { transport, reporter } = aDedupingReporter((b) =>
+      b.beforeSend((event) => {
+        const kept = drop ? null : event;
+        drop = false;
+        return kept;
+      }),
+    );
+
+    reporter.captureMessage("hello");
+    reporter.captureMessage("hello");
+
+    expect(onlyEvent(transport.events).message).toBe("hello");
+  });
+
+  it("compares with an event that passed it even when the rate limit then dropped that event", () => {
+    const times = [0, 0, 10_000, 10_000];
+    const { transport, reporter } = aDedupingReporter((b) => b.clock(() => times.shift() as number).rateLimit({ burst: 1, perMinute: 60 }));
+
+    reporter.captureMessage("A");
+    reporter.captureMessage("B");
+    reporter.captureMessage("B");
+    reporter.captureMessage("C");
+
+    expect(transport.events.map((event) => event.message)).toEqual(["A", "C"]);
+  });
+
+  it("keeps a last event per capture function", () => {
+    const transport = createTestTransport();
+    const first = createCapture({ clock: () => 1, processors: [], transport });
+    const second = createCapture({ clock: () => 1, processors: [], transport });
+
+    first({ kind: "message", message: "hello" }, HANDLED);
+    second({ kind: "message", message: "hello" }, HANDLED);
+
+    expect(transport.events).toHaveLength(2);
+  });
+
+  it("turns off in a pipeline that sets dedupe to false", () => {
+    const transport = createTestTransport();
+    const capture = createCapture({ clock: () => 1, processors: [], transport, dedupe: false });
+
+    capture({ kind: "message", message: "hello" }, HANDLED);
+    capture({ kind: "message", message: "hello" }, HANDLED);
+
+    expect(transport.events).toHaveLength(2);
+  });
+
+  describe("an unhandled event", () => {
+    it("is never dropped as a duplicate, and never becomes the event the next one is compared with", () => {
+      const transport = createTestTransport();
+      const capture = createCapture({ clock: () => 1, processors: [], transport });
+
+      capture({ kind: "message", message: "hello" }, UNHANDLED);
+      capture({ kind: "message", message: "hello" }, UNHANDLED);
+      capture({ kind: "message", message: "hello" }, HANDLED);
+      capture({ kind: "message", message: "other" }, UNHANDLED);
+      capture({ kind: "message", message: "hello" }, HANDLED);
+
+      expect(transport.events.map((event) => [event.message, event.mechanism.handled])).toEqual([
+        ["hello", false],
+        ["hello", false],
+        ["hello", true],
+        ["other", false],
+      ]);
+    });
+
+    it("takes no token, and is sent when the bucket is empty", () => {
+      const transport = createTestTransport();
+      const capture = createCapture({ clock: () => 1, processors: [], transport, rateLimit: { burst: 1, perMinute: 1 } });
+
+      capture({ kind: "message", message: "unhandled 1" }, UNHANDLED);
+      capture({ kind: "message", message: "handled 1" }, HANDLED);
+      capture({ kind: "message", message: "handled 2" }, HANDLED);
+      capture({ kind: "message", message: "unhandled 2" }, UNHANDLED);
+
+      expect(transport.events.map((event) => event.message)).toEqual(["unhandled 1", "handled 1", "unhandled 2"]);
+    });
+
+    it("is delivered after a loop of handled errors floods the reporter", async () => {
+      let crash: IntegrationHost | undefined;
+      const { transport, reporter } = aDedupingReporter((b) =>
+        b.add({
+          name: "crash",
+          setup: (host) => {
+            crash = host;
+          },
+        }),
+      );
+
+      for (let index = 0; index < 500; index += 1) {
+        reporter.captureException(new Error(`render ${index}`));
+      }
+      const id = crash?.capture(new Error("fatal"), { mechanism: { handled: false, source: "global.error" }, level: "fatal" });
+
+      expect(transport.events).toHaveLength(61);
+      expect(transport.events.at(-1)?.id).toBe(id);
+      expect(transport.events.at(-1)?.exception?.message).toBe("fatal");
+      await reporter.close();
+    });
+
+    it("still runs ignoreErrors and beforeSend", () => {
+      const transport = createTestTransport();
+      const beforeSend = vi.fn(() => null);
+      const capture = createCapture({ clock: () => 1, processors: [], transport, ignoreErrors: ["ignored"], beforeSend });
+
+      capture({ kind: "message", message: "ignored" }, UNHANDLED);
+      capture({ kind: "message", message: "withheld" }, UNHANDLED);
+
+      expect(beforeSend).toHaveBeenCalledOnce();
+      expect(transport.events).toEqual([]);
+    });
+  });
+});
+
+describe("the rate limit", () => {
+  it("runs the processors and beforeSend for an event it then drops, and still returns its id", () => {
+    const processor = vi.fn((event: ErrorEvent) => event);
+    const beforeSend = vi.fn((event: ErrorEvent) => event);
+    const transport = createTestTransport();
+    const reporter = createReporter((b) =>
+      b.transport(transport).rateLimit({ burst: 1, perMinute: 1 }).addProcessor(processor).beforeSend(beforeSend),
+    );
+
+    reporter.captureMessage("first");
+    const id = reporter.captureMessage("second");
+
+    expect(id).toMatch(EVENT_ID);
+    expect(processor).toHaveBeenCalledTimes(2);
+    expect(beforeSend).toHaveBeenCalledTimes(2);
+    expect(onlyEvent(transport.events).message).toBe("first");
+  });
+
+  it("takes no token for an event a processor or beforeSend drops", () => {
+    const transport = createTestTransport();
+    const reporter = createReporter((b) =>
+      b
+        .transport(transport)
+        .rateLimit({ burst: 1, perMinute: 1 })
+        .beforeSend((event) => (event.message === "withheld" ? null : event)),
+    );
+
+    reporter.captureMessage("withheld");
+    reporter.captureMessage("sent");
+
+    expect(onlyEvent(transport.events).message).toBe("sent");
+  });
+
+  it("takes no token for a duplicate", () => {
+    const transport = createTestTransport();
+    const reporter = createReporter((b) => b.transport(transport).rateLimit({ burst: 2, perMinute: 1 }));
+
+    reporter.captureMessage("same");
+    reporter.captureMessage("same");
+    reporter.captureMessage("other");
+
+    expect(transport.events.map((event) => event.message)).toEqual(["same", "other"]);
+  });
+
+  it("reads the clock once per event", () => {
+    const clock = vi.fn(() => 1);
+    const transport = createTestTransport();
+    const reporter = createReporter((b) => b.transport(transport).clock(clock));
+
+    reporter.captureMessage("first");
+    reporter.captureMessage("second");
+
+    expect(clock).toHaveBeenCalledTimes(2);
   });
 });
