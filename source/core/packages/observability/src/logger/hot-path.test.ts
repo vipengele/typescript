@@ -6,8 +6,26 @@ import { createLogger, type Logger } from "./logger";
 import { createLoggerProvider } from "./provider";
 import type { EmitSettings, Sink } from "./record";
 
+const REGISTRY_SLOT = Symbol.for("opentelemetry.js.api.1");
+const registry = globalThis as unknown as Record<symbol, unknown>;
+
+/** How many times the OpenTelemetry registry's `context` has been read since it was installed. */
+let registryReads = 0;
+
+/** Installs a fake OpenTelemetry registry whose `context` getter counts its reads and has no active span. */
+function installRegistry(): void {
+  registryReads = 0;
+  registry[REGISTRY_SLOT] = {
+    get context() {
+      registryReads++;
+      return undefined;
+    },
+  };
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
+  delete registry[REGISTRY_SLOT];
 });
 
 /** Calls each of the six emit methods once, every one passing `thunk` as its attributes. */
@@ -22,7 +40,7 @@ function callEveryMethod(logger: Logger, thunk: () => Record<string, unknown>): 
 }
 
 describe("a disabled call", () => {
-  test("never reads the emit settings, runs no thunk and reads no Scope, for any of the six methods", () => {
+  test("never reads the emit settings, runs no thunk and reads no Scope or trace, for any of the six methods", () => {
     const emit = vi.fn((): EmitSettings => {
       throw new Error("a disabled call never reads the emit settings");
     });
@@ -31,10 +49,12 @@ describe("a disabled call", () => {
     const current = vi.spyOn(Scope, "current");
     const resource = vi.spyOn(Scope, "resource");
     const logger = createLogger("a.b", () => entryFor("off"), emit).with(bound);
+    installRegistry();
 
     callEveryMethod(logger, thunk);
 
     expect(emit).not.toHaveBeenCalled();
+    expect(registryReads).toBe(0);
     expect(thunk).not.toHaveBeenCalled();
     expect(bound).not.toHaveBeenCalled();
     expect(current).not.toHaveBeenCalled();
@@ -50,6 +70,7 @@ describe("a disabled call", () => {
     const bound = vi.fn(() => ({ bound: 1 }));
     const current = vi.spyOn(Scope, "current");
     const logger = provider.logger("a.b").with(bound);
+    installRegistry();
 
     for (const level of ["trace", "debug", "info"] as const satisfies readonly Level[]) {
       logger[level]("m", thunk);
@@ -61,6 +82,7 @@ describe("a disabled call", () => {
     expect(clock).not.toHaveBeenCalled();
     expect(current).not.toHaveBeenCalled();
     expect(write).not.toHaveBeenCalled();
+    expect(registryReads).toBe(0);
 
     logger.error("m", new Error("boom"), thunk);
 
@@ -68,9 +90,10 @@ describe("a disabled call", () => {
     expect(bound).toHaveBeenCalledTimes(1);
     expect(clock).toHaveBeenCalledTimes(1);
     expect(write).toHaveBeenCalledTimes(1);
+    expect(registryReads).toBe(1);
   });
 
-  test("with every category off, a provider's Logger runs nothing for any of the six methods", () => {
+  test("with every category off, a provider's Logger runs nothing and reads no trace for any of the six methods", () => {
     const write = vi.fn();
     const clock = vi.fn(() => 0);
     const provider = createLoggerProvider((b) => b.addLevels({ "*": "off" }).addSink({ write }).clock(clock));
@@ -78,6 +101,7 @@ describe("a disabled call", () => {
     const bound = vi.fn(() => ({ bound: 1 }));
     const current = vi.spyOn(Scope, "current");
     const resource = vi.spyOn(Scope, "resource");
+    installRegistry();
 
     callEveryMethod(provider.logger("a.b").with(bound), thunk);
 
@@ -87,11 +111,12 @@ describe("a disabled call", () => {
     expect(current).not.toHaveBeenCalled();
     expect(resource).not.toHaveBeenCalled();
     expect(write).not.toHaveBeenCalled();
+    expect(registryReads).toBe(0);
   });
 });
 
 describe("an enabled call with no sink", () => {
-  test("runs no thunk, reads no clock and reads no Scope, for any of the six methods", () => {
+  test("runs no thunk and reads no clock, no Scope and no trace, for any of the six methods", () => {
     const clock = vi.fn(() => 0);
     const provider = createLoggerProvider((b) => b.addLevels({ "*": "trace" }).clock(clock));
     const thunk = vi.fn(() => ({ computed: 1 }));
@@ -101,6 +126,7 @@ describe("an enabled call with no sink", () => {
     const logger = provider.logger("a.b").with(bound);
 
     expect(logger.enabled("trace")).toBe(true);
+    installRegistry();
     callEveryMethod(logger, thunk);
 
     expect(thunk).not.toHaveBeenCalled();
@@ -108,5 +134,6 @@ describe("an enabled call with no sink", () => {
     expect(clock).not.toHaveBeenCalled();
     expect(current).not.toHaveBeenCalled();
     expect(resource).not.toHaveBeenCalled();
+    expect(registryReads).toBe(0);
   });
 });
