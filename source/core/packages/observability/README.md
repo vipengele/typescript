@@ -535,11 +535,12 @@ present; the same `Resource` the environment gate read is the one `send` receive
 everything accepted so far is delivered or dropped, `false` if `timeoutMs` elapses first; `close`
 flushes, then turns every later `send` into a no-op.
 
-**Two built-in transports:**
+**Three built-in transports:**
 
 - `createConsoleTransport(options?)` writes each event to `console` (or `options.console`, for a
   test double): `error` and `fatal` go to `console.error`, `warn` to `console.warn`, `info` to
   `console.info`, and `trace` and `debug` to `console.debug`.
+- `createHttpTransport(options)` POSTs events as JSON in batches; see HTTP transport below.
 - `createTestTransport()` records every sent event on its `events` array, and the `Resource` it was
   sent with on `resources` at the same index, instead of delivering it anywhere, for asserting what a
   reporter sent without a network or a console. Its `clear()` empties both without affecting
@@ -551,6 +552,74 @@ resolve `true` in that case, since there is nothing to wait on.
 
 **An unknown level** — a `CaptureContext.level` or `captureMessage` level that is not one of the six
 `Level` values (or is absent) becomes `"error"`.
+
+### HTTP transport
+
+`createHttpTransport` delivers events to an endpoint as batched JSON, retrying what can be retried
+and bounding what it holds (ADR-0022):
+
+```ts
+import { createHttpTransport, createReporter } from "@vipengele/ts-core-observability/errors";
+
+const transport = createHttpTransport({
+  url: "https://errors.example.com/ingest",
+  headers: () => ({ authorization: `Bearer ${readToken()}` }),
+  onDrop: (events, reason) => console.warn(`dropped ${events.length} event(s): ${reason}`),
+});
+const reporter = createReporter((builder) => builder.transport(transport));
+
+// Before a CLI or serverless handler returns:
+await transport.close(2000);
+```
+
+| Option | Meaning | Default |
+|--------|---------|---------|
+| `url` | Absolute endpoint, a string or `URL` (required) | none |
+| `headers` | A record, or a function (sync or async) called before every request | none |
+| `fetch` | The `fetch` to send with, read from `globalThis` at send time | `globalThis.fetch` |
+| `maxQueueEvents` | Events the queue holds | `100` |
+| `maxQueueBytes` | Estimated bytes the queue holds | `1_048_576` |
+| `maxBatchEvents` | Events per request | `20` |
+| `maxBatchBytes` | Bytes per request body, and the most one event may measure | `65_536` |
+| `lingerMs` | How long a non-full batch waits for more events | `1000` |
+| `maxAttempts` | Delivery attempts per batch, the first included | `5` |
+| `maxDelayMs` | Cap on both a backoff wait and a `Retry-After` wait | `30_000` |
+| `serialize` | `(events, resource) => string`, builds the body | JSON envelope |
+| `contentType` | The `Content-Type` of the body | `application/json` |
+| `onDrop` | `(events, reason) => void`, called for events given up on | warn once per reason |
+| `console` | Where the default warning goes | `globalThis.console` |
+| `clock`, `scheduler`, `random` | Time source for `Retry-After` dates, timer, jitter source | system clock, system scheduler, `Math.random` |
+
+A bad value throws `HttpTransportConfigError` (code `observability.errors.http-transport.config`,
+checked with `isHttpTransportConfigError`) when the transport is created. `send` never throws.
+
+- **Wire format** — the body is `{"resource": {...}, "events": [...]}` as `application/json`. `resource`
+  holds the Resource keys that have a value. A batch never mixes Resources: events whose Resources
+  differ go in separate requests. `serialize` and `contentType` replace the body and its type.
+- **Byte bounds** — the queue measures an event as the UTF-8 length of its JSON. The request step
+  measures the real body; one over `maxBatchBytes` is split in half and each half sent. An event that
+  alone exceeds `maxBatchBytes` is dropped as `"too-large"` when it is sent.
+- **Retry rules** — a 2xx is delivered. A network error, 408, 429 or 5xx is retried up to
+  `maxAttempts`, waiting an exponential backoff from 1 s with full jitter, capped at `maxDelayMs`. A
+  `Retry-After` header, in seconds or as an HTTP-date, sets the wait instead, also capped at
+  `maxDelayMs`. Any other status, a 3xx that `fetch` did not follow included, is rejected and not
+  retried.
+- **One request at a time** — a backoff or `Retry-After` wait holds back every batch behind it. A
+  `headers` function that throws or rejects is a retryable failure; one that always fails pauses the
+  queue for the whole of each batch's retries.
+- **Drops** — `onDrop(events, reason)` receives `"queue-full"`, `"too-large"`,
+  `"retries-exhausted"`, `"rejected"`, `"unsendable"` (no `fetch`, or a throwing `serialize`) or
+  `"closed"`. Without `onDrop`, the transport warns once per reason. A throwing `onDrop` is ignored.
+- **`flush(timeoutMs?)`** — cuts a pending linger short but waits out a backoff. It resolves `true`
+  once the events accepted before the call are delivered or dropped, `false` if `timeoutMs` elapses
+  first; later sends are not waited on.
+- **`close(timeoutMs?)`** — stops accepting events at once, flushes with `timeoutMs`, then aborts the
+  request in flight and drops what is still queued or in flight as `"closed"`. It resolves to the
+  flush result. A second call returns the same promise.
+- **Exit** — the transport registers no exit hook and does not `unref` its timers, which keep a Node
+  process alive. A CLI or serverless handler awaits `close()` before it exits. After a 429 with a
+  long `Retry-After`, `globalHandlers`' `flush(2000)` resolves `false`, since the wait is not cut
+  short.
 
 ### Pipeline control
 

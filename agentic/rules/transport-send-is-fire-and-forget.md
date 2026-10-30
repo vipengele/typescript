@@ -19,7 +19,7 @@ policy and delivery drops.
 
 Any implementation of `Transport` in `@vipengele/ts-core-observability`'s `./errors` entry point
 (`source/core/packages/observability/src/errors/transport.ts`), including the built-in
-`createConsoleTransport` and `createTestTransport` and any transport added after them.
+`createConsoleTransport`, `createHttpTransport` and `createTestTransport` and any transport added after them.
 
 ## Example
 
