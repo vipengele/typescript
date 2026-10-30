@@ -197,6 +197,28 @@ describe("createDelivery triggers", () => {
     expect(calls.map((call) => call.init.body)).toEqual(['["a","b"]', '["c","d"]', '["e"]']);
   });
 
+  test("exports an entry left behind by an export scheduleDelayMs after its own enqueue", async () => {
+    let release: (response: DeliveryResponse) => void = () => {};
+    const first: Responder = () =>
+      new Promise((resolve) => {
+        release = resolve;
+      });
+    const { delivery, calls, time, encoded } = harness([first], { limits: { maxBatchSize: 2, attemptTimeoutMs: 60_000 } });
+    enqueueAll(delivery, ["a", "b"]);
+    await time.advance(1000);
+    enqueueAll(delivery, ["c", "d", "e"]);
+    await time.advance(1000);
+    release(status(200));
+    await tick();
+    expect(calls.map((call) => call.init.body)).toEqual(['["a","b"]', '["c","d"]']);
+    await time.advance(3999);
+    expect(calls).toHaveLength(2);
+    await time.advance(1);
+    await tick();
+    expect(calls.map((call) => call.init.body)).toEqual(['["a","b"]', '["c","d"]', '["e"]']);
+    expect(calls[2]?.at).toBe((encoded[2]?.[0]?.observedMs ?? Number.NaN) + 5000);
+  });
+
   test("exports a batch whose delay elapsed while another was in flight once that one settles", async () => {
     let release: (response: DeliveryResponse) => void = () => {};
     const first: Responder = () =>

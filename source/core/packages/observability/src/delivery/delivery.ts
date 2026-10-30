@@ -51,7 +51,10 @@ export interface DeliveryLimits {
   readonly maxQueueSize: number;
   /** How many entries one export carries at most, and the buffer size that triggers an export. */
   readonly maxBatchSize: number;
-  /** How long after the first entry reaches an empty buffer it is exported, at the latest. */
+  /**
+   * How long the oldest buffered entry waits, from its `enqueue`, before an export is due; the
+   * export starts then, or once the batch in flight settles.
+   */
   readonly scheduleDelayMs: number;
   /** How many attempts one batch gets, the first included. */
   readonly maxAttempts: number;
@@ -334,13 +337,20 @@ class DeliveryQueue<T> {
     this.#timer = undefined;
   }
 
+  /**
+   * Arms the schedule-delay timer for the oldest buffered entry: it elapses `scheduleDelayMs` after
+   * that entry's `observedMs`, so an entry left behind by an export keeps the deadline it was
+   * already waiting on. A no-op while a timer is pending or the buffer is empty.
+   */
   #startTimer(): void {
-    if (this.#timer !== undefined) {
+    const oldest = this.#buffer[0];
+    if (this.#timer !== undefined || oldest === undefined) {
       return;
     }
     const controller = new AbortController();
     this.#timer = controller;
-    this.#scheduler.sleep(this.#limits.scheduleDelayMs, controller.signal).then(() => this.#timerElapsed(controller), noop);
+    const delayMs = Math.max(0, this.#limits.scheduleDelayMs - (this.#clock() - oldest.observedMs));
+    this.#scheduler.sleep(delayMs, controller.signal).then(() => this.#timerElapsed(controller), noop);
   }
 
   #timerElapsed(controller: AbortController): void {
@@ -380,9 +390,7 @@ class DeliveryQueue<T> {
     const batch: Batch<T> = { entries: this.#buffer.splice(0, this.#limits.maxBatchSize), abort: new AbortController(), settled: false };
     this.#stopTimer();
     this.#timerDue = false;
-    if (this.#buffer.length > 0) {
-      this.#startTimer();
-    }
+    this.#startTimer();
     this.#inFlight = batch;
     void this.#exportBatch(batch).then(() => {
       this.#inFlight = undefined;
@@ -498,9 +506,9 @@ class DeliveryQueue<T> {
 
 /**
  * Creates a {@link Delivery}: a buffer of entries exported as OTLP/HTTP JSON batches, one batch in
- * flight at a time. An export starts when the buffer reaches `maxBatchSize`, or `scheduleDelayMs`
- * after the first entry reaches an empty buffer; once a batch settles, a buffer holding a full batch
- * is exported at once. A network error, a timeout, 429, 502, 503 and 504 are retried with
+ * flight at a time. An export starts when the buffer reaches `maxBatchSize`, or once the oldest
+ * buffered entry has waited `scheduleDelayMs` since its `enqueue`; once a batch settles, a buffer
+ * holding a full batch, or an entry past that delay, is exported at once. A network error, a timeout, 429, 502, 503 and 504 are retried with
  * `backoff`, or after the delay a `Retry-After` names. Payload-generic: `encode` alone knows `T`.
  *
  * When the page is hidden or unloaded (`pagehide`, or `visibilitychange` to `"hidden"`), the batch
