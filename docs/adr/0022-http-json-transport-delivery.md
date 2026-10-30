@@ -25,9 +25,11 @@ The default body is `{"resource": {defined keys}, "events": [...]}` as `applicat
 and `contentType` replace it. A batch never mixes Resources, and Resources are compared structurally
 by a key built from the eleven reserved keys, because `Scope.resource()` returns a new frozen object
 on every read. The queue measures an event as the UTF-8 length of its JSON and bounds `maxQueueBytes`
-and the estimated `maxBatchBytes` with it. The request step measures the real body: one over
-`maxBatchBytes` is split in half and each half sent. A single event over the limit is a `"too-large"`
-drop. `maxBatchBytes` therefore holds for the body that is sent, whatever serializer produced it.
+and the estimated `maxBatchBytes` with it. An event whose estimated size alone exceeds
+`maxBatchBytes` is a `"too-large"` drop when `send` would queue it. The request step measures the
+real serialized body: one over `maxBatchBytes` is split in half and each half sent, and a lone event
+whose real body is still over the limit is a `"too-large"` drop at request time. `maxBatchBytes`
+therefore holds for the body that is sent, whatever serializer produced it.
 
 - **The Resource on every event.** Eleven keys repeated in each event multiply the payload by the
   batch size.
@@ -55,13 +57,19 @@ error stays with `globalHandlers`
 Batches go out one request at a time. A backoff or `Retry-After` wait holds back every batch behind
 it. A 2xx is delivered; a network error, 408, 429 or 5xx is retried (`maxAttempts` 5, 1 s initial
 delay, full jitter, capped at `maxDelayMs`); any other status, a 3xx included, is `"rejected"`, relying
-on `fetch` to follow redirects. `Retry-After` is read as seconds or an HTTP-date.
+on `fetch` to follow redirects. `Retry-After` is read as seconds or an HTTP-date. Each attempt —
+resolving `headers`, then the `fetch` — is bounded by `requestTimeoutMs` (default 10 000) on the same
+`Scheduler`: a hung attempt has its `fetch` aborted and counts as a retryable failure, so one
+request in flight never holds the queue for longer than the attempts and waits `maxAttempts`,
+`requestTimeoutMs` and `maxDelayMs` allow.
 
 - **Concurrent requests.** A server answering 429 would receive the next batch immediately, and
   ordering between batches would be lost.
 - **Per-batch pauses.** Each batch would learn the limit for itself, sending a request the server
   has already said it will refuse.
 - **Retrying a 3xx.** A redirect `fetch` did not follow will not resolve by waiting.
+- **Unbounded attempts.** A `fetch` that never answers, or a `headers` promise that never settles,
+  would hold the single in-flight slot until `close`, and every later batch with it.
 
 ## Consequences
 

@@ -29,6 +29,7 @@ describe("resolveOptions defaults", () => {
       lingerMs: 1000,
       maxAttempts: 5,
       maxDelayMs: 30_000,
+      requestTimeoutMs: 10_000,
       serialize: undefined,
       contentType: "application/json",
       onDrop: undefined,
@@ -57,6 +58,7 @@ describe("resolveOptions defaults", () => {
       lingerMs: 0,
       maxAttempts: 6,
       maxDelayMs: 0,
+      requestTimeoutMs: 0.5,
       serialize,
       contentType: "text/plain",
       onDrop,
@@ -75,12 +77,17 @@ describe("resolveOptions defaults", () => {
       lingerMs: 0,
       maxAttempts: 6,
       maxDelayMs: 0,
+      requestTimeoutMs: 0.5,
       serialize,
       contentType: "text/plain",
       onDrop,
       console: warn,
       random,
     });
+  });
+
+  it("accepts a requestTimeoutMs of the largest delay a timer honours", () => {
+    expect(resolveOptions({ url, requestTimeoutMs: 2_147_483_647 }).requestTimeoutMs).toBe(2_147_483_647);
   });
 
   it("accepts a record of headers", () => {
@@ -118,6 +125,21 @@ describe("resolveOptions validation", () => {
       expect(isHttpTransportConfigError(error)).toBe(true);
       expect((error as Error).message).toContain(name);
     }
+  });
+
+  it.each([
+    ["zero", 0],
+    ["negative", -1],
+    ["NaN", Number.NaN],
+    ["infinite", Number.POSITIVE_INFINITY],
+    ["above the largest delay a timer honours", 2_147_483_648],
+    ["a string", "3"],
+    ["null", null],
+  ])("rejects a requestTimeoutMs that is %s", (_name, value) => {
+    const error = reject({ url, requestTimeoutMs: value });
+
+    expect(isHttpTransportConfigError(error)).toBe(true);
+    expect((error as Error).message).toContain("requestTimeoutMs");
   });
 
   it.each(["serialize", "fetch", "onDrop", "random"])("rejects a non-function %s", (name) => {

@@ -353,6 +353,26 @@ describe("createHttpTransport close", () => {
     expect(time.pendingSleeps).toBe(0);
   });
 
+  it("drops only the unsettled half of a batch split for size as closed once its timeout elapses", async () => {
+    const time = createManualTime();
+    const calls: string[][] = [];
+    const fetch = ((_input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push(JSON.parse(String(init?.body)) as string[]);
+      return calls.length === 1 ? Promise.resolve(new Response(null, { status: 200 })) : new Promise<Response>(() => {});
+    }) as typeof globalThis.fetch;
+    // Each event's body measures 600 bytes, so two together are over maxBatchBytes and split.
+    const serialize = (events: readonly ErrorEvent[]) => JSON.stringify(events.map((event) => event.message)).padEnd(600 * events.length);
+    const { transport, drops } = setup(time, { fetch, serialize, maxBatchBytes: 1000 });
+
+    transport.send(anEvent("a"), resource);
+    transport.send(anEvent("b"), resource);
+    const closed = drive(time, transport.close(100), 50);
+
+    await expect(closed).resolves.toBe(false);
+    expect(calls).toEqual([["a"], ["b"]]);
+    expect(drops).toEqual([{ messages: ["b"], reason: "closed" }]);
+  });
+
   it("does not wait on a fetch that ignores the abort", async () => {
     const time = createManualTime();
     const fetch = vi.fn(() => new Promise<Response>(() => {})) as unknown as typeof globalThis.fetch;

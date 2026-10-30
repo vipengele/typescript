@@ -580,15 +580,16 @@ await transport.close(2000);
 | `maxQueueEvents` | Events the queue holds | `100` |
 | `maxQueueBytes` | Estimated bytes the queue holds | `1_048_576` |
 | `maxBatchEvents` | Events per request | `20` |
-| `maxBatchBytes` | Bytes per request body, and the most one event may measure | `65_536` |
+| `maxBatchBytes` | Bytes per request body, and the most one event's estimated size may measure | `65_536` |
 | `lingerMs` | How long a non-full batch waits for more events | `1000` |
 | `maxAttempts` | Delivery attempts per batch, the first included | `5` |
 | `maxDelayMs` | Cap on both a backoff wait and a `Retry-After` wait | `30_000` |
+| `requestTimeoutMs` | How long one attempt (resolving `headers`, then `fetch`) may run before it is aborted and retried | `10_000` |
 | `serialize` | `(events, resource) => string`, builds the body | JSON envelope |
 | `contentType` | The `Content-Type` of the body | `application/json` |
 | `onDrop` | `(events, reason) => void`, called for events given up on | warn once per reason |
 | `console` | Where the default warning goes | `globalThis.console` |
-| `clock`, `scheduler`, `random` | Time source for `Retry-After` dates, timer, jitter source | system clock, system scheduler, `Math.random` |
+| `clock`, `scheduler`, `random` | Time source for `Retry-After` dates, timer for linger, backoff and `requestTimeoutMs`, jitter source | system clock, system scheduler, `Math.random` |
 
 A bad value throws `HttpTransportConfigError` (code `observability.errors.http-transport.config`,
 checked with `isHttpTransportConfigError`) when the transport is created. `send` never throws.
@@ -596,17 +597,21 @@ checked with `isHttpTransportConfigError`) when the transport is created. `send`
 - **Wire format** — the body is `{"resource": {...}, "events": [...]}` as `application/json`. `resource`
   holds the Resource keys that have a value. A batch never mixes Resources: events whose Resources
   differ go in separate requests. `serialize` and `contentType` replace the body and its type.
-- **Byte bounds** — the queue measures an event as the UTF-8 length of its JSON. The request step
-  measures the real body; one over `maxBatchBytes` is split in half and each half sent. An event that
-  alone exceeds `maxBatchBytes` is dropped as `"too-large"` when it is sent.
-- **Retry rules** — a 2xx is delivered. A network error, 408, 429 or 5xx is retried up to
-  `maxAttempts`, waiting an exponential backoff from 1 s with full jitter, capped at `maxDelayMs`. A
-  `Retry-After` header, in seconds or as an HTTP-date, sets the wait instead, also capped at
-  `maxDelayMs`. Any other status, a 3xx that `fetch` did not follow included, is rejected and not
-  retried.
-- **One request at a time** — a backoff or `Retry-After` wait holds back every batch behind it. A
-  `headers` function that throws or rejects is a retryable failure; one that always fails pauses the
-  queue for the whole of each batch's retries.
+- **Byte bounds** — the queue measures an event as the UTF-8 length of its JSON. An event whose
+  estimated size exceeds `maxBatchBytes` is dropped as `"too-large"` by `send`, never entering the
+  queue. The request step measures the real serialized body; one over `maxBatchBytes` is split in
+  half and each half sent, and a lone event whose real body is still over is dropped as
+  `"too-large"` then.
+- **Retry rules** — a 2xx is delivered. A network error, 408, 429, 5xx or an attempt still
+  unanswered after `requestTimeoutMs` is retried up to `maxAttempts`, waiting an exponential backoff
+  from 1 s with full jitter, capped at `maxDelayMs`. A timed-out attempt's `fetch` is aborted, and a
+  `headers` promise that never settles is abandoned. A `Retry-After` header, in seconds or as an
+  HTTP-date, sets the wait instead, also capped at `maxDelayMs`. Any other status, a 3xx that
+  `fetch` did not follow included, is rejected and not retried.
+- **One request at a time** — a backoff or `Retry-After` wait holds back every batch behind it, and
+  so does an attempt in progress, for at most `requestTimeoutMs`. A `headers` function that throws,
+  rejects or never settles is a retryable failure; one that always fails pauses the queue for the
+  whole of each batch's retries.
 - **Drops** — `onDrop(events, reason)` receives `"queue-full"`, `"too-large"`,
   `"retries-exhausted"`, `"rejected"`, `"unsendable"` (no `fetch`, or a throwing `serialize`) or
   `"closed"`. Without `onDrop`, the transport warns once per reason. A throwing `onDrop` is ignored.
@@ -614,7 +619,8 @@ checked with `isHttpTransportConfigError`) when the transport is created. `send`
   once the events accepted before the call are delivered or dropped, `false` if `timeoutMs` elapses
   first; later sends are not waited on.
 - **`close(timeoutMs?)`** — stops accepting events at once, flushes with `timeoutMs`, then aborts the
-  request in flight and drops what is still queued or in flight as `"closed"`. It resolves to the
+  request in flight and drops what is still queued or in flight as `"closed"`. Part of a batch split
+  for size that was delivered or dropped before the abort keeps that outcome. It resolves to the
   flush result. A second call returns the same promise.
 - **Exit** — the transport registers no exit hook and does not `unref` its timers, which keep a Node
   process alive. A CLI or serverless handler awaits `close()` before it exits. After a 429 with a

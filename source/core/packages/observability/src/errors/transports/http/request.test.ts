@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ErrorEvent } from "../../event";
 import { type HttpTransportOptions, resolveOptions } from "./options";
 import type { Batch } from "./queue";
-import { type RequestResult, sendBatch } from "./request";
+import { type RequestResult, type Settlement, sendBatch } from "./request";
 
 const url = "https://errors.example.com/ingest";
 
@@ -45,8 +45,11 @@ interface Call {
   readonly init: RequestInit;
 }
 
-/** A response, a status for one with no body, or a value the fake throws synchronously (`throw`) or rejects with (`reject`). */
-type Step = number | Response | { readonly throw: unknown } | { readonly reject: unknown };
+/**
+ * A response, a status for one with no body, a promise that never settles (`"hang"`), or a value
+ * the fake throws synchronously (`throw`) or rejects with (`reject`).
+ */
+type Step = number | Response | "hang" | { readonly throw: unknown } | { readonly reject: unknown };
 
 /**
  * A fake `fetch` answering each call with the next step; the last step repeats. Records the
@@ -62,6 +65,9 @@ function fakeFetch(time: ManualTime, ...steps: Step[]): { fetch: typeof fetch; c
     }
     if (step instanceof Response) {
       return Promise.resolve(step);
+    }
+    if (step === "hang") {
+      return new Promise<Response>(() => {});
     }
     if ("throw" in step) {
       throw step.throw;
@@ -308,19 +314,127 @@ describe("sendBatch failed attempts", () => {
   });
 });
 
+describe("sendBatch request timeout", () => {
+  it("aborts a fetch still unanswered after requestTimeoutMs and retries it", async () => {
+    const time = createManualTime();
+    const { fetch, calls } = fakeFetch(time, "hang", 200);
+
+    const result = await drive(time, sendBatch(aBatch(), settings(time, { fetch, requestTimeoutMs: 5000 })));
+
+    expect(result[0]?.outcome).toBe("delivered");
+    expect(calls.map((call) => call.at)).toEqual([0, 5500]);
+    expect(calls[0]?.init.signal?.aborted).toBe(true);
+    expect(time.pendingSleeps).toBe(0);
+  });
+
+  it("abandons a headers function that never settles after requestTimeoutMs and retries it", async () => {
+    const time = createManualTime();
+    const { fetch, calls } = fakeFetch(time, 200);
+    let attempts = 0;
+    const headers = () => {
+      attempts += 1;
+      return attempts === 1 ? new Promise<Record<string, string>>(() => {}) : { Authorization: "Bearer t" };
+    };
+
+    const result = await drive(time, sendBatch(aBatch(), settings(time, { fetch, headers, requestTimeoutMs: 5000 })));
+
+    expect(result[0]?.outcome).toBe("delivered");
+    expect(attempts).toBe(2);
+    expect(calls.map((call) => call.at)).toEqual([5500]);
+  });
+
+  it("settles retries-exhausted when every attempt times out", async () => {
+    const time = createManualTime();
+    const { fetch, calls } = fakeFetch(time, "hang");
+
+    const result = await drive(time, sendBatch(aBatch(), settings(time, { fetch, maxAttempts: 3, requestTimeoutMs: 5000 })));
+
+    expect(result[0]?.outcome).toBe("retries-exhausted");
+    expect(calls).toHaveLength(3);
+    expect(calls.every((call) => call.init.signal?.aborted)).toBe(true);
+    expect(time.pendingSleeps).toBe(0);
+  });
+
+  it("does not time out an attempt answered within requestTimeoutMs", async () => {
+    const time = createManualTime();
+    let answer: (response: Response) => void = () => {};
+    const fetch = (() =>
+      new Promise<Response>((resolve) => {
+        answer = resolve;
+      })) as typeof globalThis.fetch;
+
+    const pending = sendBatch(aBatch(), settings(time, { fetch, requestTimeoutMs: 5000 }));
+    await vi.waitFor(() => {
+      expect(time.pendingSleeps).toBe(1);
+    });
+    await time.advance(4999);
+    answer(new Response(null, { status: 200 }));
+
+    await expect(pending).resolves.toEqual([expect.objectContaining({ outcome: "delivered" })]);
+    expect(time.pendingSleeps).toBe(0);
+  });
+});
+
+describe("sendBatch onSettle", () => {
+  it("hears each group as it settles, before the next group is sent", async () => {
+    const time = createManualTime();
+    const heard: Settlement[] = [];
+    const heardAtCall: number[] = [];
+    const { fetch: answer } = fakeFetch(time, 200, 400);
+    const fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+      heardAtCall.push(heard.length);
+      return answer(input, init);
+    }) as typeof globalThis.fetch;
+    const serialize = (group: readonly ErrorEvent[]) => group.map((event) => event.message).join("");
+    const events = ["aaaaaaaaaa", "bbbbbbbbbb"].map(anEvent);
+
+    const result = await drive(
+      time,
+      sendBatch(aBatch(...events), settings(time, { fetch, serialize, maxBatchBytes: 15 }), undefined, (settlement) => {
+        heard.push(settlement);
+      }),
+    );
+
+    expect(heardAtCall).toEqual([0, 1]);
+    expect(heard).toEqual([
+      { events: events.slice(0, 1), outcome: "delivered" },
+      { events: events.slice(1), outcome: "rejected" },
+    ]);
+    expect(result).toEqual(heard);
+  });
+
+  it("hears an unsendable batch when there is no fetch", async () => {
+    const time = createManualTime();
+    vi.stubGlobal("fetch", undefined);
+    const batch = aBatch();
+    const heard: Settlement[] = [];
+
+    await drive(
+      time,
+      sendBatch(batch, settings(time), undefined, (settlement) => {
+        heard.push(settlement);
+      }),
+    );
+
+    expect(heard).toEqual([{ events: batch.events, outcome: "unsendable" }]);
+  });
+});
+
 describe("sendBatch request", () => {
   it("POSTs the default envelope, holding only the Resource's defined keys, as application/json", async () => {
     const time = createManualTime();
     const { fetch, calls } = fakeFetch(time, 200);
     const batch = aBatch(anEvent("a"), anEvent("b"));
-    const signal = new AbortController().signal;
+    const controller = new AbortController();
 
-    await drive(time, sendBatch(batch, settings(time, { fetch, headers: { "X-Key": "k" } }), signal));
+    await drive(time, sendBatch(batch, settings(time, { fetch, headers: { "X-Key": "k" } }), controller.signal));
 
     const [call] = calls;
     expect(call?.url).toBe(url);
     expect(call?.init.method).toBe("POST");
-    expect(call?.init.signal).toBe(signal);
+    expect(call?.init.signal?.aborted).toBe(false);
+    controller.abort();
+    expect(call?.init.signal?.aborted).toBe(true);
     const headers = new Headers(call?.init.headers);
     expect(headers.get("Content-Type")).toBe("application/json");
     expect(headers.get("X-Key")).toBe("k");

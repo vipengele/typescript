@@ -1,5 +1,6 @@
 import { type Clock, type Scheduler, systemClock, systemScheduler } from "@vipengele/ts-core-common";
 import type { Resource } from "@vipengele/ts-core-common/scope";
+import { MAX_TIMEOUT_DURATION_MS } from "@vipengele/ts-core-resilience/timeout";
 import type { ErrorEvent } from "../../event";
 import { HttpTransportConfigError } from "../http-transport-config-error";
 import type { DropReason, QueueLimits } from "./queue";
@@ -29,6 +30,12 @@ export interface HttpTransportOptions {
   readonly maxAttempts?: number;
   /** The cap, in milliseconds, on both backoff and a `Retry-After` wait. Zero retries with no wait. Default: 30_000. */
   readonly maxDelayMs?: number;
+  /**
+   * How long, in milliseconds, one delivery attempt — resolving the headers and the `fetch` — may
+   * run before it is aborted and counted as a failed attempt. Finite, above zero and at most
+   * 2_147_483_647. Default: 10_000.
+   */
+  readonly requestTimeoutMs?: number;
   /** Turns a batch into the request body. Default: a JSON envelope of the events and the Resource. */
   readonly serialize?: (events: readonly ErrorEvent[], resource: Resource) => string;
   /** The request's `Content-Type`. Default: `application/json`. */
@@ -39,7 +46,7 @@ export interface HttpTransportOptions {
   readonly console?: Pick<Console, "warn">;
   /** The time source for `Retry-After` dates. Default: the system clock. */
   readonly clock?: Clock;
-  /** The timer for lingering and backoff. Default: the system scheduler. */
+  /** The timer for lingering, backoff and the request timeout. Default: the system scheduler. */
   readonly scheduler?: Scheduler;
   /** The jitter source, returning a number in [0, 1). Default: `Math.random`. */
   readonly random?: () => number;
@@ -55,6 +62,7 @@ export interface ResolvedHttpTransportOptions extends QueueLimits {
   readonly lingerMs: number;
   readonly maxAttempts: number;
   readonly maxDelayMs: number;
+  readonly requestTimeoutMs: number;
   readonly serialize: HttpTransportOptions["serialize"];
   readonly contentType: string;
   readonly onDrop: HttpTransportOptions["onDrop"];
@@ -84,6 +92,18 @@ function nonNegative(name: string, value: number | undefined, fallback: number):
   }
   if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
     throw new HttpTransportConfigError(`Invalid HTTP transport option ${name} ${describe(value)}: expected a finite, non-negative number.`);
+  }
+  return value;
+}
+
+function timeout(name: string, value: number | undefined, fallback: number): number {
+  if (value === undefined) {
+    return fallback;
+  }
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0 || value > MAX_TIMEOUT_DURATION_MS) {
+    throw new HttpTransportConfigError(
+      `Invalid HTTP transport option ${name} ${describe(value)}: expected a finite number above zero and at most ${MAX_TIMEOUT_DURATION_MS}.`,
+    );
   }
   return value;
 }
@@ -132,6 +152,7 @@ export function resolveOptions(options: HttpTransportOptions): ResolvedHttpTrans
     lingerMs: nonNegative("lingerMs", options.lingerMs, 1000),
     maxAttempts: positiveInteger("maxAttempts", options.maxAttempts, 5),
     maxDelayMs: nonNegative("maxDelayMs", options.maxDelayMs, 30_000),
+    requestTimeoutMs: timeout("requestTimeoutMs", options.requestTimeoutMs, 10_000),
     serialize: optionalFunction("serialize", options.serialize),
     contentType: options.contentType ?? "application/json",
     onDrop: optionalFunction("onDrop", options.onDrop),

@@ -2,7 +2,7 @@ import type { ErrorEvent } from "../event";
 import type { Transport } from "../transport";
 import { type HttpTransportOptions, resolveOptions } from "./http/options";
 import { createEventQueue, type DropReason } from "./http/queue";
-import { type RequestDropReason, sendBatch } from "./http/request";
+import { type RequestDropReason, type Settlement, sendBatch } from "./http/request";
 
 /** A pending `flush`: resolved once `settled` reaches `target`, or by its timeout. */
 interface FlushWaiter {
@@ -12,8 +12,9 @@ interface FlushWaiter {
 
 /**
  * Creates a {@link Transport} that POSTs Error Events to `options.url` in batches, retrying a
- * network error, 408, 429 or 5xx with backoff or the response's `Retry-After`. Throws
- * `HttpTransportConfigError` here for an invalid option; `send` never throws.
+ * network error, an attempt that outlives `requestTimeoutMs`, 408, 429 or 5xx with backoff or the
+ * response's `Retry-After`. Throws `HttpTransportConfigError` here for an invalid option; `send`
+ * never throws.
  *
  * `send` queues the event and returns. The first event queued while nothing is lingering or in
  * flight starts a `lingerMs` wait on the Scheduler that gathers the events sent during it; when it
@@ -29,8 +30,9 @@ interface FlushWaiter {
  * `timeoutMs`, timed on the Scheduler, elapses first; events sent after the call are not waited on.
  *
  * `close` turns every later `send` into a no-op, flushes with `timeoutMs`, then aborts the request
- * in flight and drops it and everything still queued as `"closed"`, resolving to the flush's
- * result. The aborted request's own settlement is ignored, so a `fetch` that disregards its signal
+ * in flight and drops the events of its batch not yet settled, and everything still queued, as
+ * `"closed"`, resolving to the flush's result. A part of a batch split for size that settled
+ * before the abort keeps its own outcome. The aborted request's own settlement is ignored, so a `fetch` that disregards its signal
  * cannot hold `close` open. A second `close` returns the first one's promise; a `flush` after
  * `close` resolves `true` once `close` has.
  *
@@ -49,7 +51,8 @@ export function createHttpTransport(options: HttpTransportOptions): Transport {
   let settled = 0;
   let linger: AbortController | undefined;
   let sending = false;
-  let inFlight: ErrorEvent[] | undefined;
+  /** The events of the batch being sent that have not settled yet, in batch order. */
+  let inFlight: readonly ErrorEvent[] = [];
   let closed = false;
   let closing: Promise<boolean> | undefined;
 
@@ -84,22 +87,29 @@ export function createHttpTransport(options: HttpTransportOptions): Transport {
     settle(events.length);
   }
 
+  /** Counts a settled group of the batch in flight as delivered or dropped. */
+  function onSettle({ events, outcome }: Settlement): void {
+    if (stop.signal.aborted) {
+      // `close` has dropped what was still in flight. An `"aborted"` group only settles after `stop`
+      // aborts, so it never gets past this check.
+      return;
+    }
+    // Groups settle in batch order, so a settled group is always the head of what is in flight.
+    inFlight = inFlight.slice(events.length);
+    if (outcome === "delivered") {
+      settle(events.length);
+    } else {
+      drop(events, outcome as RequestDropReason);
+    }
+  }
+
   async function run(): Promise<void> {
     for (let batch = queue.takeBatch(); batch !== undefined; batch = queue.takeBatch()) {
       inFlight = batch.events;
-      const result = await sendBatch(batch, resolved, stop.signal);
+      await sendBatch(batch, resolved, stop.signal, onSettle);
       if (stop.signal.aborted) {
-        // `close` has dropped this batch and drained the queue.
+        // `close` has dropped the unsettled events and drained the queue.
         break;
-      }
-      inFlight = undefined;
-      for (const { events, outcome } of result) {
-        if (outcome === "delivered") {
-          settle(events.length);
-        } else {
-          // `"aborted"` only follows `stop` aborting, which the check above has already handled.
-          drop(events, outcome as RequestDropReason);
-        }
       }
     }
     sending = false;
@@ -194,8 +204,8 @@ export function createHttpTransport(options: HttpTransportOptions): Transport {
         closed = true;
         closing = flushAccepted(timeoutMs).then((drained) => {
           stop.abort();
-          drop(inFlight ?? [], "closed");
-          inFlight = undefined;
+          drop(inFlight, "closed");
+          inFlight = [];
           drop(queue.drain(), "closed");
           return drained;
         });
