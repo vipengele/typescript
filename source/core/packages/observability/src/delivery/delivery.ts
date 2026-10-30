@@ -151,6 +151,351 @@ function defaultFetch(url: string, init: DeliveryRequest): Promise<DeliveryRespo
   return globalThis.fetch(url, init);
 }
 
+/** Fills every limit `given` leaves out from {@link DEFAULT_DELIVERY_LIMITS}. */
+function resolveLimits(given: Partial<DeliveryLimits> = {}): DeliveryLimits {
+  return {
+    maxQueueSize: given.maxQueueSize ?? DEFAULT_DELIVERY_LIMITS.maxQueueSize,
+    maxBatchSize: given.maxBatchSize ?? DEFAULT_DELIVERY_LIMITS.maxBatchSize,
+    scheduleDelayMs: given.scheduleDelayMs ?? DEFAULT_DELIVERY_LIMITS.scheduleDelayMs,
+    maxAttempts: given.maxAttempts ?? DEFAULT_DELIVERY_LIMITS.maxAttempts,
+    attemptTimeoutMs: given.attemptTimeoutMs ?? DEFAULT_DELIVERY_LIMITS.attemptTimeoutMs,
+    flushTimeoutMs: given.flushTimeoutMs ?? DEFAULT_DELIVERY_LIMITS.flushTimeoutMs,
+  };
+}
+
+/** The headers of one request: the configured ones, the thunk run once, and `content-type` always `application/json`. */
+function requestHeaders(options: Pick<DeliveryOptions<unknown>, "headers">): Record<string, string> {
+  const configured = typeof options.headers === "function" ? options.headers() : options.headers;
+  return { ...configured, "content-type": "application/json" };
+}
+
+/** How a batch whose last attempt answered `status` ended: delivered, or dropped for the returned reason. */
+function dropReasonOf(status: number): DropReason | undefined {
+  const verdict = classifyStatus(status);
+  if (verdict === "delivered") {
+    return undefined;
+  }
+  return verdict === "retryable" ? "retries-exhausted" : "rejected";
+}
+
+/** The state machine behind {@link createDelivery}: the buffer, the batch in flight, the schedule-delay timer and the drains. */
+class DeliveryQueue<T> {
+  readonly #options: DeliveryOptions<T>;
+  readonly #limits: DeliveryLimits;
+  readonly #fetch: DeliveryFetch;
+  readonly #clock: Clock;
+  readonly #scheduler: Scheduler;
+  readonly #onDrop: (reason: DropReason, count: number) => void;
+  readonly #retry: ReturnType<typeof createRetry>;
+  readonly #timeout: ReturnType<typeof createTimeout>;
+  readonly #unwatch: () => void;
+
+  readonly #buffer: DeliveryEntry<T>[] = [];
+  #inFlight: Batch<T> | undefined;
+  /** Aborts the pending schedule-delay sleep; set while one is pending. */
+  #timer: AbortController | undefined;
+  /** The schedule delay elapsed while a batch was in flight; the next export is owed. */
+  #timerDue = false;
+  /** How many `flush`/`close` calls are waiting; while above 0, anything buffered is exported at once. */
+  #draining = 0;
+  /** Aborted while draining: a backoff sleep in progress ends, and one starting is skipped. */
+  #hurry = new AbortController();
+  #closing: Promise<boolean> | undefined;
+  readonly #idleWaiters = new Set<() => void>();
+
+  constructor(options: DeliveryOptions<T>, limits: DeliveryLimits) {
+    this.#options = options;
+    this.#limits = limits;
+    this.#fetch = options.fetch ?? defaultFetch;
+    this.#clock = options.clock ?? systemClock;
+    this.#scheduler = options.scheduler ?? systemScheduler;
+    this.#onDrop = options.onDrop ?? noop;
+    this.#retry = createRetry(
+      "vipengele.delivery",
+      {
+        maxAttempts: limits.maxAttempts,
+        backoff: options.backoff ?? withJitter(exponentialBackoff({ initialMs: 1000, maxMs: 30_000 }), "full"),
+        shouldRetry: retryable,
+        retryAfter: retryAfterOf,
+      },
+      { clock: this.#clock, scheduler: this.#backoffScheduler() },
+    );
+    this.#timeout = createTimeout(
+      "vipengele.delivery.attempt",
+      { durationMs: limits.attemptTimeoutMs },
+      { clock: this.#clock, scheduler: this.#scheduler },
+    );
+    this.#unwatch = watchUnload(options.lifecycle ?? detectLifecycleTargets(), () => this.#unloadDrain());
+  }
+
+  enqueue(item: T, resource: Resource): void {
+    if (this.#closing !== undefined) {
+      return;
+    }
+    if (this.#buffer.length >= this.#limits.maxQueueSize) {
+      this.#drop("queue-full", 1);
+      return;
+    }
+    this.#buffer.push({ item, resource, observedMs: this.#clock() });
+    this.#startTimer();
+    this.#pump();
+  }
+
+  flush(timeoutMs = this.#limits.flushTimeoutMs): Promise<boolean> {
+    return this.#closing ?? this.#drain(timeoutMs);
+  }
+
+  close(timeoutMs = this.#limits.flushTimeoutMs): Promise<boolean> {
+    this.#closing ??= this.#drain(timeoutMs).then((drained) => {
+      if (!drained) {
+        this.#abandon("closed");
+      }
+      this.#stopTimer();
+      this.#unwatch();
+      return drained;
+    });
+    return this.#closing;
+  }
+
+  #drop(reason: DropReason, count: number): void {
+    const onDrop = this.#onDrop;
+    try {
+      onDrop(reason, count);
+    } catch {
+      // onDrop is the host's observer; its failure is not the delivery's to report.
+    }
+  }
+
+  /** Records how `batch` ended; a batch that already settled, or none at all, ignores the report. */
+  #settle(batch: Batch<T> | undefined, reason: DropReason | undefined): void {
+    if (batch === undefined || batch.settled) {
+      return;
+    }
+    batch.settled = true;
+    if (reason !== undefined) {
+      this.#drop(reason, batch.entries.length);
+    }
+  }
+
+  /**
+   * The scheduler the retry waits on: a backoff ends early, resolving rather than rejecting, when
+   * `hurry` or the retry's own signal aborts, and is skipped while `hurry` is already aborted. An
+   * aborted batch still stops: its next attempt rejects before `fetch` is called, since the attempt
+   * timeout checks the signal first, and the retry then rejects with the signal's reason.
+   */
+  #backoffScheduler(): Scheduler {
+    return {
+      sleep: async (ms, signal = new AbortController().signal) => {
+        const hurried = this.#hurry.signal;
+        if (hurried.aborted) {
+          return;
+        }
+        await this.#scheduler.sleep(ms, AbortSignal.any([signal, hurried])).catch(noop);
+      },
+    };
+  }
+
+  /** One POST. A synchronous throw from `fetch` gives `unsent`; a rejection fails the attempt. */
+  async #attempt(request: Omit<DeliveryRequest, "signal">, signal: AbortSignal): Promise<AttemptResult> {
+    const doFetch = this.#fetch;
+    let pending: Promise<DeliveryResponse>;
+    try {
+      pending = doFetch(this.#options.url, { ...request, signal });
+    } catch {
+      return UNSENT;
+    }
+    const response = await pending;
+    response.body?.cancel().catch(noop);
+    return { kind: "status", status: response.status, retryAfterMs: parseRetryAfter(response.headers.get("retry-after"), this.#clock()) };
+  }
+
+  async #exportBatch(batch: Batch<T>): Promise<void> {
+    const { encode } = this.#options;
+    let request: Omit<DeliveryRequest, "signal">;
+    try {
+      request = { method: "POST", headers: requestHeaders(this.#options), body: encode(batch.entries) };
+    } catch {
+      this.#settle(batch, "rejected");
+      return;
+    }
+    try {
+      const result = await this.#retry.execute(
+        (ctx) => this.#timeout.execute(({ signal }) => this.#attempt(request, signal), { signal: ctx.signal }),
+        { signal: batch.abort.signal },
+      );
+      this.#settle(batch, result.kind === "unsent" ? "rejected" : dropReasonOf(result.status));
+    } catch {
+      this.#settle(batch, "retries-exhausted");
+    }
+  }
+
+  #stopTimer(): void {
+    this.#timer?.abort();
+    this.#timer = undefined;
+  }
+
+  #startTimer(): void {
+    if (this.#timer !== undefined) {
+      return;
+    }
+    const controller = new AbortController();
+    this.#timer = controller;
+    this.#scheduler.sleep(this.#limits.scheduleDelayMs, controller.signal).then(() => this.#timerElapsed(controller), noop);
+  }
+
+  #timerElapsed(controller: AbortController): void {
+    // A sleep that resolved before stopTimer aborted it still runs this continuation; it must not
+    // clear the handle of the timer that replaced it or mark that timer's delay as elapsed.
+    if (this.#timer !== controller) {
+      return;
+    }
+    this.#timer = undefined;
+    this.#timerDue = true;
+    this.#pump();
+  }
+
+  #notifyIdle(): void {
+    if (this.#buffer.length > 0 || this.#inFlight !== undefined) {
+      return;
+    }
+    for (const resolve of this.#idleWaiters) {
+      resolve();
+    }
+    this.#idleWaiters.clear();
+  }
+
+  /** Whether an export is owed now: one is not already in flight, and a trigger holds — a full batch, the elapsed delay, or a drain. */
+  #exportDue(): boolean {
+    if (this.#inFlight !== undefined || this.#buffer.length === 0) {
+      return false;
+    }
+    return this.#buffer.length >= this.#limits.maxBatchSize || this.#timerDue || this.#draining > 0;
+  }
+
+  /** Starts the next export when none is in flight and a trigger holds: a full batch, the elapsed delay, or a drain. */
+  #pump(): void {
+    if (!this.#exportDue()) {
+      return;
+    }
+    const batch: Batch<T> = { entries: this.#buffer.splice(0, this.#limits.maxBatchSize), abort: new AbortController(), settled: false };
+    this.#stopTimer();
+    this.#timerDue = false;
+    if (this.#buffer.length > 0) {
+      this.#startTimer();
+    }
+    this.#inFlight = batch;
+    void this.#exportBatch(batch).then(() => {
+      this.#inFlight = undefined;
+      this.#pump();
+      this.#notifyIdle();
+    });
+  }
+
+  /** Drops the buffer and the batch in flight as `reason`, aborting the batch's attempt. */
+  #abandon(reason: DropReason): void {
+    this.#stopTimer();
+    this.#timerDue = false;
+    const buffered = this.#buffer.splice(0).length;
+    if (buffered > 0) {
+      this.#drop(reason, buffered);
+    }
+    this.#inFlight?.abort.abort();
+    this.#settle(this.#inFlight, reason);
+  }
+
+  /** Exports everything and resolves `true` once idle, `false` once `timeoutMs` elapses first. */
+  async #drain(timeoutMs: number): Promise<boolean> {
+    this.#draining += 1;
+    this.#hurry.abort();
+    this.#pump();
+    let onIdle = noop;
+    const idle = new Promise<boolean>((resolve) => {
+      onIdle = () => resolve(true);
+      this.#idleWaiters.add(onIdle);
+    });
+    this.#notifyIdle();
+    const deadline = new AbortController();
+    const elapsed = this.#scheduler.sleep(timeoutMs, deadline.signal).then(
+      () => false,
+      () => false,
+    );
+    try {
+      return await Promise.race([idle, elapsed]);
+    } finally {
+      deadline.abort();
+      this.#idleWaiters.delete(onIdle);
+      this.#draining -= 1;
+      if (this.#draining === 0 && this.#closing === undefined) {
+        this.#hurry = new AbortController();
+      }
+    }
+  }
+
+  /**
+   * Takes what is in flight and buffered out of the delivery, oldest first, for the unload drain.
+   * A batch in flight is settled without a reason first: its entries are accounted for by the
+   * caller, and the aborted export must find the batch settled rather than report it as
+   * retries-exhausted.
+   */
+  #takeAll(): DeliveryEntry<T>[] {
+    const batch = this.#inFlight !== undefined && !this.#inFlight.settled ? this.#inFlight : undefined;
+    const entries = [...(batch?.entries ?? []), ...this.#buffer];
+    if (entries.length === 0) {
+      return entries;
+    }
+    this.#stopTimer();
+    this.#timerDue = false;
+    this.#buffer.splice(0);
+    if (batch !== undefined) {
+      this.#settle(batch, undefined);
+      batch.abort.abort();
+    }
+    return entries;
+  }
+
+  /**
+   * Sends what is in flight and buffered as one keepalive request, within the keepalive budget,
+   * which is shared by every keepalive request of the document, so splitting the entries over
+   * several requests would only get the later ones refused. There is no `sendBeacon` fallback: a
+   * beacon cannot carry the configured headers, and a cross-origin `application/json` beacon is
+   * refused outright. A throw from `encode` or the `headers` thunk drops every entry as
+   * `"rejected"`, as an export does. The request is not awaited and its outcome is not reported: a
+   * throw or rejection from `fetch` is swallowed.
+   */
+  #unloadDrain(): void {
+    const entries = this.#takeAll();
+    if (entries.length === 0) {
+      return;
+    }
+    let headers: Record<string, string>;
+    let prefix: { count: number; body: string };
+    try {
+      headers = requestHeaders(this.#options);
+      prefix = largestFittingPrefix(entries, this.#options.encode, UNLOAD_BUDGET_BYTES);
+    } catch {
+      this.#drop("rejected", entries.length);
+      return;
+    }
+    if (prefix.count < entries.length) {
+      this.#drop("unload-budget", entries.length - prefix.count);
+    }
+    if (prefix.count === 0) {
+      return;
+    }
+    this.#sendKeepalive(headers, prefix.body);
+  }
+
+  #sendKeepalive(headers: Record<string, string>, body: string): void {
+    const doFetch = this.#fetch;
+    try {
+      const request = { method: "POST", headers, body, signal: new AbortController().signal, keepalive: true } as const;
+      Promise.resolve(doFetch(this.#options.url, request)).catch(noop);
+    } catch {
+      // A page going away leaves nobody to report a request that could not be made to.
+    }
+  }
+}
+
 /**
  * Creates a {@link Delivery}: a buffer of entries exported as OTLP/HTTP JSON batches, one batch in
  * flight at a time. An export starts when the buffer reaches `maxBatchSize`, or `scheduleDelayMs`
@@ -167,291 +512,13 @@ function defaultFetch(url: string, init: DeliveryRequest): Promise<DeliveryRespo
  * a `ResilienceConfigError` for an invalid `maxAttempts` or `attemptTimeoutMs`.
  */
 export function createDelivery<T>(options: DeliveryOptions<T>): Delivery<T> {
-  const given = options.limits;
-  const limits: DeliveryLimits = {
-    maxQueueSize: given?.maxQueueSize ?? DEFAULT_DELIVERY_LIMITS.maxQueueSize,
-    maxBatchSize: given?.maxBatchSize ?? DEFAULT_DELIVERY_LIMITS.maxBatchSize,
-    scheduleDelayMs: given?.scheduleDelayMs ?? DEFAULT_DELIVERY_LIMITS.scheduleDelayMs,
-    maxAttempts: given?.maxAttempts ?? DEFAULT_DELIVERY_LIMITS.maxAttempts,
-    attemptTimeoutMs: given?.attemptTimeoutMs ?? DEFAULT_DELIVERY_LIMITS.attemptTimeoutMs,
-    flushTimeoutMs: given?.flushTimeoutMs ?? DEFAULT_DELIVERY_LIMITS.flushTimeoutMs,
-  };
+  const limits = resolveLimits(options.limits);
   requirePositiveInteger("maxQueueSize", limits.maxQueueSize);
   requirePositiveInteger("maxBatchSize", limits.maxBatchSize);
-  const { url, encode } = options;
-  const doFetch = options.fetch ?? defaultFetch;
-  const clock = options.clock ?? systemClock;
-  const scheduler = options.scheduler ?? systemScheduler;
-  const onDrop = options.onDrop ?? noop;
-
-  const buffer: DeliveryEntry<T>[] = [];
-  let inFlight: Batch<T> | undefined;
-  /** Aborts the pending schedule-delay sleep; set while one is pending. */
-  let timer: AbortController | undefined;
-  /** The schedule delay elapsed while a batch was in flight; the next export is owed. */
-  let timerDue = false;
-  /** How many `flush`/`close` calls are waiting; while above 0, anything buffered is exported at once. */
-  let draining = 0;
-  /** Aborted while draining: a backoff sleep in progress ends, and one starting is skipped. */
-  let hurry = new AbortController();
-  let closing: Promise<boolean> | undefined;
-  const idleWaiters = new Set<() => void>();
-
-  const drop = (reason: DropReason, count: number): void => {
-    try {
-      onDrop(reason, count);
-    } catch {
-      // onDrop is the host's observer; its failure is not the delivery's to report.
-    }
-  };
-
-  /** Records how `batch` ended; a batch that already settled, or none at all, ignores the report. */
-  const settle = (batch: Batch<T> | undefined, reason: DropReason | undefined): void => {
-    if (batch === undefined || batch.settled) {
-      return;
-    }
-    batch.settled = true;
-    if (reason !== undefined) {
-      drop(reason, batch.entries.length);
-    }
-  };
-
-  /**
-   * The scheduler the retry waits on: a backoff ends early, resolving rather than rejecting, when
-   * `hurry` or the retry's own signal aborts, and is skipped while `hurry` is already aborted. An
-   * aborted batch still stops: its next attempt rejects before `fetch` is called, since the attempt
-   * timeout checks the signal first, and the retry then rejects with the signal's reason.
-   */
-  const backoffScheduler: Scheduler = {
-    async sleep(ms, signal = new AbortController().signal) {
-      const hurried = hurry.signal;
-      if (hurried.aborted) {
-        return;
-      }
-      await scheduler.sleep(ms, AbortSignal.any([signal, hurried])).catch(noop);
-    },
-  };
-
-  const retry = createRetry(
-    "vipengele.delivery",
-    {
-      maxAttempts: limits.maxAttempts,
-      backoff: options.backoff ?? withJitter(exponentialBackoff({ initialMs: 1000, maxMs: 30_000 }), "full"),
-      shouldRetry: retryable,
-      retryAfter: retryAfterOf,
-    },
-    { clock, scheduler: backoffScheduler },
-  );
-  const timeout = createTimeout("vipengele.delivery.attempt", { durationMs: limits.attemptTimeoutMs }, { clock, scheduler });
-
-  /** One POST. A synchronous throw from `fetch` gives `unsent`; a rejection fails the attempt. */
-  const attempt = async (request: Omit<DeliveryRequest, "signal">, signal: AbortSignal): Promise<AttemptResult> => {
-    let pending: Promise<DeliveryResponse>;
-    try {
-      pending = doFetch(url, { ...request, signal });
-    } catch {
-      return UNSENT;
-    }
-    const response = await pending;
-    response.body?.cancel().catch(noop);
-    return { kind: "status", status: response.status, retryAfterMs: parseRetryAfter(response.headers.get("retry-after"), clock()) };
-  };
-
-  const exportBatch = async (batch: Batch<T>): Promise<void> => {
-    let request: Omit<DeliveryRequest, "signal">;
-    try {
-      const configured = typeof options.headers === "function" ? options.headers() : options.headers;
-      request = { method: "POST", headers: { ...configured, "content-type": "application/json" }, body: encode(batch.entries) };
-    } catch {
-      settle(batch, "rejected");
-      return;
-    }
-    try {
-      const result = await retry.execute((ctx) => timeout.execute(({ signal }) => attempt(request, signal), { signal: ctx.signal }), {
-        signal: batch.abort.signal,
-      });
-      if (result.kind === "unsent") {
-        settle(batch, "rejected");
-        return;
-      }
-      const verdict = classifyStatus(result.status);
-      settle(batch, verdict === "delivered" ? undefined : verdict === "retryable" ? "retries-exhausted" : "rejected");
-    } catch {
-      settle(batch, "retries-exhausted");
-    }
-  };
-
-  const stopTimer = (): void => {
-    timer?.abort();
-    timer = undefined;
-  };
-
-  const startTimer = (): void => {
-    if (timer !== undefined) {
-      return;
-    }
-    const controller = new AbortController();
-    timer = controller;
-    scheduler.sleep(limits.scheduleDelayMs, controller.signal).then(() => {
-      // A sleep that resolved before stopTimer aborted it still runs this continuation; it must not
-      // clear the handle of the timer that replaced it or mark that timer's delay as elapsed.
-      if (timer !== controller) {
-        return;
-      }
-      timer = undefined;
-      timerDue = true;
-      pump();
-    }, noop);
-  };
-
-  const notifyIdle = (): void => {
-    if (buffer.length > 0 || inFlight !== undefined) {
-      return;
-    }
-    for (const resolve of idleWaiters) {
-      resolve();
-    }
-    idleWaiters.clear();
-  };
-
-  /** Starts the next export when none is in flight and a trigger holds: a full batch, the elapsed delay, or a drain. */
-  function pump(): void {
-    if (inFlight !== undefined || buffer.length === 0) {
-      return;
-    }
-    if (buffer.length < limits.maxBatchSize && !timerDue && draining === 0) {
-      return;
-    }
-    const batch: Batch<T> = { entries: buffer.splice(0, limits.maxBatchSize), abort: new AbortController(), settled: false };
-    stopTimer();
-    timerDue = false;
-    if (buffer.length > 0) {
-      startTimer();
-    }
-    inFlight = batch;
-    void exportBatch(batch).then(() => {
-      inFlight = undefined;
-      pump();
-      notifyIdle();
-    });
-  }
-
-  /** Drops the buffer and the batch in flight as `reason`, aborting the batch's attempt. */
-  const abandon = (reason: DropReason): void => {
-    stopTimer();
-    timerDue = false;
-    const buffered = buffer.splice(0).length;
-    if (buffered > 0) {
-      drop(reason, buffered);
-    }
-    inFlight?.abort.abort();
-    settle(inFlight, reason);
-  };
-
-  /** Exports everything and resolves `true` once idle, `false` once `timeoutMs` elapses first. */
-  const drain = async (timeoutMs: number): Promise<boolean> => {
-    draining += 1;
-    hurry.abort();
-    pump();
-    let onIdle = noop;
-    const idle = new Promise<boolean>((resolve) => {
-      onIdle = () => resolve(true);
-      idleWaiters.add(onIdle);
-    });
-    notifyIdle();
-    const deadline = new AbortController();
-    const elapsed = scheduler.sleep(timeoutMs, deadline.signal).then(
-      () => false,
-      () => false,
-    );
-    try {
-      return await Promise.race([idle, elapsed]);
-    } finally {
-      deadline.abort();
-      idleWaiters.delete(onIdle);
-      draining -= 1;
-      if (draining === 0 && closing === undefined) {
-        hurry = new AbortController();
-      }
-    }
-  };
-
-  /**
-   * Sends what is in flight and buffered as one keepalive request, within the keepalive budget,
-   * which is shared by every keepalive request of the document, so splitting the entries over
-   * several requests would only get the later ones refused. There is no `sendBeacon` fallback: a
-   * beacon cannot carry the configured headers, and a cross-origin `application/json` beacon is
-   * refused outright. A throw from `encode` or the `headers` thunk drops every entry as
-   * `"rejected"`, as an export does. The request is not awaited and its outcome is not reported: a
-   * throw or rejection from `fetch` is swallowed.
-   */
-  const unloadDrain = (): void => {
-    const batch = inFlight !== undefined && !inFlight.settled ? inFlight : undefined;
-    const entries = [...(batch?.entries ?? []), ...buffer];
-    if (entries.length === 0) {
-      return;
-    }
-    stopTimer();
-    timerDue = false;
-    buffer.splice(0);
-    if (batch !== undefined) {
-      // Settled without a reason first: the entries are accounted for here, and the aborted
-      // export must find the batch settled rather than report it as retries-exhausted.
-      settle(batch, undefined);
-      batch.abort.abort();
-    }
-    let headers: Record<string, string>;
-    let prefix: { count: number; body: string };
-    try {
-      const configured = typeof options.headers === "function" ? options.headers() : options.headers;
-      headers = { ...configured, "content-type": "application/json" };
-      prefix = largestFittingPrefix(entries, encode, UNLOAD_BUDGET_BYTES);
-    } catch {
-      drop("rejected", entries.length);
-      return;
-    }
-    if (prefix.count < entries.length) {
-      drop("unload-budget", entries.length - prefix.count);
-    }
-    if (prefix.count === 0) {
-      return;
-    }
-    try {
-      const request = { method: "POST", headers, body: prefix.body, signal: new AbortController().signal, keepalive: true } as const;
-      Promise.resolve(doFetch(url, request)).catch(noop);
-    } catch {
-      // A page going away leaves nobody to report a request that could not be made to.
-    }
-  };
-
-  const unwatch = watchUnload(options.lifecycle ?? detectLifecycleTargets(), unloadDrain);
-
+  const queue = new DeliveryQueue(options, limits);
   return {
-    enqueue(item, resource) {
-      if (closing !== undefined) {
-        return;
-      }
-      if (buffer.length >= limits.maxQueueSize) {
-        drop("queue-full", 1);
-        return;
-      }
-      buffer.push({ item, resource, observedMs: clock() });
-      startTimer();
-      pump();
-    },
-    flush(timeoutMs = limits.flushTimeoutMs) {
-      return closing ?? drain(timeoutMs);
-    },
-    close(timeoutMs = limits.flushTimeoutMs) {
-      closing ??= drain(timeoutMs).then((drained) => {
-        if (!drained) {
-          abandon("closed");
-        }
-        stopTimer();
-        unwatch();
-        return drained;
-      });
-      return closing;
-    },
+    enqueue: (item, resource) => queue.enqueue(item, resource),
+    flush: (timeoutMs) => queue.flush(timeoutMs),
+    close: (timeoutMs) => queue.close(timeoutMs),
   };
 }
