@@ -3,6 +3,7 @@ import type { Resource } from "@vipengele/ts-core-common/scope";
 import { type BackoffStrategy, createRetry, exponentialBackoff, type Outcome, withJitter } from "@vipengele/ts-core-resilience/retry";
 import { createTimeout } from "@vipengele/ts-core-resilience/timeout";
 import { classifyStatus, parseRetryAfter } from "./retry-policy";
+import { detectLifecycleTargets, type LifecycleTargets, largestFittingPrefix, UNLOAD_BUDGET_BYTES, watchUnload } from "./unload";
 
 /**
  * Why entries left the delivery without reaching the collector:
@@ -12,7 +13,7 @@ import { classifyStatus, parseRetryAfter } from "./retry-policy";
  *   not be sent at all: `encode` threw, the `headers` thunk threw, or `fetch` threw synchronously.
  * - `"retries-exhausted"` — every attempt failed with a network error, a timeout or a retryable status.
  * - `"closed"` — still buffered or in flight when `close` ran out of time.
- * - `"unload-budget"` — left over when the page or process unloaded.
+ * - `"unload-budget"` — left over, past the keepalive budget, when the page was hidden or unloaded.
  */
 export type DropReason = "queue-full" | "rejected" | "retries-exhausted" | "closed" | "unload-budget";
 
@@ -38,6 +39,8 @@ export interface DeliveryRequest {
   readonly headers: Record<string, string>;
   readonly body: string;
   readonly signal: AbortSignal;
+  /** Set on the one request sent as the page is hidden or unloaded, so it outlives the page. */
+  readonly keepalive?: boolean;
 }
 
 /** A `fetch`-compatible function; `globalThis.fetch` is one. */
@@ -76,6 +79,11 @@ export interface DeliveryOptions<T> {
   readonly backoff?: BackoffStrategy;
   /** Told how many entries were dropped and why; a throw is swallowed. */
   readonly onDrop?: (reason: DropReason, count: number) => void;
+  /**
+   * Where `pagehide` and `visibilitychange` arrive. Omitted, they are detected on `globalThis`
+   * (`detectLifecycleTargets`); given, exactly these are watched, so `{}` watches none.
+   */
+  readonly lifecycle?: LifecycleTargets;
 }
 
 export interface Delivery<T> {
@@ -89,7 +97,7 @@ export interface Delivery<T> {
   flush(timeoutMs?: number): Promise<boolean>;
   /**
    * Flushes, drops whatever is left on timeout as `"closed"`, and turns every later `enqueue` into
-   * a no-op. Resolves as the flush did; a second call returns the first call's promise. Never rejects.
+   * a no-op. Stops watching for the page being hidden or unloaded once the flush is over. Resolves as the flush did; a second call returns the first call's promise. Never rejects.
    */
   close(timeoutMs?: number): Promise<boolean>;
 }
@@ -149,6 +157,11 @@ function defaultFetch(url: string, init: DeliveryRequest): Promise<DeliveryRespo
  * after the first entry reaches an empty buffer; once a batch settles, a buffer holding a full batch
  * is exported at once. A network error, a timeout, 429, 502, 503 and 504 are retried with
  * `backoff`, or after the delay a `Retry-After` names. Payload-generic: `encode` alone knows `T`.
+ *
+ * When the page is hidden or unloaded (`pagehide`, or `visibilitychange` to `"hidden"`), the batch
+ * in flight is aborted and the oldest entries, in flight then buffered, that encode within
+ * {@link UNLOAD_BUDGET_BYTES} go out as one `keepalive` request; the rest are dropped as
+ * `"unload-budget"`. The delivery keeps working afterwards, for a page that comes back.
  *
  * Throws a `RangeError` when `maxQueueSize` or `maxBatchSize` is not an integer of at least 1, and
  * a `ResilienceConfigError` for an invalid `maxAttempts` or `attemptTimeoutMs`.
@@ -355,6 +368,56 @@ export function createDelivery<T>(options: DeliveryOptions<T>): Delivery<T> {
     }
   };
 
+  /**
+   * Sends what is in flight and buffered as one keepalive request, within the keepalive budget,
+   * which is shared by every keepalive request of the document, so splitting the entries over
+   * several requests would only get the later ones refused. There is no `sendBeacon` fallback: a
+   * beacon cannot carry the configured headers, and a cross-origin `application/json` beacon is
+   * refused outright. A throw from `encode` or the `headers` thunk drops every entry as
+   * `"rejected"`, as an export does. The request is not awaited and its outcome is not reported: a
+   * throw or rejection from `fetch` is swallowed.
+   */
+  const unloadDrain = (): void => {
+    const batch = inFlight !== undefined && !inFlight.settled ? inFlight : undefined;
+    const entries = [...(batch?.entries ?? []), ...buffer];
+    if (entries.length === 0) {
+      return;
+    }
+    stopTimer();
+    timerDue = false;
+    buffer.splice(0);
+    if (batch !== undefined) {
+      // Settled without a reason first: the entries are accounted for here, and the aborted
+      // export must find the batch settled rather than report it as retries-exhausted.
+      settle(batch, undefined);
+      batch.abort.abort();
+    }
+    let headers: Record<string, string>;
+    let prefix: { count: number; body: string };
+    try {
+      const configured = typeof options.headers === "function" ? options.headers() : options.headers;
+      headers = { ...configured, "content-type": "application/json" };
+      prefix = largestFittingPrefix(entries, encode, UNLOAD_BUDGET_BYTES);
+    } catch {
+      drop("rejected", entries.length);
+      return;
+    }
+    if (prefix.count < entries.length) {
+      drop("unload-budget", entries.length - prefix.count);
+    }
+    if (prefix.count === 0) {
+      return;
+    }
+    try {
+      const request = { method: "POST", headers, body: prefix.body, signal: new AbortController().signal, keepalive: true } as const;
+      Promise.resolve(doFetch(url, request)).catch(noop);
+    } catch {
+      // A page going away leaves nobody to report a request that could not be made to.
+    }
+  };
+
+  const unwatch = watchUnload(options.lifecycle ?? detectLifecycleTargets(), unloadDrain);
+
   return {
     enqueue(item, resource) {
       if (closing !== undefined) {
@@ -377,6 +440,7 @@ export function createDelivery<T>(options: DeliveryOptions<T>): Delivery<T> {
           abandon("closed");
         }
         stopTimer();
+        unwatch();
         return drained;
       });
       return closing;
