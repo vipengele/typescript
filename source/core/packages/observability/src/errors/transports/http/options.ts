@@ -24,7 +24,7 @@ export interface HttpTransportOptions {
   readonly maxBatchEvents?: number;
   /** The most estimated bytes one request carries, and the most one event may measure. A positive integer. Default: 65_536. */
   readonly maxBatchBytes?: number;
-  /** How long, in milliseconds, a non-full batch waits for more events. Zero sends at the next opportunity. Default: 1000. */
+  /** How long, in milliseconds, a non-full batch waits for more events. Zero sends at the next opportunity. Finite, from zero to 2_147_483_647. Default: 1000. */
   readonly lingerMs?: number;
   /** The most delivery attempts per batch, the first included. A positive integer. Default: 5. */
   readonly maxAttempts?: number;
@@ -96,6 +96,18 @@ function nonNegative(name: string, value: number | undefined, fallback: number):
   return value;
 }
 
+function linger(name: string, value: number | undefined, fallback: number): number {
+  if (value === undefined) {
+    return fallback;
+  }
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > MAX_TIMEOUT_DURATION_MS) {
+    throw new HttpTransportConfigError(
+      `Invalid HTTP transport option ${name} ${describe(value)}: expected a finite number from zero to ${MAX_TIMEOUT_DURATION_MS}.`,
+    );
+  }
+  return value;
+}
+
 function timeout(name: string, value: number | undefined, fallback: number): number {
   if (value === undefined) {
     return fallback;
@@ -149,7 +161,7 @@ export function resolveOptions(options: HttpTransportOptions): ResolvedHttpTrans
     maxQueueBytes: positiveInteger("maxQueueBytes", options.maxQueueBytes, 1_048_576),
     maxBatchEvents: positiveInteger("maxBatchEvents", options.maxBatchEvents, 20),
     maxBatchBytes: positiveInteger("maxBatchBytes", options.maxBatchBytes, 65_536),
-    lingerMs: nonNegative("lingerMs", options.lingerMs, 1000),
+    lingerMs: linger("lingerMs", options.lingerMs, 1000),
     maxAttempts: positiveInteger("maxAttempts", options.maxAttempts, 5),
     maxDelayMs: nonNegative("maxDelayMs", options.maxDelayMs, 30_000),
     requestTimeoutMs: timeout("requestTimeoutMs", options.requestTimeoutMs, 10_000),

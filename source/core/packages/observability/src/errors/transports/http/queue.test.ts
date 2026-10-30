@@ -235,4 +235,59 @@ describe("createEventQueue", () => {
     expect(queue.bytes).toBe(0);
     expect(queue.drain()).toEqual([]);
   });
+
+  it("drains a large backlog in batches, in order", () => {
+    const queue = createEventQueue({ ...ROOMY, maxQueueEvents: 1000, maxBatchEvents: 7 });
+    for (let index = 0; index < 500; index += 1) {
+      queue.push(anEvent(String(index)), aResource());
+    }
+
+    const taken: string[] = [];
+    for (let batch = queue.takeBatch(); batch !== undefined; batch = queue.takeBatch()) {
+      taken.push(...batch.events.map((event) => event.message ?? ""));
+    }
+
+    expect(taken).toEqual(Array.from({ length: 500 }, (_, index) => String(index)));
+    expect(queue.isEmpty).toBe(true);
+    expect(queue.size).toBe(0);
+    expect(queue.bytes).toBe(0);
+  });
+
+  it("keeps FIFO order, size and bytes across compaction while pushing between batches", () => {
+    const queue = createEventQueue({ ...ROOMY, maxBatchEvents: 3 });
+    let next = 0;
+    const pushMany = (count: number) => {
+      for (let index = 0; index < count; index += 1) {
+        queue.push(anEvent(String(next)), aResource());
+        next += 1;
+      }
+    };
+    const taken: string[] = [];
+
+    pushMany(10);
+    for (let round = 0; round < 3; round += 1) {
+      taken.push(...(queue.takeBatch()?.events ?? []).map((event) => event.message ?? ""));
+      pushMany(2);
+      expect(queue.size).toBe(next - taken.length);
+      expect(queue.bytes).toBeGreaterThanOrEqual(queue.size * SIZE);
+    }
+    expect(queue.drain().map((event) => event.message)).toEqual(
+      Array.from({ length: next - taken.length }, (_, index) => String(taken.length + index)),
+    );
+    expect(taken).toEqual(["0", "1", "2", "3", "4", "5", "6", "7", "8"]);
+    expect(queue.bytes).toBe(0);
+    expect(queue.isEmpty).toBe(true);
+  });
+
+  it("drains only the events not yet taken", () => {
+    const queue = createEventQueue({ ...ROOMY, maxBatchEvents: 1 });
+    for (const message of ["a", "b", "c", "d"]) {
+      queue.push(anEvent(message), aResource());
+    }
+    queue.takeBatch();
+
+    expect(queue.drain().map((event) => event.message)).toEqual(["b", "c", "d"]);
+    expect(queue.push(anEvent("e"), aResource())).toBeUndefined();
+    expect(queue.takeBatch()?.events.map((event) => event.message)).toEqual(["e"]);
+  });
 });

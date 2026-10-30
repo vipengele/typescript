@@ -127,6 +127,17 @@ describe("resolveOptions validation", () => {
     }
   });
 
+  it("accepts the largest lingerMs a timer honours", () => {
+    expect(resolveOptions({ url, lingerMs: 2_147_483_647 }).lingerMs).toBe(2_147_483_647);
+  });
+
+  it("rejects a lingerMs above the largest delay a timer honours", () => {
+    const error = reject({ url, lingerMs: 2_147_483_648 });
+
+    expect(isHttpTransportConfigError(error)).toBe(true);
+    expect((error as Error).message).toContain("lingerMs");
+  });
+
   it.each([
     ["zero", 0],
     ["negative", -1],

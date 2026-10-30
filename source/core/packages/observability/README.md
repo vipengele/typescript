@@ -581,7 +581,7 @@ await transport.close(2000);
 | `maxQueueBytes` | Estimated bytes the queue holds | `1_048_576` |
 | `maxBatchEvents` | Events per request | `20` |
 | `maxBatchBytes` | Bytes per request body, and the most one event's estimated size may measure | `65_536` |
-| `lingerMs` | How long a non-full batch waits for more events | `1000` |
+| `lingerMs` | How long a non-full batch waits for more events, `0` to `2147483647` | `1000` |
 | `maxAttempts` | Delivery attempts per batch, the first included | `5` |
 | `maxDelayMs` | Cap on both a backoff wait and a `Retry-After` wait | `30_000` |
 | `requestTimeoutMs` | How long one attempt (resolving `headers`, then `fetch`) may run before it is aborted and retried | `10_000` |

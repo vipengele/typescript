@@ -94,18 +94,22 @@ export function estimateSize(event: ErrorEvent): number {
 
 /** Creates an empty {@link EventQueue} bounded by `limits`. */
 export function createEventQueue(limits: QueueLimits): EventQueue {
+  // Live entries are `entries[head..]`. Taking a batch advances `head` and compacts only once the
+  // consumed prefix is at least as long as what remains, so each call costs O(batch) amortized
+  // rather than shifting the whole array.
   const entries: Entry[] = [];
+  let head = 0;
   let bytes = 0;
 
   return {
     get size() {
-      return entries.length;
+      return entries.length - head;
     },
     get bytes() {
       return bytes;
     },
     get isEmpty() {
-      return entries.length === 0;
+      return entries.length === head;
     },
     push(event, resource) {
       let size: number;
@@ -117,7 +121,7 @@ export function createEventQueue(limits: QueueLimits): EventQueue {
       if (size > limits.maxBatchBytes) {
         return "too-large";
       }
-      if (entries.length + 1 > limits.maxQueueEvents || bytes + size > limits.maxQueueBytes) {
+      if (entries.length - head + 1 > limits.maxQueueEvents || bytes + size > limits.maxQueueBytes) {
         return "queue-full";
       }
       entries.push({ event, resource, key: resourceKey(resource), bytes: size });
@@ -125,27 +129,37 @@ export function createEventQueue(limits: QueueLimits): EventQueue {
       return undefined;
     },
     takeBatch() {
-      const head = entries[0];
-      if (head === undefined) {
+      const first = entries[head];
+      if (first === undefined) {
         return undefined;
       }
       // The head always fits: push refuses an event larger than `maxBatchBytes`.
       let count = 1;
-      let batchBytes = head.bytes;
-      while (count < entries.length && count < limits.maxBatchEvents) {
-        const next = entries[count] as Entry;
-        if (next.key !== head.key || batchBytes + next.bytes > limits.maxBatchBytes) {
+      let batchBytes = first.bytes;
+      while (head + count < entries.length && count < limits.maxBatchEvents) {
+        const next = entries[head + count] as Entry;
+        if (next.key !== first.key || batchBytes + next.bytes > limits.maxBatchBytes) {
           break;
         }
         batchBytes += next.bytes;
         count += 1;
       }
       bytes -= batchBytes;
-      return { events: entries.splice(0, count).map((taken) => taken.event), resource: head.resource };
+      const events = entries.slice(head, head + count).map((taken) => taken.event);
+      head += count;
+      if (head === entries.length) {
+        entries.length = 0;
+        head = 0;
+      } else if (head * 2 >= entries.length) {
+        entries.splice(0, head);
+        head = 0;
+      }
+      return { events, resource: first.resource };
     },
     drain() {
-      const events = entries.map((held) => held.event);
+      const events = entries.slice(head).map((held) => held.event);
       entries.length = 0;
+      head = 0;
       bytes = 0;
       return events;
     },
