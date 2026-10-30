@@ -204,6 +204,9 @@ importers:
       '@vipengele/ts-core-redaction':
         specifier: workspace:*
         version: link:../redaction
+      '@vipengele/ts-core-resilience':
+        specifier: workspace:*
+        version: link:../resilience
     devDependencies:
       '@opentelemetry/api':
         specifier: 1.9.1
