@@ -13,6 +13,7 @@ import { redactAttributes, redactError } from "../redaction";
 import type { AttributesThunk } from "./logger";
 import { isNormalized, markNormalized } from "./normalized";
 import type { EmitSettings, LogProcessor, LogRecord, Sink } from "./record";
+import { isSpanId, isTraceFlags, isTraceId, type LogTrace, readActiveTrace } from "./trace";
 
 /**
  * One layer of a Logger's bindings, read once for each record the Logger builds. `read` returns
@@ -93,7 +94,8 @@ function callAttributes(attributes: AttributesInput | AttributesThunk | undefine
  * normalized on its own, so the call wins a shared key over the bindings, a later binding layer over
  * an earlier one and the bindings over the Scope. They are redacted as one record, so a secret key is masked whichever layer it came from. Freezing the record, its attributes and every link of its
  * error lets every sink receive the same object without one sink's writes, at any depth, changing
- * what the next one sees.
+ * what the next one sees. The span active in OpenTelemetry, when there is one, is read here and
+ * carried as the record's `trace`; with none the record has no `trace` key.
  */
 function createRecord(
   settings: EmitSettings,
@@ -107,6 +109,7 @@ function createRecord(
   const time = settings.clock();
   const normalized = mergeAttributes([scopeAttributes(), ...bindings.map((layer) => layer.read()), callAttributes(attributes)]);
   const serialized = error === undefined ? undefined : serializeError(error);
+  const trace = readActiveTrace();
   const policy = settings.redaction;
   const record: { -readonly [K in keyof LogRecord]: LogRecord[K] } = {
     time,
@@ -117,6 +120,9 @@ function createRecord(
   };
   if (serialized !== undefined) {
     record.error = policy === null ? serialized : redactError(serialized, policy);
+  }
+  if (trace !== undefined) {
+    record.trace = trace;
   }
   return markNormalized(freezeDeep(record));
 }
@@ -220,6 +226,23 @@ function acceptErrorLink(link: unknown, links: number, known: ReadonlySet<object
 }
 
 /**
+ * A fresh copy of a processor's `trace`, holding only the {@link LogTrace} fields. It must be an
+ * object whose `traceId` and `spanId` obey the hex rules {@link readActiveTrace} applies and whose
+ * `flags` is an integer, or this throws a `TypeError`. Each field is read once, and the processor's
+ * object is neither kept nor frozen.
+ */
+function acceptTrace(trace: unknown): LogTrace {
+  if (typeof trace !== "object" || trace === null) {
+    throw new TypeError("A log processor returned a trace that is not an object");
+  }
+  const { traceId, spanId, flags } = trace as Partial<LogTrace>;
+  if (!isTraceId(traceId) || !isSpanId(spanId) || !isTraceFlags(flags)) {
+    throw new TypeError("A log processor returned a trace without a valid traceId, spanId and integer flags");
+  }
+  return { traceId, spanId, flags };
+}
+
+/**
  * What a processor handed `previous` returned, made safe for the next processor or a sink. `null`
  * passes through as a drop, and `previous` itself is returned as it is, already frozen. Anything
  * else must be an object carrying a numeric `time` and a string `level`, `category` and `message`,
@@ -229,7 +252,9 @@ function acceptErrorLink(link: unknown, links: number, known: ReadonlySet<object
  * processor set is left out. Its attributes go back through `normalizeAttributes` and its error
  * through {@link acceptErrorLink}, which cuts `message` and `stack` and applies the link and
  * error-count limits as for a thrown error, and also cuts `type` and `code`, because a processor's
- * strings are arbitrary. Parts that are `previous`'s own are kept rather than bounded a second time.
+ * strings are arbitrary. Its `trace` goes through {@link acceptTrace}; one that is `undefined` or
+ * left out gives a record without a `trace`, so a processor may add, replace or strip it. Parts that
+ * are `previous`'s own are kept rather than bounded a second time.
  * Nothing that is cyclic, unbounded or not JSON-safe reaches `freezeDeep`, and
  * the deep freeze walks only fresh copies and `previous`'s already frozen parts, never an object
  * of the processor's. A record {@link markNormalized} marked — one `redactionProcessor` built from a
@@ -268,13 +293,16 @@ function acceptProcessorOutput(previous: LogRecord, next: unknown): LogRecord | 
   if (candidate.error !== undefined) {
     record.error = acceptErrorLink(candidate.error, 0, chainParts(previous.error), new Set());
   }
+  if (candidate.trace !== undefined) {
+    record.trace = candidate.trace === previous.trace ? previous.trace : acceptTrace(candidate.trace);
+  }
   return markNormalized(freezeDeep(record));
 }
 
 /**
  * A record {@link markNormalized} marked, rebuilt from the {@link LogRecord} fields alone. Its
- * attributes and error are already JSON-safe, bounded and deeply frozen, so they are kept as they
- * are rather than normalized a second time, and only the rebuilt record itself is frozen.
+ * attributes, error and trace are already JSON-safe, bounded and deeply frozen, so they are kept
+ * as they are rather than normalized a second time, and only the rebuilt record itself is frozen.
  */
 function acceptNormalized(candidate: LogRecord): LogRecord {
   const record: { -readonly [K in keyof LogRecord]: LogRecord[K] } = {
@@ -286,6 +314,9 @@ function acceptNormalized(candidate: LogRecord): LogRecord {
   };
   if (candidate.error !== undefined) {
     record.error = candidate.error;
+  }
+  if (candidate.trace !== undefined) {
+    record.trace = candidate.trace;
   }
   return markNormalized(Object.freeze(record));
 }
@@ -343,6 +374,10 @@ function runProcessors(settings: EmitSettings, processors: readonly LogProcessor
  * or run: neither the clock, nor the Scope, nor the bindings, nor the attributes or their thunk, nor
  * the error.
  *
+ * The record carries the span active in OpenTelemetry as its `trace`, read only after the sink
+ * check; a call with no sink never reads OpenTelemetry's registry, and a failed read leaves `trace`
+ * out rather than dropping the record.
+ *
  * Building the record — the clock, normalizing the attributes, serializing the error, redacting
  * them and asking for the Resource — runs inside one guard. A throw there drops the record: no
  * sink receives it, the caller does not see the throw, and nothing is reported, since
@@ -352,8 +387,8 @@ function runProcessors(settings: EmitSettings, processors: readonly LogProcessor
  * global ones returned. The processor stage fails closed: a processor that throws, or returns
  * anything but `null` or an object with a numeric `time` and a string `level`, `category` and
  * `message`, or an `error` with a link that is not an object with a string `type` and `message`,
- * drops the record exactly as a `null` does — for every sink when the processor is global, and
- * the Resource is then not asked for; for its own sink alone when it is a per-sink one. Either way
+ * or a `trace` that is not an object with a valid `traceId`, `spanId` and integer `flags`, drops
+ * the record exactly as a `null` does — for every sink when the processor is global, and the Resource is then not asked for; for its own sink alone when it is a per-sink one. Either way
  * the failure is reported to `onSinkError` with the processor as its source, and the caller does
  * not see the throw. A record a processor returns is rebuilt from the {@link LogRecord} fields
  * alone, its attributes and every link's `data` normalized again, its error chain bounded by

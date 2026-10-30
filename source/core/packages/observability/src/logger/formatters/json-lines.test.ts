@@ -26,6 +26,9 @@ const RECORD: LogRecord = Object.freeze({
   attributes: Object.freeze({ orderId: "o-1", items: 3, paid: true, tags: Object.freeze(["a", "b"]) }),
 });
 
+// biome-ignore lint/security/noSecrets: the W3C Trace Context example ids, flagged only for their entropy
+const TRACE = { traceId: "4bf92f3577b34da6a3ce929d0e0e4736", spanId: "00f067aa0ba902b7" };
+
 /** The formatter's output for `record`, asserted to be `["%s", line]` and with the line parsed. */
 function formatted(record: LogRecord, resource: Resource = RESOURCE): { line: string; parsed: Record<string, unknown> } {
   const args = jsonLinesFormatter.format(record, resource);
@@ -70,6 +73,35 @@ describe("jsonLinesFormatter", () => {
     const { parsed } = formatted(RECORD);
 
     expect(Object.keys(parsed)).toEqual(["time", "level", "category", "message", "attributes", "resource"]);
+  });
+
+  test("writes trace_id and span_id between error and resource when the record carries a trace", () => {
+    const error: SerializedError = { type: "Error", message: "boom" };
+    const trace = { ...TRACE, flags: 1 };
+    const { parsed } = formatted({ ...RECORD, error, trace });
+
+    expect(Object.keys(parsed)).toEqual(["time", "level", "category", "message", "attributes", "error", "trace_id", "span_id", "resource"]);
+    expect(parsed.trace_id).toBe(trace.traceId);
+    expect(parsed.span_id).toBe(trace.spanId);
+    expect(parsed).not.toHaveProperty("trace_flags");
+    expect(parsed).not.toHaveProperty("trace");
+  });
+
+  test("omits trace_id and span_id when the record carries no trace", () => {
+    const { parsed } = formatted(RECORD);
+
+    expect(parsed).not.toHaveProperty("trace_id");
+    expect(parsed).not.toHaveProperty("span_id");
+  });
+
+  test("keeps attributes named trace_id and span_id under attributes", () => {
+    const trace = { ...TRACE, flags: 0 };
+    const attributes = { trace_id: "mine", span_id: "also mine" };
+    const { parsed } = formatted({ ...RECORD, attributes, trace });
+
+    expect(parsed.attributes).toEqual(attributes);
+    expect(parsed.trace_id).toBe(trace.traceId);
+    expect(parsed.span_id).toBe(trace.spanId);
   });
 
   test("carries an error's whole cause and errors chain", () => {

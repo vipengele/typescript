@@ -1,6 +1,7 @@
 import type { Attributes, Clock, Level, SerializedError } from "@vipengele/ts-core-common";
 import type { Resource } from "@vipengele/ts-core-common/scope";
 import type { RedactionSetting } from "../redaction";
+import type { LogTrace } from "./trace";
 
 /**
  * One emitted log entry, the shape every {@link Sink} receives (ADR-0007). Its attributes merge
@@ -21,6 +22,11 @@ export interface LogRecord {
   readonly attributes: Attributes;
   /** The thrown value passed to the call, with its whole `cause`/`errors` chain, when there is one. */
   readonly error?: SerializedError;
+  /**
+   * The OpenTelemetry span active when the record was built, when one is (ADR-0021). It is absent
+   * when OpenTelemetry is not registered or no valid span is active, and it is never redacted.
+   */
+  readonly trace?: LogTrace;
 }
 
 /**

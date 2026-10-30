@@ -311,7 +311,8 @@ To assert on records instead of printing them, use the test sink (**The test sin
 The three formatters:
 
 - **`jsonLinesFormatter`** — one JSON object per line, keyed `time`, `level`, `category`,
-  `message`, `attributes`, `error` (absent without one) and `resource`. `time` stays the record's
+  `message`, `attributes`, `error` (absent without one), `trace_id` and `span_id` (absent without a
+  trace; see **Trace correlation**) and `resource`. `time` stays the record's
   epoch milliseconds as a number, sub-millisecond fraction included.
 
   ```text
@@ -440,6 +441,57 @@ no sink is in force.
 
 **What the logger does not have:** configuration files. Levels are set in code, with `configure`,
 `override` and spec strings, and from `VPG_LOG` and the browser sources above.
+
+### Trace correlation
+
+A record written while an OpenTelemetry span is active carries it in a top-level `trace` field, with
+no import and no configuration:
+
+```ts
+interface LogTrace {
+  readonly traceId: string; // 32 hex characters
+  readonly spanId: string; // 16 hex characters
+  readonly flags: number; // the span context's traceFlags
+}
+```
+
+```ts
+import { Logging, type LogRecord } from "@vipengele/ts-core-observability/logger";
+
+Logging.configure((b) =>
+  b.addLevels({ "*": "info" }).addSink({
+    write(record: LogRecord) {
+      if (record.trace !== undefined) {
+        ship({ ...record, trace_id: record.trace.traceId });
+      }
+    },
+  }),
+);
+```
+
+- **Detection** — the logger reads the active span from the global registry `@opentelemetry/api`
+  keeps for itself, synchronously, while the record is created and only for a call that passes the
+  level check and has a sink. The package never imports `@opentelemetry/api`; the `^1.9` optional
+  peer documents the range the registry layout is tested against, and an application without
+  OpenTelemetry installs and bundles nothing extra.
+- **Absent** — with no OpenTelemetry, no registered context manager, no active span, all-zero ids
+  (the no-op tracer's) or a read that throws, the record has no `trace` field and is still written.
+  Nothing reaches `onSinkError`.
+- **Not redacted** — `trace` holds identifiers of a fixed shape, not caller data, so the built-in
+  redaction does not touch it.
+- **Processors** — a `LogProcessor` may add, replace or strip `trace`. A `trace` that is not an
+  object with a valid `traceId`, `spanId` and integer `flags` fails closed like any malformed
+  return: the record is dropped for the sinks that processor guards (ADR-0017).
+- **Formatters** — `jsonLinesFormatter` writes `trace_id` and `span_id` after `error` and before
+  `resource`, and omits both without a trace; the flags are not written. `ansiFormatter`,
+  `browserFormatter` and `createTestSink` show nothing of the trace; the test sink keeps the record,
+  so `sink.records[0]?.trace` is there to assert on.
+
+```text
+{"time":1760000000123.456,"level":"info","category":"app.checkout","message":"order placed","attributes":{},"trace_id":"0af7651916cd43dd8448eb211c80319c","span_id":"b7ad6b7169203331","resource":{}}
+```
+
+`LogTrace` is exported from `./logger`. See ADR-0021 for why the registry is read rather than imported.
 
 ## `./errors`
 

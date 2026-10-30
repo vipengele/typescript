@@ -66,7 +66,7 @@ Error Event, Scope, Breadcrumb, Transport) before naming things.
     resolved copy of the package agrees (ADR-0005), and a category with nothing configured
     resolves to `warn`. A `Logger`'s `trace`..`fatal` calls that pass the level check build a
     `LogRecord` (attributes normalized, errors through `serializeError`, both redacted with
-    `secretKeys` unless the builder's `redaction` says otherwise) and write it with the Resource to
+    `secretKeys` unless the builder's `redaction` says otherwise; the active OpenTelemetry span rides along as `trace`, which json-lines writes as `trace_id`/`span_id`) and write it with the Resource to
     every `Sink` the builder's `addSink` added (`createConsoleSink` prints them; `createTestSink`
     records them with their Resource and offers `find` and `clear`), `clock` supplying `time`. Attributes may be a thunk
     (`AttributesThunk`), given to a call or to `with`, run once per record after the level and sink

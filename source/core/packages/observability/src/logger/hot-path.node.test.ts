@@ -25,9 +25,13 @@ const observer = new PerformanceObserver((list) => {
   }
 });
 
+const REGISTRY_SLOT = Symbol.for("opentelemetry.js.api.1");
+const registry = globalThis as unknown as Record<symbol, unknown>;
+
 afterEach(() => {
   observer.disconnect();
   collections.length = 0;
+  delete registry[REGISTRY_SLOT];
 });
 
 /**
@@ -42,8 +46,16 @@ async function collectedBetween(start: number, end: number): Promise<boolean> {
 }
 
 describe("a disabled call's heap cost", () => {
-  test("a disabled debug call with a hoisted thunk grows the heap by no more than a fixed margin", async () => {
+  test("a disabled debug call with a hoisted thunk grows the heap by no more than a fixed margin and reads no trace", async () => {
     observer.observe({ entryTypes: ["gc"] });
+    // An OpenTelemetry registry whose `context` getter counts its reads: a disabled call reads none.
+    let registryReads = 0;
+    registry[REGISTRY_SLOT] = {
+      get context() {
+        registryReads++;
+        return undefined;
+      },
+    };
     const provider = createLoggerProvider((b) => b.addLevels({ "*": "info" }).addSink({ write: () => {} }));
     const logger = provider.logger("hot.path").with(() => ({ bound: 1 }));
     // One thunk for every call: an arrow written inline at the call site is a closure the caller
@@ -74,5 +86,6 @@ describe("a disabled call's heap cost", () => {
 
     expect(growths).toHaveLength(1);
     expect(growths[0]).toBeLessThan(MAX_GROWTH_BYTES);
+    expect(registryReads).toBe(0);
   });
 });

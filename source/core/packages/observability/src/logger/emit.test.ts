@@ -6,6 +6,7 @@ import { type BindingLayer, emitRecord, evaluateAttributes } from "./emit";
 import { isNormalized, markNormalized } from "./normalized";
 import type { EmitSettings, LogProcessor, LogRecord, Sink, SinkRegistration } from "./record";
 import { redactionProcessor } from "./redaction-processor";
+import type { LogTrace } from "./trace";
 
 const RESOURCE: Resource = Object.freeze({
   "service.name": "checkout",
@@ -1756,5 +1757,205 @@ describe("emitRecord processor output marked as normalized", () => {
     expect("extra" in record).toBe(false);
     expect(record.attributes).toEqual({ k: "v" });
     expect(Object.isFrozen(record)).toBe(true);
+  });
+});
+
+describe("emitRecord trace", () => {
+  const REGISTRY_SLOT = Symbol.for("opentelemetry.js.api.1");
+  const SPAN_KEY = Symbol.for("OpenTelemetry Context Key SPAN");
+  const registry = globalThis as unknown as Record<symbol, unknown>;
+
+  // biome-ignore lint/security/noSecrets: the W3C Trace Context example trace id, flagged only for its entropy
+  const TRACE_ID = "4bf92f3577b34da6a3ce929d0e0e4736";
+  const SPAN_ID = "00f067aa0ba902b7";
+  const OTHER_TRACE: LogTrace = { traceId: "ab".repeat(16), spanId: "cd".repeat(8), flags: 0 };
+
+  /** Registers a fake OpenTelemetry API whose active context holds a span with `spanContext`. */
+  function activate(spanContext: unknown): void {
+    const span = { spanContext: () => spanContext };
+    registry[REGISTRY_SLOT] = {
+      context: { active: () => ({ getValue: (key: symbol) => (key === SPAN_KEY ? span : undefined) }) },
+    };
+  }
+
+  afterEach(() => {
+    delete registry[REGISTRY_SLOT];
+  });
+
+  test("a record built while a span is active carries its ids and flags as a frozen trace", () => {
+    const sink = collector();
+    activate({ traceId: TRACE_ID, spanId: SPAN_ID, traceFlags: 1 });
+
+    emitRecord(settings({ sinks: [sink] }), "info", "a", "m", undefined, undefined);
+
+    const record = sink.written[0]?.record as LogRecord;
+    expect(record.trace).toEqual({ traceId: TRACE_ID, spanId: SPAN_ID, flags: 1 });
+    expect(Object.isFrozen(record.trace)).toBe(true);
+  });
+
+  test("a record built with no registry, or no active span, has no trace key", () => {
+    const sink = collector();
+    emitRecord(settings({ sinks: [sink] }), "info", "a", "m", undefined, undefined);
+    registry[REGISTRY_SLOT] = { context: { active: () => ({ getValue: () => undefined }) } };
+    emitRecord(settings({ sinks: [sink] }), "info", "a", "m", undefined, undefined);
+
+    expect(sink.written).toHaveLength(2);
+    expect(sink.written.every(({ record }) => !("trace" in record))).toBe(true);
+  });
+
+  test("a registry whose read throws leaves the trace out and still writes the record", () => {
+    const sink = collector();
+    registry[REGISTRY_SLOT] = {
+      context: {
+        active: () => {
+          throw new Error("boom");
+        },
+      },
+    };
+
+    emitRecord(settings({ sinks: [sink] }), "info", "a", "m", undefined, undefined);
+
+    const record = sink.written[0]?.record as LogRecord;
+    expect(sink.written).toHaveLength(1);
+    expect("trace" in record).toBe(false);
+  });
+
+  test("the registry is read once per record however many sinks receive it", () => {
+    let reads = 0;
+    registry[REGISTRY_SLOT] = {
+      get context() {
+        reads++;
+        return undefined;
+      },
+    };
+
+    emitRecord(settings({ sinks: [collector(), collector(), collector()] }), "info", "a", "m", undefined, undefined);
+
+    expect(reads).toBe(1);
+  });
+
+  test("the trace survives a processor that copies the record, kept as the same frozen object", () => {
+    const sink = collector();
+    const handed: LogRecord[] = [];
+    const rename: LogProcessor = (record) => {
+      handed.push(record);
+      return { ...record, message: "renamed" };
+    };
+    activate({ traceId: TRACE_ID, spanId: SPAN_ID, traceFlags: 1 });
+
+    emitRecord(settings({ sinks: [sink], processors: [rename] }), "info", "a", "m", undefined, undefined);
+
+    const record = sink.written[0]?.record as LogRecord;
+    expect(record.message).toBe("renamed");
+    expect(record.trace).toBe(handed[0]?.trace);
+    expect(record.trace).toEqual({ traceId: TRACE_ID, spanId: SPAN_ID, flags: 1 });
+  });
+
+  test("the trace survives redactionProcessor, on a marked record and on a copy of one", () => {
+    const marked = collector();
+    const copied = collector();
+    const copy: LogProcessor = (record) => redactionProcessor()({ ...record });
+    activate({ traceId: TRACE_ID, spanId: SPAN_ID, traceFlags: 1 });
+
+    emitRecord(
+      settings({ sinks: [registered(marked, redactionProcessor()), registered(copied, copy)] }),
+      "info",
+      "a",
+      "m",
+      { password: "p" },
+      undefined,
+    );
+
+    for (const sink of [marked, copied]) {
+      const record = sink.written[0]?.record as LogRecord;
+      expect(record.attributes.password).not.toBe("p");
+      expect(record.trace).toEqual({ traceId: TRACE_ID, spanId: SPAN_ID, flags: 1 });
+      expect(Object.isFrozen(record.trace)).toBe(true);
+    }
+  });
+
+  test.each([
+    { name: "left out", strip: ({ trace, ...rest }: LogRecord): unknown => rest },
+    { name: "set to undefined", strip: (record: LogRecord): unknown => ({ ...record, trace: undefined }) },
+  ])("a processor strips the trace by returning it $name", ({ strip }) => {
+    const sink = collector();
+    activate({ traceId: TRACE_ID, spanId: SPAN_ID, traceFlags: 1 });
+
+    emitRecord(settings({ sinks: [registered(sink, (record) => strip(record) as LogRecord)] }), "info", "a", "m", undefined, undefined);
+
+    const record = sink.written[0]?.record as LogRecord;
+    expect(sink.written).toHaveLength(1);
+    expect("trace" in record).toBe(false);
+  });
+
+  test("a processor replaces the trace with a fresh frozen copy, leaving its own object unfrozen", () => {
+    const sink = collector();
+    const returned = { ...OTHER_TRACE, extra: "dropped" };
+    activate({ traceId: TRACE_ID, spanId: SPAN_ID, traceFlags: 1 });
+
+    emitRecord(
+      settings({ sinks: [registered(sink, (record) => ({ ...record, trace: returned }))] }),
+      "info",
+      "a",
+      "m",
+      undefined,
+      undefined,
+    );
+
+    const record = sink.written[0]?.record as LogRecord;
+    expect(record.trace).toEqual(OTHER_TRACE);
+    expect(record.trace).not.toBe(returned);
+    expect(Object.isFrozen(record.trace)).toBe(true);
+    expect(Object.isFrozen(returned)).toBe(false);
+    expect(returned).toEqual({ ...OTHER_TRACE, extra: "dropped" });
+  });
+
+  test("a processor adds a trace to a record built with no active span", () => {
+    const sink = collector();
+    const returned = { ...OTHER_TRACE };
+
+    emitRecord(
+      settings({ sinks: [registered(sink, (record) => ({ ...record, trace: returned }))] }),
+      "info",
+      "a",
+      "m",
+      undefined,
+      undefined,
+    );
+
+    const record = sink.written[0]?.record as LogRecord;
+    expect(record.trace).toEqual(OTHER_TRACE);
+    expect(record.trace).not.toBe(returned);
+    expect(Object.isFrozen(record.trace)).toBe(true);
+    expect(Object.isFrozen(returned)).toBe(false);
+  });
+
+  const malformedTraces: { readonly name: string; readonly trace: unknown }[] = [
+    { name: "null", trace: null },
+    { name: "a string", trace: TRACE_ID },
+    { name: "a number", trace: 1 },
+    { name: "a trace id that is not hex", trace: { ...OTHER_TRACE, traceId: "z".repeat(32) } },
+    { name: "an all-zero trace id", trace: { ...OTHER_TRACE, traceId: "0".repeat(32) } },
+    { name: "a short span id", trace: { ...OTHER_TRACE, spanId: "cd".repeat(4) } },
+    { name: "an all-zero span id", trace: { ...OTHER_TRACE, spanId: "0".repeat(16) } },
+    { name: "no span id", trace: { traceId: OTHER_TRACE.traceId, flags: 0 } },
+    { name: "string flags", trace: { ...OTHER_TRACE, flags: "1" } },
+    { name: "fractional flags", trace: { ...OTHER_TRACE, flags: 1.5 } },
+    { name: "no flags", trace: { traceId: OTHER_TRACE.traceId, spanId: OTHER_TRACE.spanId } },
+  ];
+
+  test.each(malformedTraces)("a processor returning a trace that is $name drops the record and is reported", ({ trace }) => {
+    const dropped = collector();
+    const after = collector();
+    const onSinkError = vi.fn();
+    const processor: LogProcessor = (record) => ({ ...record, trace }) as LogRecord;
+
+    emitRecord(settings({ sinks: [registered(dropped, processor), after], onSinkError }), "info", "a", "m", undefined, undefined);
+
+    expect(dropped.written).toHaveLength(0);
+    expect(after.written).toHaveLength(1);
+    expect(onSinkError).toHaveBeenCalledOnce();
+    expect(onSinkError.mock.calls[0]?.[0]).toBeInstanceOf(TypeError);
+    expect(onSinkError.mock.calls[0]?.[1]).toBe(processor);
   });
 });

@@ -25,7 +25,10 @@ function plainResource(resource: Resource): Resource {
 
 /**
  * Formats a record as one JSON object on one line, keyed `time`, `level`, `category`, `message`,
- * `attributes`, `error`, `resource` in that order; `error` is absent when the record has none.
+ * `attributes`, `error`, `trace_id`, `span_id`, `resource` in that order; `error` is absent when the
+ * record has none, and `trace_id` and `span_id` are absent when it carries no trace. The trace flags
+ * are not written. Attributes sit under their own `attributes` key, so none can collide with the
+ * top-level keys.
  * `time` is the record's epoch milliseconds as a number, sub-millisecond fraction included, so
  * records written within one millisecond stay ordered (ADR-0007). The line carries no trailing
  * newline, which the console adds. It is returned behind `"%s"`, so a `%` in user text never
@@ -40,6 +43,8 @@ export const jsonLinesFormatter: Formatter = {
       message: record.message,
       attributes: record.attributes,
       error: record.error,
+      trace_id: record.trace?.traceId,
+      span_id: record.trace?.spanId,
       resource: plainResource(resource),
     });
     return ["%s", line];

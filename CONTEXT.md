@@ -95,6 +95,11 @@ Level Source with higher precedence holds a Category's Level.
 One structured log entry: time, level, category, message, attributes and optionally an error.
 _Avoid_: line, log line (a record is not text until a Formatter makes it so)
 
+**Trace Correlation**:
+Tying a Log Record to the OpenTelemetry span that was active when it was written, so a backend can
+join the record to its trace. A record with no active span carries no correlation.
+_Avoid_: tracing (vipengele records no spans), context (see Scope's own _Avoid_)
+
 **Sink**:
 Where Log Records go: the console, a stream, a buffer, an exporter. A logger configuration may
 hold several.
