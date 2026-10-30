@@ -139,3 +139,16 @@ Run commands from `source/core` (`pnpm build`, `pnpm type-check`, `pnpm test`, `
   `snapshot`. `Scope.setUser`/`setTag`/`setContext` write flat dotted attribute keys, so an event has
   no `tags`, `user` or `contexts` field. `secretKeys` splits keys on every non-alphanumeric
   character, so `session.id` from `Scope.setContext("session", { id })` is masked by default.
+
+## HTTP transport (`src/errors/transports/http-transport.ts`, `http/`)
+
+- `createHttpTransport` POSTs batched Error Events as JSON. Its steps live in `http/`: `options.ts`
+  (resolution; an invalid option throws `HttpTransportConfigError`), `queue.ts` (bounded queue that
+  batches by structural Resource key, not identity), `request.ts` (one batch: byte-size split, per-attempt
+  `requestTimeoutMs`, retries through `@vipengele/ts-core-resilience/retry`), `classify.ts` (retry or
+  reject by status) and `retry-after.ts`.
+- One request is in flight at a time; every wait runs on the injected `Scheduler`. Nothing is `unref`'d and
+  no exit hook is registered, so a process that must not lose events awaits `close()` (ADR-0022).
+- Every undeliverable event goes to `onDrop(events, reason)`; with no `onDrop` it warns once per reason.
+  `send` never throws, a throwing `onDrop` is swallowed.
+- `@vipengele/ts-core-resilience` is a `workspace:*` dependency of this package.
