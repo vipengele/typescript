@@ -49,8 +49,9 @@ import each other.
 ## Unload sends one keepalive request
 
 On `pagehide`, or `visibilitychange` to `hidden`, the core sends the largest oldest prefix of its
-queue that fits the 64 KiB a document may have in flight under `keepalive`, found by halving, as one
-`fetch` with `keepalive` and the configured headers. The remainder is dropped as `unload-budget`.
+queue that fits the 64 KiB a document may have in flight under `keepalive`, found by doubling then
+bisecting, as one `fetch` with `keepalive` and the configured headers. The remainder is dropped as
+`unload-budget`.
 There is no `sendBeacon` fallback: a beacon cannot set headers, so an authenticated collector refuses
 it, and a cross-origin beacon with an `application/json` body is blocked by the browser.
 

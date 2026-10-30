@@ -102,7 +102,7 @@ function harness(first: Fetch | undefined, overrides: Partial<DeliveryOptions<st
 describe("largestFittingPrefix", () => {
   const encode = (entries: ReadonlyArray<string>): string => entries.join("");
 
-  test("encodes once when every entry fits", () => {
+  test("doubles the count up to every entry when every entry fits", () => {
     const tried: number[] = [];
     const prefix = largestFittingPrefix(
       ["aa", "bb", "cc"],
@@ -113,10 +113,10 @@ describe("largestFittingPrefix", () => {
       6,
     );
     expect(prefix).toEqual({ count: 3, body: "aabbcc" });
-    expect(tried).toEqual([3]);
+    expect(tried).toEqual([1, 2, 3]);
   });
 
-  test("halves the count until a prefix fits, then bisects up to the largest that fits", () => {
+  test("doubles the count until a prefix does not fit, then bisects down to the largest that fits", () => {
     const tried: number[] = [];
     const prefix = largestFittingPrefix(
       ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"],
@@ -127,7 +127,37 @@ describe("largestFittingPrefix", () => {
       4,
     );
     expect(prefix).toEqual({ count: 4, body: "abcd" });
-    expect(tried).toEqual([10, 5, 2, 3, 4]);
+    expect(tried).toEqual([1, 2, 4, 8, 6, 5]);
+  });
+
+  test("never encodes the whole of a backlog far over budget", () => {
+    const entries = Array.from({ length: 2048 }, () => "x".repeat(100));
+    const tried: number[] = [];
+    const prefix = largestFittingPrefix(
+      entries,
+      (slice) => {
+        tried.push(slice.length);
+        return encode(slice);
+      },
+      UNLOAD_BUDGET_BYTES,
+    );
+    expect(prefix.count).toBe(Math.floor(UNLOAD_BUDGET_BYTES / 100));
+    expect(Math.max(...tried)).toBeLessThan(2 * prefix.count);
+    expect(tried.reduce((sum, count) => sum + count, 0)).toBeLessThan(16 * prefix.count);
+  });
+
+  test("gives no entries and encodes nothing for an empty queue", () => {
+    const tried: number[] = [];
+    const prefix = largestFittingPrefix(
+      [],
+      (slice) => {
+        tried.push(slice.length);
+        return encode(slice);
+      },
+      4,
+    );
+    expect(prefix).toEqual({ count: 0, body: "" });
+    expect(tried).toEqual([]);
   });
 
   test("gives no entries when even the oldest one does not fit", () => {

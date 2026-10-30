@@ -89,10 +89,11 @@ export interface FittingPrefix {
 }
 
 /**
- * The largest prefix of `entries` whose encoding is at most `maxBytes` UTF-8 bytes. Tries every
- * entry first, then halves the count until a prefix fits, then bisects between that count and the
- * last one that did not fit. Assumes a longer prefix never encodes smaller; a throw from `encode`
- * propagates.
+ * The largest prefix of `entries` whose encoding is at most `maxBytes` UTF-8 bytes. Tries a count
+ * of 1, then doubles it (capped at every entry) while the prefix fits, then bisects between the
+ * last count that fit and the first that did not. The encoding work tracks the size of the prefix
+ * that fits, not the length of the queue: a backlog far over budget is never encoded whole.
+ * Assumes a longer prefix never encodes smaller; a throw from `encode` propagates.
  */
 export function largestFittingPrefix<E>(
   entries: ReadonlyArray<E>,
@@ -105,16 +106,16 @@ export function largestFittingPrefix<E>(
   };
   let tooBig = entries.length + 1;
   let fit: FittingPrefix = { count: 0, body: "" };
-  for (let count = entries.length; count > 0; count = Math.floor(count / 2)) {
+  for (let count = 1; count <= entries.length; count = Math.min(count * 2, entries.length)) {
     const body = tryCount(count);
-    if (body !== undefined) {
-      fit = { count, body };
+    if (body === undefined) {
+      tooBig = count;
       break;
     }
-    tooBig = count;
-  }
-  if (fit.count === 0) {
-    return fit;
+    fit = { count, body };
+    if (count === entries.length) {
+      break;
+    }
   }
   while (tooBig - fit.count > 1) {
     const count = Math.floor((fit.count + tooBig) / 2);
