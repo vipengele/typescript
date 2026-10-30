@@ -84,7 +84,7 @@ Error Event, Scope, Breadcrumb, Transport) before naming things.
     unhandled event, ADR-0020) and hand
     the survivor, with that Resource, to a `Transport`, the fire-and-forget delivery contract (ADR-0010;
     `agentic/rules/transport-send-is-fire-and-forget.md`) every transport — the built-in
-    `createConsoleTransport` and `createTestTransport` included — implements.
+    `createConsoleTransport`, `createHttpTransport` and `createTestTransport` included — implements.
 - `source/ts/` — `@vipengele/ts`, the framework's batteries-included umbrella package
   (`packages/ts/`, nested so `release.yml`'s publish-order globbing sees it). Its name is a
   deliberate exception to the `@vipengele/ts-<project>-<package>` convention (ADR-0003). It
