@@ -167,7 +167,15 @@ function defaultFetch(url: string, init: DeliveryRequest): Promise<DeliveryRespo
  * a `ResilienceConfigError` for an invalid `maxAttempts` or `attemptTimeoutMs`.
  */
 export function createDelivery<T>(options: DeliveryOptions<T>): Delivery<T> {
-  const limits: DeliveryLimits = { ...DEFAULT_DELIVERY_LIMITS, ...options.limits };
+  const given = options.limits;
+  const limits: DeliveryLimits = {
+    maxQueueSize: given?.maxQueueSize ?? DEFAULT_DELIVERY_LIMITS.maxQueueSize,
+    maxBatchSize: given?.maxBatchSize ?? DEFAULT_DELIVERY_LIMITS.maxBatchSize,
+    scheduleDelayMs: given?.scheduleDelayMs ?? DEFAULT_DELIVERY_LIMITS.scheduleDelayMs,
+    maxAttempts: given?.maxAttempts ?? DEFAULT_DELIVERY_LIMITS.maxAttempts,
+    attemptTimeoutMs: given?.attemptTimeoutMs ?? DEFAULT_DELIVERY_LIMITS.attemptTimeoutMs,
+    flushTimeoutMs: given?.flushTimeoutMs ?? DEFAULT_DELIVERY_LIMITS.flushTimeoutMs,
+  };
   requirePositiveInteger("maxQueueSize", limits.maxQueueSize);
   requirePositiveInteger("maxBatchSize", limits.maxBatchSize);
   const { url, encode } = options;

@@ -540,6 +540,34 @@ describe("createDelivery close", () => {
   });
 });
 
+describe("createDelivery undefined limits", () => {
+  const undefinedLimits = {
+    maxQueueSize: undefined,
+    maxBatchSize: undefined,
+    scheduleDelayMs: undefined,
+    maxAttempts: undefined,
+    attemptTimeoutMs: undefined,
+    flushTimeoutMs: undefined,
+  } as unknown as DeliveryOptions<string>["limits"];
+
+  test("an undefined limit means the default: the timer export fires at 5000ms", async () => {
+    const { delivery, calls, time } = harness([], { limits: undefinedLimits });
+    delivery.enqueue("a", RESOURCE);
+    await time.advance(4999);
+    expect(calls).toHaveLength(0);
+    await time.advance(1);
+    await tick();
+    expect(calls).toHaveLength(1);
+  });
+
+  test("an undefined limit means the default: flush drains", async () => {
+    const { delivery, calls } = harness([], { limits: undefinedLimits });
+    delivery.enqueue("a", RESOURCE);
+    await expect(delivery.flush()).resolves.toBe(true);
+    expect(calls).toHaveLength(1);
+  });
+});
+
 describe("createDelivery configuration", () => {
   test.each([
     ["maxQueueSize", 0],
