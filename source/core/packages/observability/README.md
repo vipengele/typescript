@@ -493,6 +493,60 @@ Logging.configure((b) =>
 
 `LogTrace` is exported from `./logger`. See ADR-0021 for why the registry is read rather than imported.
 
+### OTLP export
+
+`createOtlpLogSink` is a `Sink` that batches records and exports them to an OpenTelemetry collector
+as OTLP/HTTP JSON (`/v1/logs`), retrying transient failures:
+
+```ts
+import { createOtlpLogSink, Logging } from "@vipengele/ts-core-observability/logger";
+
+const otlp = createOtlpLogSink({
+  url: "https://collector.example.com/v1/logs",
+  headers: () => ({ authorization: `Bearer ${readToken()}` }),
+  onDrop: (reason, count) => metrics.increment(`log.drop.${reason}`, count),
+});
+
+Logging.configure((b) => b.addSink(otlp));
+
+// Before a Node process exits:
+await otlp.close();
+```
+
+`write` returns at once and never throws. The sink is an `OtlpLogSink`, a `Sink` with `flush` and
+`close` added; the `Sink` interface and the provider are unchanged (ADR-0022).
+
+- **Options** — `url` is required and must be an absolute `http:` or `https:` URL. `headers` is a
+  record, or a function read once per batch; `content-type: application/json` is always sent. `fetch`
+  defaults to `globalThis.fetch`, `clock` and `scheduler` to the system ones, and `lifecycle` to the
+  `pagehide` and `visibilitychange` targets found on `globalThis`. `limits` overrides the defaults
+  below. A bad `url` or limit throws `LoggingConfigError`.
+- **Defaults** — a queue of 2048 records, batches of 512, a batch sent every 5 s, 5 attempts with
+  full-jitter exponential backoff from 1 s to 30 s, 10 s per attempt and 2 s for `flush`. One export
+  is in flight at a time.
+- **Retry** — a network error, a timeout, and a 429, 502, 503 or 504 response are retried, and a
+  `Retry-After` header (seconds or an HTTP date) sets the wait. Any other response drops the batch.
+- **Drops** — `onDrop(reason, count)` reports records that never reached the collector, and a throw
+  from it is swallowed. `queue-full`: the queue held `maxQueueSize` records. `rejected`: the
+  collector refused the batch with a non-retryable status, or the batch could not be sent at all
+  because `encode` or the `headers` function threw, or `fetch` threw synchronously; an encode or
+  `headers` throw during the unload drain drops every entry the same way. `retries-exhausted`: every
+  attempt failed. `closed`: `close` ended with records still unsent. `unload-budget`: records did
+  not fit the unload request.
+- **Flush and close** — `flush(timeoutMs?)` cuts any backoff short, exports what is buffered and
+  resolves `true` once it is delivered or dropped, `false` when the timeout elapses first. `close`
+  flushes, drops what is left as `closed`, and turns every later `write` into a no-op. Neither
+  rejects. The sink installs no exit hook, so a Node host awaits `close()` before it exits.
+- **Page unload** — on `pagehide`, or `visibilitychange` to `hidden`, the sink sends the largest
+  oldest prefix of its queue that fits 64 KiB as one `keepalive` `fetch` with the configured
+  headers. The rest is dropped as `unload-budget`.
+- **No `sendBeacon`** — a beacon cannot set request headers, so an authenticated collector would
+  refuse it, and a cross-origin beacon with an `application/json` body is blocked by the browser.
+  A `keepalive` fetch carries headers and the same budget.
+- **Mapping** — a record becomes an OTLP log record by the mapping of ADR-0007: severity, the
+  attributes, the error chain, and `trace` as the trace and span ids. Records group by Resource, then
+  by category, which becomes the instrumentation scope.
+
 ## `./errors`
 
 `createReporter` builds a `Reporter` from a builder, starting from the defaults — no transport,

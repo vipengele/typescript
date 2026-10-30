@@ -66,3 +66,5 @@ chain, is reported once. A host-supplied `onSinkError` without that option recei
 - `OutputSettings.sinks` is `readonly SinkRegistration[]`, each `{ sink, processors }`: a break of
   the exported snapshot type, made in a 0.0.x package.
 - Per-sink level thresholds and Sink `flush`/`close` are not part of this decision.
+- An exporter Sink owns its own lifecycle: `flush` and `close` are on the sink it returns, not on
+  `Sink`, which is unchanged (`0022-otlp-export-shares-one-delivery-core.md`).
