@@ -1,4 +1,5 @@
 import { type Scheduler, systemScheduler } from "@vipengele/ts-core-common";
+import { detectCapability } from "@vipengele/ts-core-common/runtime";
 import type { Resource } from "@vipengele/ts-core-common/scope";
 import { DEFAULT_DELIVERY_LIMITS, type DeliveryLimits } from "../delivery/delivery";
 import { detectLifecycleTargets, type LifecycleTargets, watchUnload } from "../delivery/unload";
@@ -42,8 +43,11 @@ export interface BatchingSinkOptions {
   /** Where `pagehide` and `visibilitychange` arrive; detected on `globalThis` when omitted, none watched for `{}`. */
   readonly lifecycle?: LifecycleTargets;
   /**
-   * Hands the buffer to the inner on process exit, where the runtime has exit hooks. Defaults to
-   * `false`. The exit listener cannot await, so only a synchronous `writeBatch` completes.
+   * Hands the whole buffer to the inner once, synchronously, from a process `exit` listener, where
+   * the runtime has process exit hooks; ignored where it has none, as in a browser. Defaults to
+   * `false`. The listener cannot await, so only a synchronous `writeBatch` completes, and entries
+   * already in an async batch in flight at exit get no further handling: an async destination must
+   * `await close()` instead. The listener is removed once `close` has drained.
    */
   readonly flushOnExit?: boolean;
 }
@@ -129,6 +133,28 @@ function resolveLimits(given: Partial<BatchingSinkLimits> = {}): BatchingSinkLim
   };
 }
 
+/** The subset of Node's `process` the exit drain listens on, typed structurally so this entry point never depends on `@types/node`. */
+interface ExitProcess {
+  on(event: "exit", listener: () => void): unknown;
+  off(event: "exit", listener: () => void): unknown;
+}
+
+/**
+ * Adds `listener` as a process `exit` listener and returns its removal, or adds nothing and returns
+ * a no-op where the runtime has no process exit hooks. `detectCapability` rules out a bundler's
+ * `process` polyfill, whose no-op `on` would add a listener that never fires.
+ */
+function watchProcessExit(listener: () => void): () => void {
+  if (!detectCapability("processExitHooks")) {
+    return noop;
+  }
+  const process = (globalThis as unknown as { process: ExitProcess }).process;
+  process.on("exit", listener);
+  return () => {
+    process.off("exit", listener);
+  };
+}
+
 /**
  * The state machine behind {@link createBatchingSink}: the buffer, the one batch in flight, the
  * interval timer and the drains. Every hand-off to the inner goes through `#handOff`, which tracks
@@ -155,6 +181,10 @@ class BatchingQueue {
   readonly #idleWaiters = new Set<() => void>();
   /** Removes the page-hide listeners. */
   readonly #unwatch: () => void;
+  /** Set once the process `exit` listener has run, so a second invocation hands nothing on. */
+  #exited = false;
+  /** Removes the process `exit` listener; a no-op when none was added. */
+  readonly #unwatchExit: () => void;
 
   constructor(inner: BatchSink | Sink, options: BatchingSinkOptions) {
     this.#limits = resolveLimits(options.limits);
@@ -162,6 +192,7 @@ class BatchingQueue {
     this.#onDrop = options.onDrop ?? noop;
     this.#inner = toBatchSink(inner, (count, error) => this.#drop("failed", count, error));
     this.#unwatch = watchUnload(options.lifecycle ?? detectLifecycleTargets(), () => this.#hideDrain());
+    this.#unwatchExit = options.flushOnExit === true ? watchProcessExit(() => this.#exitDrain()) : noop;
   }
 
   write(record: LogRecord, resource: Resource): void {
@@ -185,9 +216,10 @@ class BatchingQueue {
     if (this.#closing === undefined) {
       this.#closed = true;
       this.#closing = this.#drain(timeoutMs).then((drained) => {
-        // The listeners stay through the drain: a page hidden while close waits on an async batch
-        // still hands the rest of the buffer on at once rather than batch by batch.
+        // The listeners stay through the drain: a page hidden or a process exiting while close waits
+        // on an async batch still hands the rest of the buffer on at once rather than batch by batch.
         this.#unwatch();
+        this.#unwatchExit();
         if (!drained) {
           this.#abandon();
         }
@@ -252,6 +284,20 @@ class BatchingQueue {
     }
     this.#stopTimer();
     void this.#handOff(this.#buffer.splice(0)).then(() => this.#notifyIdle());
+  }
+
+  /**
+   * Hands the whole buffer on synchronously as the process exits, the way `#hideDrain` does,
+   * so a synchronous `writeBatch` completes inside the `exit` listener. Runs once; a later
+   * invocation does nothing. A batch already in flight is left as it is: the process ends before it
+   * can settle.
+   */
+  #exitDrain(): void {
+    if (this.#exited) {
+      return;
+    }
+    this.#exited = true;
+    this.#hideDrain();
   }
 
   /**
@@ -355,7 +401,10 @@ class BatchingQueue {
  * passed since the buffer stopped being empty, on `flush` and `close`, and as the page hides. One
  * batch is in flight at a time, and a returned Promise is awaited before the next starts; page hide
  * is the exception, handing the whole buffer on at once, so an async inner may see batches out of
- * order across it. The `pagehide` and `visibilitychange` listeners are removed once `close` has drained. Nothing is retried, and the
+ * order across it. With `flushOnExit`, a process `exit` listener hands the buffer on synchronously
+ * once, where the runtime has exit hooks; a batch in flight at exit is not waited on, so an async
+ * inner needs `await close()`. The `pagehide`, `visibilitychange` and `exit` listeners are removed
+ * once `close` has drained. Nothing is retried, and the
  * inner's own `flush` and `close` are never called: its lifecycle belongs to the caller. `write`
  * returns at once and never throws. Throws a `LoggingConfigError` for an invalid option.
  */
