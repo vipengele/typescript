@@ -1,17 +1,13 @@
 import { type Clock, type Scheduler, systemClock } from "@vipengele/ts-core-common";
 import type { Resource } from "@vipengele/ts-core-common/scope";
 import { createDelivery, DEFAULT_DELIVERY_LIMITS, type DeliveryEntry, type DeliveryFetch, type DeliveryLimits } from "../delivery/delivery";
-import { type OfflineDropReason, OfflineQueue } from "../delivery/offline/offline-queue";
-import { type OfflineStore, openOfflineStore } from "../delivery/offline/store";
+import type { OfflineDropReason } from "../delivery/offline/offline-queue";
+import { drain, offlineProblem, openOffline } from "../delivery/offline/wrapper";
 import { deliveryOptionsProblem } from "../delivery/options";
-import { detectLifecycleTargets, type LifecycleTargets } from "../delivery/unload";
+import type { LifecycleTargets } from "../delivery/unload";
 import { encodeLogs } from "../otlp/encode-logs";
 import { LoggingConfigError } from "./config-error";
 import type { LogRecord, Sink } from "./record";
-
-const OFFLINE_DATABASE = "vipengele-otlp-offline";
-const OFFLINE_MAX_ENTRIES = 30;
-const OFFLINE_MAX_BYTES = 1_048_576;
 
 /**
  * Why records left the sink without reaching the collector; see the delivery's drop reasons.
@@ -83,7 +79,7 @@ export function createOtlpLogSink(options: OtlpLogSinkOptions): OtlpLogSink {
   if (problem !== undefined) {
     throw new LoggingConfigError(`createOtlpLogSink expects ${problem}`);
   }
-  const offline = openOffline(options);
+  const offline = openOffline({ ...options, keySuffix: "logs", encode: encodeEntries });
   const delivery = createDelivery<LogRecord>({
     url: options.url,
     headers: options.headers,
@@ -108,82 +104,6 @@ export function createOtlpLogSink(options: OtlpLogSinkOptions): OtlpLogSink {
   };
 }
 
-/** The offline queue with the store it saves into. */
-interface Offline {
-  readonly queue: OfflineQueue<LogRecord>;
-  readonly store: Promise<OfflineStore | undefined>;
-}
-
 function encodeEntries(entries: ReadonlyArray<DeliveryEntry<LogRecord>>): string {
   return encodeLogs(entries.map(({ item, resource, observedMs }) => ({ record: item, resource, observedMs })));
-}
-
-function isPositiveInteger(value: number | undefined): boolean {
-  return value === undefined || (Number.isInteger(value) && value >= 1);
-}
-
-/** Why `offline` cannot configure the queue, or `undefined`; completes "createOtlpLogSink expects ". */
-function offlineProblem(offline: OtlpLogSinkOptions["offline"]): string | undefined {
-  if (offline === undefined || offline === true) {
-    return undefined;
-  }
-  if (!isPositiveInteger(offline.maxEntries)) {
-    return `offline.maxEntries to be an integer of at least 1, got ${offline.maxEntries}`;
-  }
-  return isPositiveInteger(offline.maxBytes) ? undefined : `offline.maxBytes to be an integer of at least 1, got ${offline.maxBytes}`;
-}
-
-/** Opens the store and builds the queue over it, or `undefined` when `offline` is off. */
-function openOffline(options: OtlpLogSinkOptions): Offline | undefined {
-  if (options.offline === undefined) {
-    return undefined;
-  }
-  const given = options.offline === true ? {} : options.offline;
-  const limits = { maxEntries: given.maxEntries ?? OFFLINE_MAX_ENTRIES, maxBytes: given.maxBytes ?? OFFLINE_MAX_BYTES };
-  const store = openOfflineStore(given.indexedDB ?? globalThis.indexedDB, OFFLINE_DATABASE, limits);
-  const queue = new OfflineQueue<LogRecord>({
-    key: `${options.url}|logs`,
-    encode: encodeEntries,
-    url: options.url,
-    headers: options.headers,
-    fetch: options.fetch,
-    store,
-    limits,
-    onDrop: options.onDrop ?? noop,
-    clock: options.clock,
-    scheduler: options.scheduler,
-    window: (options.lifecycle ?? detectLifecycleTargets()).window,
-    navigator: globalThis.navigator,
-  });
-  return { queue, store };
-}
-
-function noop(): void {}
-
-/**
- * Runs the delivery's `flush` or `close`, then waits for the offline saves with what is left of the
- * timeout. A closing drain also stops the queue and, once its saves are done, closes the store.
- */
-async function drain(
-  run: (timeoutMs: number | undefined) => Promise<boolean>,
-  offline: Offline | undefined,
-  closing: boolean,
-  clock: Clock,
-  timeoutMs: number | undefined,
-  defaultTimeout: number,
-): Promise<boolean> {
-  if (offline === undefined) {
-    return run(timeoutMs);
-  }
-  const budget = timeoutMs ?? defaultTimeout;
-  const started = clock();
-  const delivered = await run(budget);
-  const settled = await offline.queue.settle(budget - (clock() - started));
-  if (closing) {
-    offline.queue.close();
-    if (settled) {
-      (await offline.store)?.close();
-    }
-  }
-  return delivered && settled;
 }

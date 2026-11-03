@@ -7,18 +7,14 @@ import {
   type DeliveryFetch,
   type DeliveryLimits,
 } from "../../delivery/delivery";
-import { type OfflineDropReason, OfflineQueue } from "../../delivery/offline/offline-queue";
-import { type OfflineStore, openOfflineStore } from "../../delivery/offline/store";
+import type { OfflineDropReason } from "../../delivery/offline/offline-queue";
+import { drain, offlineProblem, openOffline } from "../../delivery/offline/wrapper";
 import { deliveryOptionsProblem } from "../../delivery/options";
-import { detectLifecycleTargets, type LifecycleTargets } from "../../delivery/unload";
+import type { LifecycleTargets } from "../../delivery/unload";
 import { encodeErrorEvents } from "../../otlp/encode-error-events";
 import type { ErrorEvent } from "../event";
 import { ReporterConfigError } from "../reporter-config-error";
 import type { Transport } from "../transport";
-
-const OFFLINE_DATABASE = "vipengele-otlp-offline";
-const OFFLINE_MAX_ENTRIES = 30;
-const OFFLINE_MAX_BYTES = 1_048_576;
 
 /**
  * Why events left the transport without reaching the collector; see the delivery's drop reasons.
@@ -91,7 +87,7 @@ export function createOtlpTransport(options: OtlpTransportOptions): OtlpTranspor
   if (problem !== undefined) {
     throw new ReporterConfigError(`createOtlpTransport expects ${problem}`);
   }
-  const offline = openOffline(options);
+  const offline = openOffline({ ...options, keySuffix: "errors", encode: encodeEntries });
   const delivery = createDelivery<ErrorEvent>({
     url: options.url,
     headers: options.headers,
@@ -116,82 +112,6 @@ export function createOtlpTransport(options: OtlpTransportOptions): OtlpTranspor
   };
 }
 
-/** The offline queue with the store it saves into. */
-interface Offline {
-  readonly queue: OfflineQueue<ErrorEvent>;
-  readonly store: Promise<OfflineStore | undefined>;
-}
-
 function encodeEntries(entries: ReadonlyArray<DeliveryEntry<ErrorEvent>>): string {
   return encodeErrorEvents(entries.map(({ item, resource, observedMs }) => ({ event: item, resource, observedMs })));
-}
-
-function isPositiveInteger(value: number | undefined): boolean {
-  return value === undefined || (Number.isInteger(value) && value >= 1);
-}
-
-/** Why `offline` cannot configure the queue, or `undefined`; completes "createOtlpTransport expects ". */
-function offlineProblem(offline: OtlpTransportOptions["offline"]): string | undefined {
-  if (offline === undefined || offline === true) {
-    return undefined;
-  }
-  if (!isPositiveInteger(offline.maxEntries)) {
-    return `offline.maxEntries to be an integer of at least 1, got ${offline.maxEntries}`;
-  }
-  return isPositiveInteger(offline.maxBytes) ? undefined : `offline.maxBytes to be an integer of at least 1, got ${offline.maxBytes}`;
-}
-
-/** Opens the store and builds the queue over it, or `undefined` when `offline` is off. */
-function openOffline(options: OtlpTransportOptions): Offline | undefined {
-  if (options.offline === undefined) {
-    return undefined;
-  }
-  const given = options.offline === true ? {} : options.offline;
-  const limits = { maxEntries: given.maxEntries ?? OFFLINE_MAX_ENTRIES, maxBytes: given.maxBytes ?? OFFLINE_MAX_BYTES };
-  const store = openOfflineStore(given.indexedDB ?? globalThis.indexedDB, OFFLINE_DATABASE, limits);
-  const queue = new OfflineQueue<ErrorEvent>({
-    key: `${options.url}|errors`,
-    encode: encodeEntries,
-    url: options.url,
-    headers: options.headers,
-    fetch: options.fetch,
-    store,
-    limits,
-    onDrop: options.onDrop ?? noop,
-    clock: options.clock,
-    scheduler: options.scheduler,
-    window: (options.lifecycle ?? detectLifecycleTargets()).window,
-    navigator: globalThis.navigator,
-  });
-  return { queue, store };
-}
-
-function noop(): void {}
-
-/**
- * Runs the delivery's `flush` or `close`, then waits for the offline saves with what is left of the
- * timeout. A closing drain also stops the queue and, once its saves are done, closes the store.
- */
-async function drain(
-  run: (timeoutMs: number | undefined) => Promise<boolean>,
-  offline: Offline | undefined,
-  closing: boolean,
-  clock: Clock,
-  timeoutMs: number | undefined,
-  defaultTimeout: number,
-): Promise<boolean> {
-  if (offline === undefined) {
-    return run(timeoutMs);
-  }
-  const budget = timeoutMs ?? defaultTimeout;
-  const started = clock();
-  const delivered = await run(budget);
-  const settled = await offline.queue.settle(budget - (clock() - started));
-  if (closing) {
-    offline.queue.close();
-    if (settled) {
-      (await offline.store)?.close();
-    }
-  }
-  return delivered && settled;
 }

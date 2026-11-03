@@ -120,6 +120,9 @@ Run commands from `source/core` (`pnpm build`, `pnpm type-check`, `pnpm test`, `
   given to the delivery's internal `undelivered` hook and replays on open and `online`). The wrapper
   keys the queue `${url}|logs` or `${url}|errors`, passes `globalThis.navigator` and the lifecycle
   window itself, and on `close` closes the store after `settle`. The queue never closes the store.
+  `wrapper.ts` holds what both wrappers share (`openOffline`, `offlineProblem`, `drain`), generic over
+  the item type; each wrapper passes its key suffix and `encode` and throws its own config error from
+  the problem text. `fake-indexed-db.test-support.ts` is the in-memory `IDBFactory` their tests use; `*.test-support.ts` files are test-only, excluded from the build and from coverage.
   `OtlpDropReason` and `OtlpTransportDropReason` add `"offline-full"`; the core's `DropReason` does
   not.
 - `src/otlp/` is internal and unexported: the OTLP/HTTP JSON encoder. `encode-logs.ts` is the only
