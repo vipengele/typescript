@@ -1,6 +1,17 @@
-import { expect, test } from "vitest";
+import { expect, expectTypeOf, test } from "vitest";
+import type { DropReason } from "../delivery/delivery";
+import type {
+  ConsoleLike,
+  ConsoleSinkOptions,
+  Formatter,
+  LogProcessor,
+  OtlpDropReason,
+  OtlpLogSinkOptions,
+  OtlpOfflineOptions,
+  SinkOptions,
+  SinkRegistration,
+} from "./index";
 import * as entry from "./index";
-import type { ConsoleLike, ConsoleSinkOptions, Formatter, LogProcessor, SinkOptions, SinkRegistration } from "./index";
 
 test("the entry point exports exactly the public runtime surface", () => {
   expect(Object.keys(entry).sort()).toEqual([
@@ -19,6 +30,16 @@ test("the entry point exports exactly the public runtime surface", () => {
     "redactionProcessor",
     "setWarnTarget",
   ]);
+});
+
+test("the entry point exports the OTLP sink's offline options and widened drop reason", () => {
+  expectTypeOf<OtlpDropReason>().toEqualTypeOf<DropReason | "offline-full">();
+  expectTypeOf<NonNullable<OtlpLogSinkOptions["offline"]>>().toEqualTypeOf<true | OtlpOfflineOptions>();
+  expectTypeOf<OtlpOfflineOptions>().toEqualTypeOf<{
+    readonly maxEntries?: number;
+    readonly maxBytes?: number;
+    readonly indexedDB?: IDBFactory;
+  }>();
 });
 
 test("a Logger from the exported facade answers level queries", () => {
