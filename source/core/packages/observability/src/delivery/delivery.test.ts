@@ -10,6 +10,7 @@ import {
   type DeliveryRequest,
   type DeliveryResponse,
   type DropReason,
+  type UndeliveredReason,
 } from "./delivery";
 
 const RESOURCE: Resource = Object.freeze({
@@ -623,5 +624,192 @@ describe("createDelivery configuration", () => {
     });
     delivery.enqueue("a", RESOURCE);
     await expect(delivery.flush()).resolves.toBe(true);
+  });
+});
+
+describe("createDelivery undelivered", () => {
+  type Lost = [string[], UndeliveredReason];
+
+  function recorder() {
+    const lost: Lost[] = [];
+    const undelivered = (entries: ReadonlyArray<DeliveryEntry<string>>, reason: UndeliveredReason): void => {
+      lost.push([entries.map((entry) => entry.item), reason]);
+    };
+    return { lost, undelivered };
+  }
+
+  test("is handed a batch whose retries are exhausted, once, in place of onDrop", async () => {
+    const { lost, undelivered } = recorder();
+    const always503: Responder = () => status(503);
+    const { delivery, drops, calls, time, encoded } = harness([always503, always503], {
+      undelivered,
+      limits: { maxBatchSize: 2, maxAttempts: 2 },
+    });
+    enqueueAll(delivery, ["a", "b"]);
+    await tick();
+    await time.advance(1000);
+    await tick();
+    expect(calls).toHaveLength(2);
+    expect(lost).toEqual([[["a", "b"], "retries-exhausted"]]);
+    expect(encoded[0]?.map((entry) => entry.observedMs)).toEqual([0, 0]);
+    expect(drops).toEqual([]);
+  });
+
+  test("is handed the buffer, then the batch in flight, when close runs out of time", async () => {
+    const { lost, undelivered } = recorder();
+    const { delivery, drops, time } = harness([hang], { undelivered, limits: { maxBatchSize: 2, attemptTimeoutMs: 60_000 } });
+    enqueueAll(delivery, ["a", "b", "c"]);
+    await tick();
+    const closed = delivery.close(100);
+    await time.advance(100);
+    await expect(closed).resolves.toBe(false);
+    await tick();
+    expect(lost).toEqual([
+      [["c"], "closed"],
+      [["a", "b"], "closed"],
+    ]);
+    expect(drops).toEqual([]);
+  });
+
+  test("is handed the entries past the keepalive budget when the page is hidden", () => {
+    const { lost, undelivered } = recorder();
+    const window = new EventTarget();
+    const big = "x".repeat(20_000);
+    const items = ["1", "2", "3", "4", "5"].map((n) => n + big);
+    const { delivery, drops, calls } = harness([], { undelivered, lifecycle: { window }, limits: { maxBatchSize: 10 } });
+    enqueueAll(delivery, items);
+    window.dispatchEvent(new Event("pagehide"));
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.init.keepalive).toBe(true);
+    expect(JSON.parse(calls[0]?.init.body as string)).toEqual(items.slice(0, 3));
+    expect(lost).toEqual([[items.slice(3), "unload-budget"]]);
+    expect(drops).toEqual([]);
+  });
+
+  test("leaves queue-full and rejected to onDrop", async () => {
+    const { lost, undelivered } = recorder();
+    const { delivery, drops } = harness([() => status(400)], { undelivered, limits: { maxQueueSize: 2, maxBatchSize: 10 } });
+    enqueueAll(delivery, ["a", "b", "c"]);
+    await delivery.flush();
+    expect(drops).toEqual([
+      ["queue-full", 1],
+      ["rejected", 2],
+    ]);
+    expect(lost).toEqual([]);
+  });
+
+  test("keeps a throwing undelivered from escaping", async () => {
+    let calls = 0;
+    const undelivered = (): void => {
+      calls += 1;
+      throw new Error("hook failed");
+    };
+    const { delivery, drops, time } = harness([() => status(503), hang], {
+      undelivered,
+      backoff: fixedBackoff(60_000),
+      limits: { maxBatchSize: 1, maxAttempts: 1, attemptTimeoutMs: 60_000 },
+    });
+    enqueueAll(delivery, ["a", "b", "c"]);
+    await tick();
+    await tick();
+    expect(calls).toBe(1);
+    const closed = delivery.close(100);
+    await time.advance(100);
+    await expect(closed).resolves.toBe(false);
+    await tick();
+    expect(calls).toBe(3);
+    expect(drops).toEqual([]);
+  });
+});
+
+describe("createDelivery isOffline", () => {
+  const down: Responder = () => Promise.reject(new TypeError("network down"));
+
+  test("ends the batch as retries-exhausted after a network error while offline, skipping the backoff", async () => {
+    const { delivery, drops, calls, time } = harness([down], { isOffline: () => true, limits: { maxBatchSize: 1 } });
+    delivery.enqueue("a", RESOURCE);
+    await tick();
+    expect(calls).toHaveLength(1);
+    expect(drops).toEqual([["retries-exhausted", 1]]);
+    expect(time.pendingSleeps).toBe(0);
+    await time.advance(60_000);
+    expect(calls).toHaveLength(1);
+  });
+
+  test("hands the batch to undelivered when the network error arrives offline", async () => {
+    const lost: [number, UndeliveredReason][] = [];
+    const { delivery, drops, calls } = harness([down], {
+      isOffline: () => true,
+      undelivered: (entries, reason) => {
+        lost.push([entries.length, reason]);
+      },
+      limits: { maxBatchSize: 2 },
+    });
+    enqueueAll(delivery, ["a", "b"]);
+    await tick();
+    expect(calls).toHaveLength(1);
+    expect(lost).toEqual([[2, "retries-exhausted"]]);
+    expect(drops).toEqual([]);
+  });
+
+  test("ends the batch on an attempt timeout while offline", async () => {
+    const { delivery, drops, calls, time } = harness([hang], { isOffline: () => true, limits: { maxBatchSize: 1, attemptTimeoutMs: 500 } });
+    delivery.enqueue("a", RESOURCE);
+    await tick();
+    await time.advance(500);
+    await tick();
+    expect(calls).toHaveLength(1);
+    expect(drops).toEqual([["retries-exhausted", 1]]);
+  });
+
+  test("retries a network error as before while online", async () => {
+    let reads = 0;
+    const isOffline = (): boolean => {
+      reads += 1;
+      return false;
+    };
+    const { delivery, drops, calls, time } = harness([down], { isOffline, limits: { maxBatchSize: 1 } });
+    delivery.enqueue("a", RESOURCE);
+    await tick();
+    expect(calls).toHaveLength(1);
+    await time.advance(999);
+    expect(calls).toHaveLength(1);
+    await time.advance(1);
+    await tick();
+    expect(calls).toHaveLength(2);
+    expect(reads).toBe(1);
+    expect(drops).toEqual([]);
+  });
+
+  test("is read at each failed attempt, so going offline mid-batch ends it", async () => {
+    let offline = false;
+    const { delivery, drops, calls, time } = harness([down, down], {
+      isOffline: () => offline,
+      limits: { maxBatchSize: 1, maxAttempts: 5 },
+    });
+    delivery.enqueue("a", RESOURCE);
+    await tick();
+    offline = true;
+    await time.advance(1000);
+    await tick();
+    expect(calls).toHaveLength(2);
+    expect(drops).toEqual([["retries-exhausted", 1]]);
+    expect(time.pendingSleeps).toBe(0);
+  });
+
+  test("still retries a retryable status while offline, without reading isOffline", async () => {
+    let reads = 0;
+    const isOffline = (): boolean => {
+      reads += 1;
+      return true;
+    };
+    const { delivery, drops, calls, time } = harness([() => status(503)], { isOffline, limits: { maxBatchSize: 1 } });
+    delivery.enqueue("a", RESOURCE);
+    await tick();
+    await time.advance(1000);
+    await tick();
+    expect(calls).toHaveLength(2);
+    expect(reads).toBe(0);
+    expect(drops).toEqual([]);
   });
 });
