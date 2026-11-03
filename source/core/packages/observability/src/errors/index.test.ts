@@ -21,6 +21,9 @@ import type {
   Integration,
   IntegrationCaptureContext,
   IntegrationHost,
+  OtlpTransport,
+  OtlpTransportDropReason,
+  OtlpTransportOptions,
   RateLimitOptions,
   ReporterBuilder,
 } from "./index";
@@ -28,6 +31,7 @@ import type {
 test("the entry point exports the reporter, the built-in transports and the builder", () => {
   expect(entry.createReporter).toBeTypeOf("function");
   expect(entry.createConsoleTransport).toBeTypeOf("function");
+  expect(entry.createOtlpTransport).toBeTypeOf("function");
   expect(entry.createTestTransport).toBeTypeOf("function");
   expect(entry.ReporterBuilder).toBeTypeOf("function");
 });
@@ -81,4 +85,11 @@ test("the entry point exports the processor and rate limit types the builder acc
   expectTypeOf<ReporterBuilder["beforeSend"]>().parameter(0).toEqualTypeOf<ErrorEventProcessor>();
   expectTypeOf<ReporterBuilder["rateLimit"]>().parameter(0).toEqualTypeOf<false | RateLimitOptions>();
   expectTypeOf<ErrorEventProcessor>().toEqualTypeOf<(event: ErrorEvent) => ErrorEvent | null>();
+});
+
+test("the entry point exports the OTLP transport's options, drop reasons and return type", () => {
+  expectTypeOf(entry.createOtlpTransport).parameter(0).toEqualTypeOf<OtlpTransportOptions>();
+  expectTypeOf(entry.createOtlpTransport).returns.toEqualTypeOf<OtlpTransport>();
+  expectTypeOf<OtlpTransport>().toExtend<entry.Transport>();
+  expectTypeOf<Parameters<NonNullable<OtlpTransportOptions["onDrop"]>>[0]>().toEqualTypeOf<OtlpTransportDropReason>();
 });

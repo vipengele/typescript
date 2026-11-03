@@ -20,4 +20,6 @@ export { isReporterConfigError, ReporterConfigError } from "./reporter-config-er
 export type { CaptureContext, Reporter } from "./reporter";
 export type { Transport } from "./transport";
 export { createConsoleTransport } from "./transports/console-transport";
+export { createOtlpTransport } from "./transports/otlp-transport";
+export type { OtlpTransport, OtlpTransportDropReason, OtlpTransportOptions } from "./transports/otlp-transport";
 export { createTestTransport } from "./transports/test-transport";
