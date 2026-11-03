@@ -3,6 +3,7 @@ import type { Resource } from "@vipengele/ts-core-common/scope";
 import { createManualTime } from "@vipengele/ts-core-common/testing";
 import { describe, expect, it } from "vitest";
 import { DEFAULT_DELIVERY_LIMITS } from "../delivery/delivery";
+import { detectLifecycleTargets } from "../delivery/unload";
 import {
   assertBatchingSinkOptions,
   type BatchDropReason,
@@ -186,6 +187,7 @@ function setup(inner: BatchSink | Sink, options: BatchingSinkOptions = {}) {
   const sink = createBatchingSink(inner, {
     scheduler: time.scheduler,
     onDrop: (...args) => drops.push(args),
+    lifecycle: {},
     ...options,
   });
   const write = (...messages: string[]): void => {
@@ -616,6 +618,239 @@ describe("createBatchingSink", () => {
       const closed = sink.close();
       expect(sink.flush()).toBe(closed);
       expect(await sink.flush()).toBe(true);
+    });
+  });
+
+  describe("page hide", () => {
+    /** A window and a hidden document that count their listeners and fire them on demand. */
+    function fakeLifecycle() {
+      const listeners = new Map<string, Set<() => void>>();
+      const target = {
+        addEventListener: (type: string, listener: () => void) => {
+          listeners.set(type, (listeners.get(type) ?? new Set()).add(listener));
+        },
+        removeEventListener: (type: string, listener: () => void) => {
+          listeners.get(type)?.delete(listener);
+        },
+      };
+      const fire = (type: string): void => {
+        for (const listener of listeners.get(type) ?? []) {
+          listener();
+        }
+      };
+      const count = (): number => [...listeners.values()].reduce((sum, set) => sum + set.size, 0);
+      return {
+        lifecycle: { window: target, document: { ...target, visibilityState: "hidden" } },
+        pagehide: () => fire("pagehide"),
+        hide: () => fire("visibilitychange"),
+        count,
+      };
+    }
+
+    it("hands the whole buffer on at once, ignoring maxBatchSize", () => {
+      const { inner, batches } = syncInner();
+      const { lifecycle, pagehide } = fakeLifecycle();
+      const { write } = setup(inner, { lifecycle, limits: { maxBatchSize: 10 } });
+
+      write("a", "b", "c");
+      pagehide();
+      expect(batches).toEqual([["a", "b", "c"]]);
+    });
+
+    it("drains on a visibilitychange to hidden", () => {
+      const { inner, batches } = syncInner();
+      const { lifecycle, hide } = fakeLifecycle();
+      const { write } = setup(inner, { lifecycle });
+
+      write("a");
+      hide();
+      expect(batches).toEqual([["a"]]);
+    });
+
+    it("aborts the interval timer", async () => {
+      const { inner, batches } = syncInner();
+      const { lifecycle, pagehide } = fakeLifecycle();
+      const { write, time } = setup(inner, { lifecycle, limits: { scheduleDelayMs: 100 } });
+
+      write("a");
+      expect(time.pendingSleeps).toBe(1);
+      pagehide();
+      await tick();
+      expect(time.pendingSleeps).toBe(0);
+      await time.advance(100);
+      expect(batches).toEqual([["a"]]);
+    });
+
+    it("does nothing when it fires again with nothing buffered", () => {
+      const { inner, batches } = syncInner();
+      const { lifecycle, hide, pagehide } = fakeLifecycle();
+      const { write } = setup(inner, { lifecycle });
+
+      write("a", "b");
+      hide();
+      pagehide();
+      expect(batches).toEqual([["a", "b"]]);
+    });
+
+    it("hands the buffer on without waiting for the batch in flight, which still starts the next", async () => {
+      const { inner, batches, settlers } = deferredInner();
+      const { lifecycle, pagehide } = fakeLifecycle();
+      const { write } = setup(inner, { lifecycle, limits: { maxBatchSize: 2 } });
+
+      write("a", "b", "c");
+      expect(batches).toEqual([["a", "b"]]);
+      pagehide();
+      expect(batches).toEqual([["a", "b"], ["c"]]);
+
+      settlers[1]?.resolve();
+      await tick();
+      write("d", "e");
+      expect(batches).toHaveLength(2);
+
+      settlers[0]?.resolve();
+      await tick();
+      expect(batches).toEqual([["a", "b"], ["c"], ["d", "e"]]);
+    });
+
+    it("drops a rejected hide batch as failed", async () => {
+      const { inner, settlers } = deferredInner();
+      const { lifecycle, pagehide } = fakeLifecycle();
+      const { write, sink, drops } = setup(inner, { lifecycle });
+      const boom = new Error("boom");
+
+      write("a", "b");
+      pagehide();
+      settlers[0]?.reject(boom);
+      expect(await sink.flush()).toBe(true);
+      expect(drops).toEqual([["failed", 2, boom]]);
+    });
+
+    it("drops a hide batch whose writeBatch throws as failed", async () => {
+      const boom = new Error("boom");
+      const { lifecycle, pagehide } = fakeLifecycle();
+      const { write, sink, drops } = setup(
+        {
+          writeBatch: () => {
+            throw boom;
+          },
+        },
+        { lifecycle },
+      );
+
+      write("a");
+      expect(() => pagehide()).not.toThrow();
+      expect(drops).toEqual([["failed", 1, boom]]);
+      expect(await sink.flush()).toBe(true);
+    });
+
+    it("makes flush wait on the hide batch, whether it settles before or after the batch in flight", async () => {
+      const { inner, settlers } = deferredInner();
+      const { lifecycle, pagehide } = fakeLifecycle();
+      const { write, sink } = setup(inner, { lifecycle, limits: { maxBatchSize: 2 } });
+
+      write("a", "b", "c");
+      pagehide();
+      let first: boolean | undefined;
+      void sink.flush(10_000).then((value) => {
+        first = value;
+      });
+      settlers[1]?.resolve();
+      await tick();
+      expect(first).toBeUndefined();
+      settlers[0]?.resolve();
+      await tick();
+      expect(first).toBe(true);
+
+      write("d", "e", "f");
+      pagehide();
+      let second: boolean | undefined;
+      void sink.flush(10_000).then((value) => {
+        second = value;
+      });
+      settlers[2]?.resolve();
+      await tick();
+      expect(second).toBeUndefined();
+      settlers[3]?.resolve();
+      await tick();
+      expect(second).toBe(true);
+    });
+
+    it("makes close wait on the hide batch", async () => {
+      const { inner, settlers } = deferredInner();
+      const { lifecycle, pagehide } = fakeLifecycle();
+      const { write, sink } = setup(inner, { lifecycle });
+
+      write("a");
+      pagehide();
+      let closed: boolean | undefined;
+      void sink.close(10_000).then((value) => {
+        closed = value;
+      });
+      await tick();
+      expect(closed).toBeUndefined();
+      settlers[0]?.resolve();
+      await tick();
+      expect(closed).toBe(true);
+    });
+
+    it("still drains at once while close waits, and removes its listeners once close has drained", async () => {
+      const { inner, batches, settlers } = deferredInner();
+      const { lifecycle, pagehide, count } = fakeLifecycle();
+      const { write, sink } = setup(inner, { lifecycle, limits: { maxBatchSize: 2 } });
+      expect(count()).toBe(2);
+
+      write("a", "b", "c", "d", "e");
+      const closed = sink.close(10_000);
+      pagehide();
+      expect(batches).toEqual([
+        ["a", "b"],
+        ["c", "d", "e"],
+      ]);
+      expect(count()).toBe(2);
+
+      settlers[0]?.resolve();
+      settlers[1]?.resolve();
+      expect(await closed).toBe(true);
+      expect(count()).toBe(0);
+    });
+
+    it("removes its listeners when close times out", async () => {
+      const { inner } = deferredInner();
+      const { lifecycle, count } = fakeLifecycle();
+      const { write, sink, time } = setup(inner, { lifecycle });
+
+      write("a");
+      const closed = sink.close(50);
+      await time.advance(50);
+      expect(await closed).toBe(false);
+      expect(count()).toBe(0);
+    });
+
+    it("watches nothing for lifecycle: {}", async () => {
+      const { inner, batches } = syncInner();
+      const { write, sink } = setup(inner, { lifecycle: {} });
+
+      write("a");
+      globalThis.dispatchEvent?.(new Event("pagehide"));
+      expect(batches).toEqual([]);
+      expect(await sink.close()).toBe(true);
+      expect(batches).toEqual([["a"]]);
+    });
+
+    it("watches the lifecycle targets detected on globalThis by default", async () => {
+      const { inner, batches } = syncInner();
+      const time = createManualTime(1_000);
+      const sink = createBatchingSink(inner, { scheduler: time.scheduler });
+      const detected = detectLifecycleTargets().window !== undefined;
+
+      try {
+        sink.write(aRecord("a"), aResource("svc"));
+        globalThis.dispatchEvent?.(new Event("pagehide"));
+        expect(batches).toEqual(detected ? [["a"]] : []);
+      } finally {
+        expect(await sink.close()).toBe(true);
+      }
+      expect(batches).toEqual([["a"]]);
     });
   });
 });

@@ -1,7 +1,7 @@
 import { type Scheduler, systemScheduler } from "@vipengele/ts-core-common";
 import type { Resource } from "@vipengele/ts-core-common/scope";
 import { DEFAULT_DELIVERY_LIMITS, type DeliveryLimits } from "../delivery/delivery";
-import type { LifecycleTargets } from "../delivery/unload";
+import { detectLifecycleTargets, type LifecycleTargets, watchUnload } from "../delivery/unload";
 import { LoggingConfigError } from "./config-error";
 import type { LogRecord, Sink } from "./record";
 
@@ -133,7 +133,7 @@ function resolveLimits(given: Partial<BatchingSinkLimits> = {}): BatchingSinkLim
  * The state machine behind {@link createBatchingSink}: the buffer, the one batch in flight, the
  * interval timer and the drains. Every hand-off to the inner goes through `#handOff`, which tracks
  * it in `#outstanding` until it settles, so `flush` and `close` wait on any batch, whichever path
- * started it.
+ * started it, the page-hide batch included.
  */
 class BatchingQueue {
   readonly #inner: BatchSink;
@@ -153,12 +153,15 @@ class BatchingQueue {
   #closed = false;
   #closing: Promise<boolean> | undefined;
   readonly #idleWaiters = new Set<() => void>();
+  /** Removes the page-hide listeners. */
+  readonly #unwatch: () => void;
 
   constructor(inner: BatchSink | Sink, options: BatchingSinkOptions) {
     this.#limits = resolveLimits(options.limits);
     this.#scheduler = options.scheduler ?? systemScheduler;
     this.#onDrop = options.onDrop ?? noop;
     this.#inner = toBatchSink(inner, (count, error) => this.#drop("failed", count, error));
+    this.#unwatch = watchUnload(options.lifecycle ?? detectLifecycleTargets(), () => this.#hideDrain());
   }
 
   write(record: LogRecord, resource: Resource): void {
@@ -182,6 +185,9 @@ class BatchingQueue {
     if (this.#closing === undefined) {
       this.#closed = true;
       this.#closing = this.#drain(timeoutMs).then((drained) => {
+        // The listeners stay through the drain: a page hidden while close waits on an async batch
+        // still hands the rest of the buffer on at once rather than batch by batch.
+        this.#unwatch();
         if (!drained) {
           this.#abandon();
         }
@@ -231,6 +237,21 @@ class BatchingQueue {
       this.#pump();
       this.#notifyIdle();
     });
+  }
+
+  /**
+   * Hands the whole buffer on at once as the page hides, without waiting for a batch in flight, and
+   * aborts the interval timer: a hidden page may never run another task. The hide batch does not
+   * hold `#inFlight`, so the batch in flight, if any, still starts the next one when it settles. A
+   * no-op with nothing buffered, so the `pagehide` after the `visibilitychange` it drained for does
+   * nothing.
+   */
+  #hideDrain(): void {
+    if (this.#buffer.length === 0) {
+      return;
+    }
+    this.#stopTimer();
+    void this.#handOff(this.#buffer.splice(0)).then(() => this.#notifyIdle());
   }
 
   /**
@@ -331,8 +352,10 @@ class BatchingQueue {
 /**
  * Wraps `inner` in a {@link BatchingSink}: records are buffered and handed to `inner.writeBatch`, or
  * replayed to a plain Sink's `write`, once `maxBatchSize` are buffered, once `scheduleDelayMs` has
- * passed since the buffer stopped being empty, and on `flush` and `close`. One batch is in flight at
- * a time, and a returned Promise is awaited before the next starts. Nothing is retried, and the
+ * passed since the buffer stopped being empty, on `flush` and `close`, and as the page hides. One
+ * batch is in flight at a time, and a returned Promise is awaited before the next starts; page hide
+ * is the exception, handing the whole buffer on at once, so an async inner may see batches out of
+ * order across it. The `pagehide` and `visibilitychange` listeners are removed once `close` has drained. Nothing is retried, and the
  * inner's own `flush` and `close` are never called: its lifecycle belongs to the caller. `write`
  * returns at once and never throws. Throws a `LoggingConfigError` for an invalid option.
  */
