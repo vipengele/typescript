@@ -700,6 +700,62 @@ describe("settle", () => {
   });
 });
 
+describe("idle", () => {
+  test("resolves with no write pending", async () => {
+    const { queue } = create();
+
+    await expect(queue.idle()).resolves.toBeUndefined();
+  });
+
+  test("resolves only once the pending writes finish", async () => {
+    const store = new FakeStore();
+    const put = deferred<PutOutcome>();
+    store.put = () => put.promise;
+    const { queue } = create({ store: Promise.resolve(store) });
+    await settled();
+    let done = false;
+
+    queue.undelivered(entries("a"), "closed");
+    void queue.idle().then(() => {
+      done = true;
+    });
+    await settled();
+    expect(done).toBe(false);
+
+    put.resolve("stored");
+    await settled();
+    expect(done).toBe(true);
+  });
+
+  test("also waits for a write issued while it waits", async () => {
+    const store = new FakeStore();
+    const first = deferred<PutOutcome>();
+    const second = deferred<PutOutcome>();
+    let calls = 0;
+    store.put = () => {
+      calls += 1;
+      return calls === 1 ? first.promise : second.promise;
+    };
+    const { queue } = create({ store: Promise.resolve(store) });
+    await settled();
+    let done = false;
+
+    queue.undelivered(entries("a"), "closed");
+    void queue.idle().then(() => {
+      done = true;
+    });
+    queue.undelivered(entries("b"), "closed");
+    await settled();
+    first.resolve("stored");
+    await settled();
+    expect(done).toBe(false);
+
+    second.resolve("stored");
+    await settled();
+    expect(done).toBe(true);
+  });
+});
+
 describe("isOffline", () => {
   test("is true when the navigator reports onLine false", () => {
     expect(create({ navigator: { onLine: false } }).queue.isOffline()).toBe(true);

@@ -78,9 +78,23 @@ export function openOffline<T>(options: OfflineWrapperOptions<T>): Offline<T> | 
 
 function noop(): void {}
 
+function closeStore(store: OfflineStore | undefined): void {
+  store?.close();
+}
+
+/** Closes the store once every pending save has its outcome, without waiting for that here. */
+function closeWhenIdle<T>(offline: Offline<T>): void {
+  void offline.queue
+    .idle()
+    .then(() => offline.store)
+    .then(closeStore);
+}
+
 /**
  * Runs the delivery's `flush` or `close`, then waits for the offline saves with what is left of the
- * timeout. A closing drain also stops the queue and, once its saves are done, closes the store.
+ * timeout. A closing drain also stops the queue and closes the store: before resolving when the saves
+ * finish within the timeout, and otherwise once they finish, after resolving `false`. Closing the
+ * store while a save still waits for it would fail that save and report its entries as dropped.
  */
 export async function drain<T>(
   run: (timeoutMs: number | undefined) => Promise<boolean>,
@@ -100,7 +114,9 @@ export async function drain<T>(
   if (closing) {
     offline.queue.close();
     if (settled) {
-      (await offline.store)?.close();
+      closeStore(await offline.store);
+    } else {
+      closeWhenIdle(offline);
     }
   }
   return delivered && settled;

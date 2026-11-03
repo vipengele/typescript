@@ -147,8 +147,19 @@ export class OfflineQueue<T> {
   }
 
   /**
+   * Resolves once every write issued so far, and every write issued while it waits, has its
+   * outcome. Has no timeout, never waits for a replay, and never rejects.
+   */
+  async idle(): Promise<void> {
+    while (this.#writes.size > 0) {
+      await Promise.all(this.#writes);
+    }
+  }
+
+  /**
    * Stops listening for `online`, aborts the replay request in flight and starts no further
-   * replay. Writes still go to the store, which the queue does not close.
+   * replay. Writes still go to the store, which the queue does not close: its owner closes it once
+   * `idle` resolves.
    */
   close(): void {
     if (this.#closed) {

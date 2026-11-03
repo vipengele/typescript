@@ -67,7 +67,9 @@ reported with its original reason if the open fails.
 ## close waits for writes
 
 The wrapper's `close(timeoutMs)` awaits the core's `close`, then awaits pending store writes within
-what is left of the same timeout, and resolves `false` if a write is still pending. `flush` waits for
+what is left of the same timeout, and resolves `false` if a write is still pending. The store is
+closed once the pending writes finish, so a timed-out `close` does not leave the connection open, and
+no write still waiting for the store fails because it closed first. `flush` waits for
 writes the same way and never for a replay. On `pagehide` the write of the unload-budget remainder is
 started but cannot be awaited, so it is best-effort.
 

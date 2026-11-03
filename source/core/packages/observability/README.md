@@ -553,7 +553,8 @@ await otlp.close();
   save on `pagehide` is best effort, since the browser may end the page before the write
   completes. With the option on, a drop is reported after the save's outcome rather than
   synchronously, and `flush` and `close` also wait for pending saves, resolving `false` if they
-  outlast the timeout. `lifecycle: {}` watches no window, so it also turns off the `online`
+  outlast the timeout; a `close` that resolves `false` still closes the database once those saves
+  finish. `lifecycle: {}` watches no window, so it also turns off the `online`
   replay. With the option off, no database is opened. An invalid `maxEntries` or `maxBytes` throws
   `LoggingConfigError`.
 - **No `sendBeacon`** — a beacon cannot set request headers, so an authenticated collector would

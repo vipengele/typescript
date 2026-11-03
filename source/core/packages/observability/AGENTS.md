@@ -119,7 +119,7 @@ Run commands from `source/core` (`pnpm build`, `pnpm type-check`, `pnpm test`, `
   keys, keep-oldest) and `offline-queue.ts` (`OfflineQueue`, which persists the encoded body of a batch
   given to the delivery's internal `undelivered` hook and replays on open and `online`). The wrapper
   keys the queue `${url}|logs` or `${url}|errors`, passes `globalThis.navigator` and the lifecycle
-  window itself, and on `close` closes the store after `settle`. The queue never closes the store.
+  window itself, and on `close` closes the store once its saves finish, after `settle` or, when `close` times out, later. The queue never closes the store.
   `wrapper.ts` holds what both wrappers share (`openOffline`, `offlineProblem`, `drain`), generic over
   the item type; each wrapper passes its key suffix and `encode` and throws its own config error from
   the problem text. `fake-indexed-db.test-support.ts` is the in-memory `IDBFactory` their tests use; `*.test-support.ts` files are test-only, excluded from the build and from coverage.

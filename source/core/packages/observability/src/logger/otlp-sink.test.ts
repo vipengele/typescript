@@ -119,6 +119,31 @@ async function idle() {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
+/** A hanging `memoryIndexedDb` whose transactions started so far complete on `complete()`. */
+function heldIndexedDb() {
+  const db = memoryIndexedDb([], true);
+  const started: IDBTransaction[] = [];
+  const factory = {
+    open: (name: string) => {
+      const request = db.factory.open(name);
+      const database = request.result;
+      const transaction = database.transaction.bind(database);
+      database.transaction = ((...args: Parameters<IDBDatabase["transaction"]>) => {
+        const begun = transaction(...args);
+        started.push(begun);
+        return begun;
+      }) as IDBDatabase["transaction"];
+      return request;
+    },
+  } as unknown as IDBFactory;
+  const complete = () => {
+    for (const begun of started.splice(0)) {
+      begun.oncomplete?.(new Event("complete"));
+    }
+  };
+  return { factory, closed: db.closed, complete };
+}
+
 function fixture(overrides: Partial<OtlpLogSinkOptions> = {}, status = 200) {
   const t = setup(overrides, status);
   return { ...t, emit: () => t.provider.logger("x").info("m") };
@@ -251,8 +276,8 @@ describe("createOtlpLogSink offline", () => {
     expect(await flushing).toBe(false);
   });
 
-  it("resolves false from close while a save is pending and leaves the store open", async () => {
-    const db = memoryIndexedDb([], true);
+  it("resolves false from close while a save is pending and closes the store once the save completes", async () => {
+    const db = heldIndexedDb();
     const t = fixture({ limits: failing, offline: { indexedDB: db.factory } }, 503);
 
     t.emit();
@@ -262,6 +287,10 @@ describe("createOtlpLogSink offline", () => {
 
     expect(await closing).toBe(false);
     expect(db.closed()).toBe(0);
+
+    db.complete();
+    await idle();
+    expect(db.closed()).toBe(1);
   });
 
   it.each([{ maxEntries: 0 }, { maxEntries: 1.5 }, { maxBytes: 0 }, { maxBytes: Number.NaN }])(
