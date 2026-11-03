@@ -1,6 +1,7 @@
 import type { Clock, Scheduler } from "@vipengele/ts-core-common";
 import type { Resource } from "@vipengele/ts-core-common/scope";
 import { createDelivery, type DeliveryFetch, type DeliveryLimits, type DropReason } from "../delivery/delivery";
+import { deliveryOptionsProblem } from "../delivery/options";
 import type { LifecycleTargets } from "../delivery/unload";
 import { encodeLogs } from "../otlp/encode-logs";
 import { LoggingConfigError } from "./config-error";
@@ -40,36 +41,6 @@ export type OtlpLogSink = Sink & {
   close(timeoutMs?: number): Promise<boolean>;
 };
 
-const INTEGER_LIMITS = ["maxQueueSize", "maxBatchSize", "maxAttempts"] as const;
-const DURATION_LIMITS = ["scheduleDelayMs", "attemptTimeoutMs", "flushTimeoutMs"] as const;
-
-function validateUrl(url: unknown): void {
-  let parsed: URL;
-  try {
-    parsed = new URL(url as string);
-  } catch {
-    throw new LoggingConfigError(`createOtlpLogSink expects url to be an absolute http or https URL, got ${String(url)}`);
-  }
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    throw new LoggingConfigError(`createOtlpLogSink expects url to use http or https, got ${parsed.protocol}`);
-  }
-}
-
-function validateLimits(limits: Partial<DeliveryLimits>): void {
-  for (const name of INTEGER_LIMITS) {
-    const value = limits[name];
-    if (value !== undefined && (!Number.isInteger(value) || value < 1)) {
-      throw new LoggingConfigError(`createOtlpLogSink expects ${name} to be an integer of at least 1, got ${value}`);
-    }
-  }
-  for (const name of DURATION_LIMITS) {
-    const value = limits[name];
-    if (value !== undefined && (!Number.isFinite(value) || value <= 0)) {
-      throw new LoggingConfigError(`createOtlpLogSink expects ${name} to be positive and finite, got ${value}`);
-    }
-  }
-}
-
 /**
  * Creates a {@link Sink} that buffers each record and exports batches to an OTLP/HTTP logs endpoint
  * as JSON, retrying transient failures. `write` returns at once and never throws. The sink adds no
@@ -78,8 +49,10 @@ function validateLimits(limits: Partial<DeliveryLimits>): void {
  * Throws a `LoggingConfigError` when `url` is not an absolute http or https URL or a limit is invalid.
  */
 export function createOtlpLogSink(options: OtlpLogSinkOptions): OtlpLogSink {
-  validateUrl(options.url);
-  validateLimits(options.limits ?? {});
+  const problem = deliveryOptionsProblem(options.url, options.limits);
+  if (problem !== undefined) {
+    throw new LoggingConfigError(`createOtlpLogSink expects ${problem}`);
+  }
   const delivery = createDelivery<LogRecord>({
     url: options.url,
     headers: options.headers,

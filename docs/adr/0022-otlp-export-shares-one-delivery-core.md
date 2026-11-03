@@ -27,11 +27,44 @@ as well, so a collector receives exceptions and logs on one endpoint, in the map
 `0007-the-log-record-and-error-event-data-model.md` and `0008-opentelemetry-is-an-opt-in-entry-point.md`.
 The encoder in `src/otlp/` has one entry point per source type. Records are grouped by Resource value,
 then by category, which becomes the instrumentation scope; the schema URL is OpenTelemetry semantic
-conventions 1.37. Only `src/otlp/encode-logs.ts` knows the shape of a `LogRecord`.
+conventions 1.37. Only `src/otlp/encode-logs.ts` knows the shape of a `LogRecord`, and only
+`src/otlp/encode-error-events.ts` knows the shape of an `ErrorEvent`. The Resource grouping
+(`resource.ts`) and the exception attributes (`exception.ts`) are shared by both and know neither.
 
-The delivery core is built for two sources, logs and error events, though only logs use it so far.
-Fixing the error Transport's wire format in the same decision keeps the core from being fitted to
-logs alone.
+The delivery core serves two sources, logs and error events, and both use it. Fixing the error
+Transport's wire format in the same decision keeps the core from being fitted to logs alone.
+
+## Error Events on the wire
+
+`createOtlpTransport` of `./errors` sends each Error Event as one OTLP log record:
+
+- The instrumentation scope is the one fixed name `@vipengele/ts-core-observability/errors`, and
+  records are grouped by Resource value as logs are.
+- `time` is `timeUnixNano`, the observed time is `observedTimeUnixNano`, `level` is the severity, and
+  `trace` is `traceId`, `spanId` and `flags`.
+- The body is the captured message. Without one, it is the outermost exception's message, or its type
+  when the message is empty; with neither it is empty, which the pipeline never produces. A message
+  wins when both are present.
+- `id` is `log.record.uid`. The `exception` is `exception.type` and `exception.message` for the
+  outermost link, and `exception.stacktrace` for the whole chain, its links marked `Caused by:` and
+  `Suppressed:`.
+- `mechanism` is `vipengele.mechanism.handled` (a bool), `vipengele.mechanism.source` and, when
+  present, `vipengele.mechanism.data` (a kvlist). `fingerprint`, when present, is
+  `vipengele.fingerprint`, a string array.
+- The event's own attributes come first, and any key the encoder writes wins over a clashing event
+  attribute, since OTLP attribute keys are unique.
+- `eventName` is not set: semantic conventions 1.37 record an exception on a log record through its
+  `exception.*` attributes, and a captured message is not a named event.
+
+Not mapped: the parsed `frames`, `inApp` included, as structure, because the stacktrace text carries
+them; and the per-link fields of the chain beyond type, message and stack, such as `code`. Error
+Events carry no breadcrumbs, since the trail is the Scope chain (`0006-one-scope-tree-shared-by-the-logger-and-the-reporter.md`), so there is nothing to map.
+
+The 64 KiB keepalive budget is per document, and each queue draws on it alone. An app using both the
+log sink and the transport sends two unload keepalive requests, and the browser may refuse whichever
+comes second. One coordinator across queues would need a package-level registry behind a
+`globalThis` slot (`agentic/rules/shared-realm-state-lives-behind-a-globalthis-symbol-slot.md`),
+which is not built.
 
 ## The exporter Sink owns its lifecycle
 
@@ -42,9 +75,9 @@ awaits `close()`. The sink installs no Node exit hook, because a hook cannot awa
 
 ## Location
 
-Only the public sink lives in `src/logger/`. The encoder (`src/otlp/`) and the core (`src/delivery/`)
-are internal and unexported, because `./errors` will import them and `./logger` and `./errors` never
-import each other.
+The public sink lives in `src/logger/` and the public transport in `src/errors/transports/`. The
+encoder (`src/otlp/`) and the core (`src/delivery/`) are internal and unexported, because both entry
+points import them and `./logger` and `./errors` never import each other.
 
 ## Unload sends one keepalive request
 

@@ -24,4 +24,6 @@ export { createHttpTransport } from "./transports/http-transport";
 export { HttpTransportConfigError, isHttpTransportConfigError } from "./transports/http-transport-config-error";
 export type { DropReason } from "./transports/http/queue";
 export type { HttpTransportOptions } from "./transports/http/options";
+export { createOtlpTransport } from "./transports/otlp-transport";
+export type { OtlpTransport, OtlpTransportDropReason, OtlpTransportOptions } from "./transports/otlp-transport";
 export { createTestTransport } from "./transports/test-transport";

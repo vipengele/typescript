@@ -589,12 +589,14 @@ present; the same `Resource` the environment gate read is the one `send` receive
 everything accepted so far is delivered or dropped, `false` if `timeoutMs` elapses first; `close`
 flushes, then turns every later `send` into a no-op.
 
-**Three built-in transports:**
+**Four built-in transports:**
 
 - `createConsoleTransport(options?)` writes each event to `console` (or `options.console`, for a
   test double): `error` and `fatal` go to `console.error`, `warn` to `console.warn`, `info` to
   `console.info`, and `trace` and `debug` to `console.debug`.
-- `createHttpTransport(options)` POSTs events as JSON in batches; see HTTP transport below.
+- `createHttpTransport(options)` POSTs events as JSON in batches; see [HTTP transport](#http-transport).
+- `createOtlpTransport(options)` exports events to an OpenTelemetry collector as OTLP log records; see
+  [OTLP transport](#otlp-transport).
 - `createTestTransport()` records every sent event on its `events` array, and the `Resource` it was
   sent with on `resources` at the same index, instead of delivering it anywhere, for asserting what a
   reporter sent without a network or a console. Its `clear()` empties both without affecting
@@ -680,6 +682,57 @@ checked with `isHttpTransportConfigError`) when the transport is created. `send`
   process alive. A CLI or serverless handler awaits `close()` before it exits. After a 429 with a
   long `Retry-After`, `globalHandlers`' `flush(2000)` resolves `false`, since the wait is not cut
   short.
+
+### OTLP transport
+
+`createOtlpTransport` is a `Transport` that batches Error Events and exports them to an
+OpenTelemetry collector as OTLP/HTTP JSON log records (`/v1/logs`), retrying transient failures. It
+runs on the same delivery core and encoder as the logger's `createOtlpLogSink` (ADR-0022), so a
+collector receives exceptions and logs on one endpoint:
+
+```ts
+import { createOtlpTransport, createReporter } from "@vipengele/ts-core-observability/errors";
+
+const otlp = createOtlpTransport({
+  url: "https://collector.example.com/v1/logs",
+  headers: () => ({ authorization: `Bearer ${readToken()}` }),
+  onDrop: (reason, count) => metrics.increment(`error.drop.${reason}`, count),
+});
+
+const reporter = createReporter((builder) => builder.transport(otlp));
+
+// Before a Node process exits:
+await reporter.close();
+```
+
+`send` returns at once and never throws. The transport installs no exit hook: `reporter.close()`
+drains it, and so does `globalHandlers` under an `"exit"` policy, which waits up to its own
+`flushTimeoutMs` (2000 ms by default) for the transport to flush before exiting; see
+[Global handlers](#global-handlers).
+
+- **Options** — the same as the log sink's: `url`, `headers`, `fetch`, `clock`, `scheduler`,
+  `lifecycle`, `limits` and `onDrop`, with the same defaults, retry rules, drop reasons, flush and
+  close behaviour, and page-unload `keepalive` request; see [OTLP export](#otlp-export). `clock`
+  stamps each event's observed time. A bad `url` or limit throws `ReporterConfigError`.
+- **Mapping** — an Error Event becomes one OTLP log record under the instrumentation scope
+  `@vipengele/ts-core-observability/errors`, grouped by Resource:
+  - `time` is `timeUnixNano`, the moment the transport received the event is
+    `observedTimeUnixNano`, `level` is the severity, and `trace` is `traceId`, `spanId` and `flags`.
+  - The body is the captured message; otherwise the outermost exception's message, or its type when
+    the message is empty.
+  - `id` is `log.record.uid`. The outermost exception is `exception.type` and `exception.message`,
+    and the whole `cause`/`errors` chain is `exception.stacktrace`, its links marked `Caused by:` and
+    `Suppressed:`.
+  - `mechanism` is `vipengele.mechanism.handled`, `vipengele.mechanism.source` and, when present,
+    `vipengele.mechanism.data`; `fingerprint`, when present, is `vipengele.fingerprint`, a string
+    array.
+  - The event's own attributes come first. A key the encoder writes wins over an event attribute of
+    the same name.
+- **Not mapped** — the parsed stack frames are not sent as structure; the stacktrace text carries
+  them. A chain link's fields beyond type, message and stack, such as `code`, are not sent.
+- **Two keepalive requests** — the 64 KiB keepalive budget is per document. A page that uses both
+  the log sink and this transport sends two requests on unload, and the browser may refuse the
+  second.
 
 ### Pipeline control
 

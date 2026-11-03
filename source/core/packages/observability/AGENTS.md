@@ -96,24 +96,31 @@ Run commands from `source/core` (`pnpm build`, `pnpm type-check`, `pnpm test`, `
 - `write` has no try/catch: a throwing formatter or console reaches `onSinkError`. `time` is the
   epoch-ms number in JSON lines and UTC ISO text in the ANSI and browser formatters (ADR-0018).
 
-## OTLP export (`src/logger/otlp-sink.ts`, `src/otlp/`, `src/delivery/`)
+## OTLP export (`src/logger/otlp-sink.ts`, `src/errors/transports/otlp-transport.ts`, `src/otlp/`, `src/delivery/`)
 
-- `createOtlpLogSink` (`logger/otlp-sink.ts`) is the only public piece, exported from `./logger`.
-  `OtlpLogSink` is `Sink & { flush, close }`; the sink owns its lifecycle, and the `Sink` interface,
-  the provider and the `vipengele.logger.provider.v1` slot protocol are unchanged (ADR-0022). It
-  validates `url` and `limits` (`LoggingConfigError`) and adds no Node exit hook: the host awaits
-  `close()`.
+- `createOtlpLogSink` (`logger/otlp-sink.ts`, exported from `./logger`) returns an `OtlpLogSink`,
+  `Sink & { flush, close }`. The sink owns its lifecycle, and the `Sink` interface, the provider and
+  the `vipengele.logger.provider.v1` slot protocol are unchanged (ADR-0022). It validates `url` and
+  `limits` (`LoggingConfigError`) and adds no Node exit hook: the host awaits `close()`.
+- `createOtlpTransport` (`errors/transports/otlp-transport.ts`, exported from `./errors`) returns an
+  `OtlpTransport`, a `Transport` with `flush` and `close`. It validates `url` and `limits`
+  (`ReporterConfigError`) and adds no exit hook: the reporter's `close()` or a `globalHandlers`
+  `"exit"` policy drains it. These two are the only public pieces.
 - `src/delivery/` is internal and unexported. `delivery.ts` is payload-generic: it queues items with
   their Resource, batches, retries, flushes, closes and reports drops (`queue-full`, `rejected`,
   `retries-exhausted`, `closed`, `unload-budget`), and takes an `encode` function for the body.
-  `retry-policy.ts` classifies failures (network error, timeout, 429, 502, 503, 504; `Retry-After`)
-  over `@vipengele/ts-core-resilience`. `unload.ts` watches `pagehide` and `visibilitychange` and
-  drains one `keepalive` fetch within 64 KiB; there is no `sendBeacon` (ADR-0022).
+  `options.ts` holds the `url` and limit checks both wrappers share; each throws its own config
+  error. `retry-policy.ts` classifies failures (network error, timeout, 429, 502, 503, 504;
+  `Retry-After`) over `@vipengele/ts-core-resilience`.
+  `unload.ts` watches `pagehide` and `visibilitychange` and drains one `keepalive` fetch within
+  64 KiB; there is no `sendBeacon` (ADR-0022).
 - `src/otlp/` is internal and unexported: the OTLP/HTTP JSON encoder. `encode-logs.ts` is the only
-  file that knows `LogRecord`; `any-value.ts`, `severity.ts` and `time.ts` stay free of it.
-- `src/delivery/` and `src/otlp/` are entry-point-neutral: any entry point may import them, the HTTP
-  error Transport of `./errors` included (ADR-0010, ADR-0022), so `delivery/` stays free of
-  `LogRecord` and of anything from `./logger`, and `./logger` and `./errors` never import each other.
+  file that knows `LogRecord` and `encode-error-events.ts` the only one that knows `ErrorEvent`;
+  `resource.ts` (Resource grouping), `exception.ts` (`exception.*` attributes), `any-value.ts`,
+  `severity.ts` and `time.ts` know neither.
+- `src/delivery/` and `src/otlp/` are entry-point-neutral: any entry point may import them, the OTLP
+  Transport of `./errors` included (ADR-0010, ADR-0022), so `delivery/` stays free of `LogRecord`,
+  `ErrorEvent` and anything from `./logger`, and `./logger` and `./errors` never import each other.
 
 ## Shared redaction helpers (`src/redaction.ts`)
 
