@@ -547,6 +547,87 @@ await otlp.close();
   attributes, the error chain, and `trace` as the trace and span ids. Records group by Resource, then
   by category, which becomes the instrumentation scope.
 
+### Batching
+
+`createBatchingSink` wraps a destination and hands it records in batches, so a target that can take
+many records at once (an HTTP endpoint, a file append) pays one call per batch:
+
+```ts
+import { type BatchEntry, createBatchingSink, Logging } from "@vipengele/ts-core-observability/logger";
+
+const batching = createBatchingSink(
+  {
+    async writeBatch(entries: readonly BatchEntry[]) {
+      await archive.append(entries.map(({ record, resource }) => ({ ...record, resource })));
+    },
+  },
+  {
+    limits: { maxBatchSize: 200, scheduleDelayMs: 2000 },
+    onDrop: (reason, count, error) => metrics.increment(`log.drop.${reason}`, count),
+  },
+);
+
+Logging.configure((b) => b.addSink(batching));
+
+// Before a Node process exits:
+await batching.close();
+```
+
+`write` returns at once and never throws. The sink is a `BatchingSink`, a `Sink` with `flush` and
+`close` added; the `Sink` interface and the provider are unchanged (ADR-0023). A bad option throws
+`LoggingConfigError`.
+
+- **Wrapping a `BatchSink`** — a `BatchSink` is `{ writeBatch(entries) }`, returning `void` or a
+  `Promise`. Each `BatchEntry` is `{ record, resource }` and carries the Resource its record was
+  written under, which can differ from entry to entry. One batch is in flight at a time: a returned
+  Promise is awaited before the next batch starts. When the inner has `writeBatch` it is used, even
+  if it also has `write`.
+- **Wrapping a plain `Sink`** — its `write` is called for each record of a batch, in order. A record
+  whose `write` throws is dropped alone as `failed` (count 1) and the rest of the batch continues.
+- **When a batch is handed on** — once `maxBatchSize` records are buffered, once `scheduleDelayMs`
+  has passed since the buffer stopped being empty, on `flush` and `close`, and on page hide. No timer
+  runs while the buffer is empty, so an idle Node process is never kept alive.
+- **Options** — `limits`, `onDrop`, `scheduler` (the interval timer and the flush deadline, the
+  system scheduler by default), `lifecycle` and `flushOnExit`, each described here. `limits`
+  overrides the defaults below; the sizes are integers of at least 1 and the delay is positive and
+  finite.
+
+| `limits` key | Default | Meaning |
+|--------------|---------|---------|
+| `maxQueueSize` | 2048 | Records buffered before a new one is dropped as `queue-full` |
+| `maxBatchSize` | 512 | Records per batch; a full buffer starts a batch at once |
+| `scheduleDelayMs` | 5000 | How long a non-empty buffer waits before a batch starts |
+
+- **Drops** — `onDrop(reason, count, error?)` reports records that never reached the inner, and a
+  throw from it is swallowed. `queue-full`: a write arrived with the buffer full, and the new record
+  is dropped. `failed`: `writeBatch` threw or rejected, with the batch size as `count` and the error
+  as `error`; a plain Sink's throw counts 1. `closed`: a write after `close`, or records still
+  buffered when `close` timed out. The type is `BatchDropReason`, and the limits are
+  `BatchingSinkLimits`.
+- **No retry** — a failed batch is dropped. Retry belongs to the destination.
+- **Flush and close** — `flush(timeoutMs?)` hands on everything buffered and resolves `true` once
+  it all settled, `false` when the timeout elapses first; the timeout defaults to 2 s. `close`
+  flushes, drops what is left as `closed`, and turns every later `write` into a drop. It is
+  idempotent. Neither rejects.
+- **Page hide** — on by default: on `pagehide`, or `visibilitychange` to `hidden`, the whole buffer
+  goes to the inner at once, without waiting for a batch in flight, because a hidden page may never
+  run another task. `lifecycle` takes the targets to watch in place of those found on `globalThis`,
+  and `lifecycle: {}` turns the watch off. An asynchronous inner may therefore see batches out of
+  order across a page hide. No byte budget is applied; a destination that sends over the network owns
+  its own `keepalive` budget.
+- **Process exit** — `flushOnExit: true` adds one process `exit` listener that hands the buffer to
+  the inner once, synchronously. It defaults to `false`, is ignored without a message in a browser,
+  and is removed by `close`. An `exit` listener cannot await, so only a synchronous `writeBatch`
+  completes inside it, and entries already in an asynchronous batch in flight get no further
+  handling.
+- **An asynchronous destination** — it needs `await batching.close()` before the process exits,
+  since the `exit` listener cannot wait for it.
+- **The inner's lifecycle** — the wrapper never calls the inner's `flush` or `close`. The application
+  that created the inner flushes and closes it, after `await batching.close()`.
+
+The names `BatchSink`, `BatchEntry`, `BatchingSink`, `BatchingSinkOptions`, `BatchingSinkLimits` and
+`BatchDropReason` are exported from `./logger` as types.
+
 ## `./errors`
 
 `createReporter` builds a `Reporter` from a builder, starting from the defaults — no transport,
