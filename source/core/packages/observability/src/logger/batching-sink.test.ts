@@ -303,6 +303,29 @@ describe("createBatchingSink", () => {
     expect(time.pendingSleeps).toBe(0);
   });
 
+  it("hands an overdue backlog larger than maxBatchSize on batch by batch as each settles, arming no timer", async () => {
+    const { inner, batches, settlers } = deferredInner();
+    const { write, time } = setup(inner, { limits: { maxBatchSize: 2, scheduleDelayMs: 100 } });
+
+    write("a", "b", "c", "d", "e");
+    expect(batches).toEqual([["a", "b"]]);
+    await time.advance(100);
+    expect(time.pendingSleeps).toBe(0);
+
+    settlers[0]?.resolve();
+    await tick();
+    expect(batches).toEqual([
+      ["a", "b"],
+      ["c", "d"],
+    ]);
+    expect(time.pendingSleeps).toBe(0);
+
+    settlers[1]?.resolve();
+    await tick();
+    expect(batches).toEqual([["a", "b"], ["c", "d"], ["e"]]);
+    expect(time.pendingSleeps).toBe(0);
+  });
+
   it("waits a whole interval again for records written after the overdue ones went on", async () => {
     const { inner, batches, settlers } = deferredInner();
     const { write, time } = setup(inner, { limits: { maxBatchSize: 2, scheduleDelayMs: 100 } });

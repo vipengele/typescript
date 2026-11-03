@@ -174,7 +174,11 @@ class BatchingQueue {
   readonly #outstanding = new Set<Promise<void>>();
   /** Aborts the pending interval sleep; set while one is pending. */
   #timer: AbortController | undefined;
-  /** The interval elapsed while a batch was in flight; the buffer is overdue and goes on as that batch settles. */
+  /**
+   * The interval elapsed while a batch was in flight; the buffer is overdue and goes on as that batch
+   * settles. Held until the buffer empties, so a backlog larger than `maxBatchSize` goes on batch by
+   * batch, each as the previous settles, with no further interval.
+   */
   #timerDue = false;
   /** How many `flush`/`close` calls are waiting; while above 0, anything buffered is handed on without waiting for the timer. */
   #draining = 0;
@@ -261,12 +265,16 @@ class BatchingQueue {
     return tracked;
   }
 
-  /** Takes the oldest batch from the buffer and hands it on, the one batch in flight; the next starts once it settles. */
+  /**
+   * Takes the oldest batch from the buffer and hands it on, the one batch in flight; the next starts
+   * once it settles. The overdue mark survives only while records are left behind, so records written
+   * after the whole overdue backlog has gone on wait a full interval of their own.
+   */
   #startBatch(): void {
     this.#stopTimer();
-    this.#timerDue = false;
     this.#inFlight = true;
     const entries = this.#buffer.splice(0, this.#limits.maxBatchSize);
+    this.#timerDue &&= this.#buffer.length > 0;
     void this.#handOff(entries).then(() => {
       this.#inFlight = false;
       this.#pump();
