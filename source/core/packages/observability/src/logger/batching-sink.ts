@@ -174,6 +174,8 @@ class BatchingQueue {
   readonly #outstanding = new Set<Promise<void>>();
   /** Aborts the pending interval sleep; set while one is pending. */
   #timer: AbortController | undefined;
+  /** The interval elapsed while a batch was in flight; the buffer is overdue and goes on as that batch settles. */
+  #timerDue = false;
   /** How many `flush`/`close` calls are waiting; while above 0, anything buffered is handed on without waiting for the timer. */
   #draining = 0;
   #closed = false;
@@ -262,6 +264,7 @@ class BatchingQueue {
   /** Takes the oldest batch from the buffer and hands it on, the one batch in flight; the next starts once it settles. */
   #startBatch(): void {
     this.#stopTimer();
+    this.#timerDue = false;
     this.#inFlight = true;
     const entries = this.#buffer.splice(0, this.#limits.maxBatchSize);
     void this.#handOff(entries).then(() => {
@@ -283,6 +286,7 @@ class BatchingQueue {
       return;
     }
     this.#stopTimer();
+    this.#timerDue = false;
     void this.#handOff(this.#buffer.splice(0)).then(() => this.#notifyIdle());
   }
 
@@ -301,17 +305,18 @@ class BatchingQueue {
   }
 
   /**
-   * Starts a batch when none is in flight and either a full batch is buffered or a drain is
-   * waiting. Otherwise, with records buffered and no drain waiting, makes sure the interval timer
-   * is armed.
+   * Starts a batch when none is in flight and either a full batch is buffered, or records are
+   * buffered and the interval has elapsed or a drain is waiting. Otherwise, with records buffered,
+   * no drain waiting and the interval not already elapsed, makes sure the interval timer is armed.
    */
   #pump(): void {
     const buffered = this.#buffer.length;
-    if (!this.#inFlight && (buffered >= this.#limits.maxBatchSize || (this.#draining > 0 && buffered > 0))) {
+    const due = buffered > 0 && (this.#timerDue || this.#draining > 0);
+    if (!this.#inFlight && (buffered >= this.#limits.maxBatchSize || due)) {
       this.#startBatch();
       return;
     }
-    if (buffered > 0 && this.#draining === 0) {
+    if (buffered > 0 && this.#draining === 0 && !this.#timerDue) {
       this.#startTimer();
     }
   }
@@ -332,8 +337,9 @@ class BatchingQueue {
   }
 
   /**
-   * Starts a batch when the interval passes with none in flight. With one in flight, the batch's
-   * settling re-arms the timer for whatever it leaves buffered.
+   * Marks the buffer overdue and starts a batch when none is in flight. With one in flight, the mark
+   * holds until that batch settles, which then hands the overdue records on at once rather than
+   * waiting a further interval.
    */
   #timerElapsed(controller: AbortController): void {
     // A sleep that resolved before stopTimer aborted it still runs this continuation; it must not
@@ -342,9 +348,8 @@ class BatchingQueue {
       return;
     }
     this.#timer = undefined;
-    if (!this.#inFlight) {
-      this.#startBatch();
-    }
+    this.#timerDue = true;
+    this.#pump();
   }
 
   #notifyIdle(): void {
@@ -360,6 +365,7 @@ class BatchingQueue {
   /** Drops every buffered record as `"closed"`; a batch already handed on is left to settle. */
   #abandon(): void {
     this.#stopTimer();
+    this.#timerDue = false;
     const buffered = this.#buffer.splice(0).length;
     if (buffered > 0) {
       this.#drop("closed", buffered);

@@ -287,7 +287,7 @@ describe("createBatchingSink", () => {
     expect(batches).toHaveLength(2);
   });
 
-  it("re-arms the timer for what a settled batch leaves buffered", async () => {
+  it("hands records the timer came due for during a batch in flight on as that batch settles", async () => {
     const { inner, batches, settlers } = deferredInner();
     const { write, time } = setup(inner, { limits: { maxBatchSize: 2, scheduleDelayMs: 100 } });
 
@@ -299,10 +299,44 @@ describe("createBatchingSink", () => {
 
     settlers[0]?.resolve();
     await tick();
+    expect(batches).toEqual([["a", "b"], ["c"]]);
+    expect(time.pendingSleeps).toBe(0);
+  });
+
+  it("waits a whole interval again for records written after the overdue ones went on", async () => {
+    const { inner, batches, settlers } = deferredInner();
+    const { write, time } = setup(inner, { limits: { maxBatchSize: 2, scheduleDelayMs: 100 } });
+
+    write("a", "b", "c");
+    await time.advance(100);
+    settlers[0]?.resolve();
+    await tick();
+    expect(batches).toEqual([["a", "b"], ["c"]]);
+
+    write("d");
     expect(time.pendingSleeps).toBe(1);
+    settlers[1]?.resolve();
+    await tick();
+    expect(batches).toHaveLength(2);
     await time.advance(99);
-    expect(batches).toHaveLength(1);
+    expect(batches).toHaveLength(2);
     await time.advance(1);
+    expect(batches).toEqual([["a", "b"], ["c"], ["d"]]);
+  });
+
+  it("keeps the overdue mark through a flush that times out, handing the rest on as the batch settles", async () => {
+    const { inner, batches, settlers } = deferredInner();
+    const { sink, write, time } = setup(inner, { limits: { maxBatchSize: 2, scheduleDelayMs: 100 } });
+
+    write("a", "b", "c");
+    await time.advance(100);
+    const flushed = sink.flush(10);
+    await time.advance(10);
+    expect(await flushed).toBe(false);
+    expect(time.pendingSleeps).toBe(0);
+
+    settlers[0]?.resolve();
+    await tick();
     expect(batches).toEqual([["a", "b"], ["c"]]);
   });
 
