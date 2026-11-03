@@ -244,6 +244,25 @@ describe("encodeErrorEvents", () => {
     expect(logRecord.attributes.filter(({ value }) => JSON.stringify(value).includes("mine"))).toEqual([]);
   });
 
+  test("keeps an event attribute whose key the encoder does not write for that event", () => {
+    const logRecord = encodeOne(
+      event({
+        mechanism: { handled: true, source: "capture" },
+        attributes: {
+          "exception.type": "mine",
+          "vipengele.mechanism.data": "mine",
+          "vipengele.fingerprint": "mine",
+        },
+      }),
+    );
+
+    expect(logRecord.attributes.filter(({ value }) => JSON.stringify(value).includes("mine"))).toEqual([
+      { key: "exception.type", value: { stringValue: "mine" } },
+      { key: "vipengele.mechanism.data", value: { stringValue: "mine" } },
+      { key: "vipengele.fingerprint", value: { stringValue: "mine" } },
+    ]);
+  });
+
   test("encodes no entries as an empty request", () => {
     expect(decode(encodeErrorEvents([]))).toEqual({ resourceLogs: [] });
   });

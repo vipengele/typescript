@@ -1,7 +1,7 @@
 import type { Resource } from "@vipengele/ts-core-common/scope";
 import type { ErrorEvent, ExceptionRecord } from "../errors/event";
 import { type AnyValue, type KeyValue, toAnyValue, toKeyValues } from "./any-value";
-import { EXCEPTION_KEYS, exceptionAttributes } from "./exception";
+import { exceptionAttributes } from "./exception";
 import { groupByResource, resourceAttributes, SEMCONV_SCHEMA_URL } from "./resource";
 import { severityOf } from "./severity";
 import { millisToNanoString } from "./time";
@@ -22,16 +22,6 @@ const MECHANISM_HANDLED = "vipengele.mechanism.handled";
 const MECHANISM_SOURCE = "vipengele.mechanism.source";
 const MECHANISM_DATA = "vipengele.mechanism.data";
 const FINGERPRINT = "vipengele.fingerprint";
-
-/** Every attribute key the encoder writes itself; an event attribute of the same name is left out. */
-const RESERVED_KEYS: ReadonlySet<string> = new Set([
-  ...EXCEPTION_KEYS,
-  RECORD_UID,
-  MECHANISM_HANDLED,
-  MECHANISM_SOURCE,
-  MECHANISM_DATA,
-  FINGERPRINT,
-]);
 
 /**
  * Encodes `entries` as an OTLP/HTTP JSON `ExportLogsServiceRequest` body (ADR-0007, ADR-0022), one
@@ -90,19 +80,20 @@ function exceptionBody(exception: ExceptionRecord): string {
 
 /**
  * The event's own attributes, then `log.record.uid`, the `exception.*` keys when it carries an
- * exception, the mechanism and the fingerprint. The encoder's keys win: an event attribute of the
- * same name is left out, since OTLP attribute keys are unique.
+ * exception, the mechanism and the fingerprint. A key the encoder writes for this event wins: an
+ * event attribute of the same name is left out, since OTLP attribute keys are unique. A key it does
+ * not write for this event, such as `exception.type` on a captured message, keeps the event's value.
  */
 function eventAttributes(event: ErrorEvent): KeyValue[] {
-  const own = toKeyValues(event.attributes).filter(({ key }) => !RESERVED_KEYS.has(key));
   const exception = event.exception === undefined ? [] : exceptionAttributes(event.exception);
-  return [
-    ...own,
+  const written: KeyValue[] = [
     { key: RECORD_UID, value: { stringValue: event.id } },
     ...exception,
     ...mechanismAttributes(event.mechanism),
     ...fingerprintAttributes(event.fingerprint),
   ];
+  const writtenKeys = new Set(written.map(({ key }) => key));
+  return [...toKeyValues(event.attributes).filter(({ key }) => !writtenKeys.has(key)), ...written];
 }
 
 function mechanismAttributes(mechanism: ErrorEvent["mechanism"]): KeyValue[] {
