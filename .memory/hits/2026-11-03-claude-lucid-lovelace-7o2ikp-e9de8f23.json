@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "notes": {
+    "global-handlers-node-path-uses-local-process-type": {
+      "count": 1,
+      "first": "2026-11-03T13:03:34.161541887Z",
+      "last": "2026-11-03T13:03:34.161541887Z"
+    },
+    "umbrella-reexports-names-individually": {
+      "count": 1,
+      "first": "2026-11-03T13:03:34.185458824Z",
+      "last": "2026-11-03T13:03:34.185458824Z"
+    }
+  }
+}

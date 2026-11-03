@@ -8,6 +8,7 @@ saw:
   - docs/adr/0022-otlp-export-shares-one-delivery-core.md
   - docs/adr/0022-http-json-transport-delivery.md
   - docs/adr/0012-global-handlers-are-an-integration-with-a-required-exit-policy.md
+  - source/core/packages/observability/src/logger/batching-sink.ts
 ---
 Found while planning issue #34 (batching sink wrapper).
 
@@ -19,9 +20,11 @@ Found while planning issue #34 (batching sink wrapper).
   function; `visibilitychange` counts only when `visibilityState === "hidden"`, both events usually
   fire so the handler must be idempotent), and the injected-`Scheduler` timer pattern
   (`delivery.ts:353`, `scheduler.sleep(ms, signal).then(...)`, no `unref`).
-- No shipped code registers a Node exit hook for logs/transport: ADR-0022 (both) say hooks are
-  synchronous so cannot await the network, and the exit policy is the application's. Only the
-  `globalHandlers` integration uses `process.on` (flush timeout 2000 ms). Page-hide watching IS
+- The OTLP sink and transport register no Node exit hook: ADR-0022 (both) say hooks are
+  synchronous so cannot await the network, and the exit policy is the application's. The
+  `globalHandlers` integration uses `process.on` (flush timeout 2000 ms), and `createBatchingSink`
+  (`logger/batching-sink.ts`) adds one `exit` listener only when `flushOnExit: true` and
+  `detectCapability("processExitHooks")` holds (ADR-0023). Page-hide watching IS
   automatic in the OTLP sink (detected when `lifecycle` omitted, `{}` disables) and is removed on
   `flush`/`close`-completion via `#unwatch`.
 - Sink contract: `write(record, resource): void`, returned promises ignored, sync throws to
