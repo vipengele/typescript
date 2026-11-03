@@ -145,6 +145,6 @@ describe("createOtlpTransport", () => {
 
     expect(isReporterConfigError(thrown)).toBe(true);
     expect(isLoggingConfigError(thrown)).toBe(false);
-    expect((thrown as Error).message).toMatch(new RegExp(`^createOtlpTransport expects ${Object.keys(limits)[0]}`));
+    expect((thrown as Error).message.startsWith(`createOtlpTransport expects ${Object.keys(limits)[0]} `)).toBe(true);
   });
 });
