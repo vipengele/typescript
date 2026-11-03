@@ -174,7 +174,7 @@ Run commands from `source/core` (`pnpm build`, `pnpm type-check`, `pnpm test`, `
   `requestTimeoutMs`, retries through `@vipengele/ts-core-resilience/retry`), `classify.ts` (retry or
   reject by status) and `retry-after.ts`.
 - One request is in flight at a time; every wait runs on the injected `Scheduler`. Nothing is `unref`'d and
-  no exit hook is registered, so a process that must not lose events awaits `close()` (ADR-0022).
+  no exit hook is registered, so a process that must not lose events awaits `close()` (ADR-0023).
 - Every undeliverable event goes to `onDrop(events, reason)`; with no `onDrop` it warns once per reason.
   `send` never throws, a throwing `onDrop` is swallowed.
 - `@vipengele/ts-core-resilience` is a `workspace:*` dependency of this package.

@@ -612,7 +612,7 @@ resolve `true` in that case, since there is nothing to wait on.
 ### HTTP transport
 
 `createHttpTransport` delivers events to an endpoint as batched JSON, retrying what can be retried
-and bounding what it holds (ADR-0022):
+and bounding what it holds (ADR-0023):
 
 ```ts
 import { createHttpTransport, createReporter } from "@vipengele/ts-core-observability/errors";

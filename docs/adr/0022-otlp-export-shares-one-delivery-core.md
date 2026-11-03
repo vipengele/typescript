@@ -88,8 +88,8 @@ bisecting, as one `fetch` with `keepalive` and the configured headers. The remai
 There is no `sendBeacon` fallback: a beacon cannot set headers, so an authenticated collector refuses
 it, and a cross-origin beacon with an `application/json` body is blocked by the browser.
 
-The offline IndexedDB queue of ADR-0010 is deferred. A queue added later attaches through `onDrop`,
-which reports every dropped item, without a change to the core's contract.
+The offline IndexedDB queue of ADR-0010 attaches through an internal undelivered hook of the core, not
+through the public `onDrop`, which reports counts only (`0024-offline-queue-persists-encoded-bodies.md`).
 
 ## Considered options
 
