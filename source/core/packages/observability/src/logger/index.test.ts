@@ -9,6 +9,7 @@ test("the entry point exports exactly the public runtime surface", () => {
     "LoggingConfigError",
     "ansiFormatter",
     "browserFormatter",
+    "createBatchingSink",
     "createConsoleSink",
     // biome-ignore lint/security/noSecrets: an export name, flagged only for its entropy
     "createOtlpLogSink",
