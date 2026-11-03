@@ -1,5 +1,9 @@
 # The Transport contract is fire-and-forget; durable delivery belongs to the HTTP transport
 
+This is amended by `0022-otlp-export-shares-one-delivery-core.md`: the HTTP Transport's wire format is
+OTLP/HTTP JSON, `navigator.sendBeacon` is not used on unload (a `keepalive` fetch is sent instead),
+and the offline IndexedDB queue is deferred.
+
 A Transport is three methods:
 
 ```ts

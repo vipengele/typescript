@@ -68,7 +68,9 @@ Error Event, Scope, Breadcrumb, Transport) before naming things.
     `LogRecord` (attributes normalized, errors through `serializeError`, both redacted with
     `secretKeys` unless the builder's `redaction` says otherwise; the active OpenTelemetry span rides along as `trace`, which json-lines writes as `trace_id`/`span_id`) and write it with the Resource to
     every `Sink` the builder's `addSink` added (`createConsoleSink` prints them; `createTestSink`
-    records them with their Resource and offers `find` and `clear`), `clock` supplying `time`. Attributes may be a thunk
+    records them with their Resource and offers `find` and `clear`; `createOtlpLogSink` exports
+    them as OTLP/HTTP JSON, batched, retried over `@vipengele/ts-core-resilience` and drained by
+    its `flush`/`close`, ADR-0022), `clock` supplying `time`. Attributes may be a thunk
     (`AttributesThunk`), given to a call or to `with`, run once per record after the level and sink
     checks, or once per bound logger; a throw or non-record result gives `{}` (ADR-0019). Log Processors
     (`addProcessor` for every sink, `addSink(sink, { processors })` for one, `redactionProcessor`)
