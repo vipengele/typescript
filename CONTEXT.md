@@ -104,6 +104,17 @@ _Avoid_: tracing (vipengele records no spans), context (see Scope's own _Avoid_)
 Where Log Records go: the console, a stream, a buffer, an exporter. A logger configuration may
 hold several.
 
+**Batch Sink**:
+A destination that takes many Log Records at once, each with the Resource it was written under. A
+Batching Sink feeds one; on its own it is not a Sink.
+_Avoid_: bulk sink, exporter
+
+**Batching Sink**:
+A Sink that holds Log Records and hands them on in batches — when enough have gathered, when an
+interval passes, when asked to flush or close, and when the page hides or, if chosen, the process
+exits. It drops a record only when it cannot hold or hand it on.
+_Avoid_: buffered sink, async sink, queue
+
 **Formatter**:
 Turns a Log Record into what a console prints. It decides how a record looks, never where it goes:
 the Sink that holds it picks the destination.
