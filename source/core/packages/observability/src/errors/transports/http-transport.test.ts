@@ -674,6 +674,27 @@ describe("createHttpTransport offline", () => {
     expect(drops).toEqual([{ messages: ["b"], reason: "offline-full" }]);
   });
 
+  it("reports a body held past the bounds before the store opens to onDrop after send returns", async () => {
+    const time = createManualTime();
+    const unopened = { open: () => ({}) } as unknown as IDBFactory;
+    const { fetch } = bodyFetch(503);
+    const { transport, drops } = setup(time, {
+      fetch,
+      maxAttempts: 1,
+      maxBatchEvents: 1,
+      ...offline({ indexedDB: unopened, maxEntries: 1 }),
+    });
+
+    transport.send(anEvent("a"), resource);
+    transport.send(anEvent("b"), resource);
+    expect(drops).toEqual([]);
+
+    await time.advance(1000);
+    await settleNow();
+
+    expect(drops).toEqual([{ messages: ["b"], reason: "offline-full" }]);
+  });
+
   it("reports the events themselves with their own reason when the store cannot be opened", async () => {
     const time = createManualTime();
     const { fetch } = bodyFetch(503);

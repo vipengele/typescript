@@ -270,12 +270,26 @@ describe("saveBody", () => {
     expect(refused).toEqual([reason]);
   });
 
-  test("tells the listener of a body held past the bounds before the store opens, at once", () => {
+  test("tells the listener of a body held past the bounds before the store opens, after the call returns", async () => {
     const { refused, save } = saving({ store: new Promise(() => {}), limits: { maxEntries: 1, maxBytes: 1000 } });
 
     save("a", 1);
     save("b", 1);
+    expect(refused).toEqual([]);
 
+    await Promise.resolve();
+
+    expect(refused).toEqual(["offline-full"]);
+  });
+
+  test("settles only once a report for a body held past the bounds has been delivered", async () => {
+    const { queue, refused, save } = saving({ store: new Promise(() => {}), limits: { maxEntries: 0, maxBytes: 1000 } });
+
+    save("a", 1);
+    const settling = queue.settle(1000);
+
+    expect(refused).toEqual([]);
+    expect(await settling).toBe(true);
     expect(refused).toEqual(["offline-full"]);
   });
 
@@ -377,6 +391,9 @@ describe("before the store opens", () => {
     queue.undelivered(entries("a"), "closed");
     queue.undelivered(entries("b"), "closed");
     queue.undelivered(entries("c", "d"), "closed");
+    expect(drops).toEqual([]);
+
+    await Promise.resolve();
 
     expect(drops).toEqual([["offline-full", 2]]);
   });
@@ -388,6 +405,7 @@ describe("before the store opens", () => {
     queue.undelivered(entries("a"), "closed");
     queue.undelivered(entries("é"), "closed");
     queue.undelivered(entries("b"), "closed");
+    await Promise.resolve();
 
     // `["a"]` is 5 bytes and `["é"]` 6, so the second write already passes 10.
     expect(drops).toEqual([["offline-full", 1]]);

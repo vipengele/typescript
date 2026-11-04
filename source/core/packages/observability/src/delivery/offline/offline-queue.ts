@@ -233,7 +233,9 @@ export class OfflineQueue<T> {
 
   #save(body: string, count: number, reason: UndeliveredReason, report: (reason: OfflineDropReason) => void): void {
     if (!this.#opened && !this.#hold(body)) {
-      report("offline-full");
+      // Reported from a tracked microtask, so `settle` and `idle` wait for it and the caller's own
+      // code after `undelivered` or `saveBody` runs first.
+      this.#track(Promise.resolve().then(() => report("offline-full")));
       return;
     }
     const record: NewStoredBody = { key: this.#options.key, body, count, storedAt: this.#clock() };
