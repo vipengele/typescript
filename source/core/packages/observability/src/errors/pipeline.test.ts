@@ -51,7 +51,23 @@ function aReporter() {
   return { transport, reporter: createReporter((b) => b.transport(transport)) };
 }
 
+const REGISTRY_SLOT = Symbol.for("opentelemetry.js.api.1");
+const SPAN_KEY = Symbol.for("OpenTelemetry Context Key SPAN");
+// biome-ignore lint/security/noSecrets: the W3C Trace Context example trace id, flagged only for its entropy
+const TRACE_ID = "4bf92f3577b34da6a3ce929d0e0e4736";
+const SPAN_ID = "00f067aa0ba902b7";
+const otelRegistry = globalThis as unknown as Record<symbol, unknown>;
+
+/** Registers a fake OpenTelemetry API whose active context holds a span with these ids. */
+function activateSpan(): void {
+  const span = { spanContext: () => ({ traceId: TRACE_ID, spanId: SPAN_ID, traceFlags: 1 }) };
+  otelRegistry[REGISTRY_SLOT] = {
+    context: { active: () => ({ getValue: (key: symbol) => (key === SPAN_KEY ? span : undefined) }) },
+  };
+}
+
 afterEach(() => {
+  delete otelRegistry[REGISTRY_SLOT];
   realmRoot[ATTRIBUTES] = originalAttributes;
   vi.restoreAllMocks();
 });
@@ -1081,5 +1097,76 @@ describe("the rate limit", () => {
     reporter.captureMessage("second");
 
     expect(clock).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("the active trace in an event", () => {
+  const TRACE = { traceId: TRACE_ID, spanId: SPAN_ID, flags: 1 };
+
+  it("carries the span active at capture as trace", () => {
+    activateSpan();
+    const { transport, reporter } = aReporter();
+
+    reporter.captureException(new Error("boom"));
+    reporter.captureMessage("hello");
+
+    expect(transport.events.map((event) => event.trace)).toEqual([TRACE, TRACE]);
+  });
+
+  it("has no trace key outside a span", () => {
+    const { transport, reporter } = aReporter();
+
+    reporter.captureMessage("hello");
+
+    expect("trace" in onlyEvent(transport.events)).toBe(false);
+  });
+
+  it("hands processors the trace and keeps a valid one a processor returns", () => {
+    activateSpan();
+    const seen: unknown[] = [];
+    const transport = createTestTransport();
+    const reporter = createReporter((b) =>
+      b.transport(transport).addProcessor((event) => {
+        seen.push(event.trace);
+        return { ...event, trace: { traceId: TRACE_ID.toUpperCase(), spanId: SPAN_ID, flags: 0 } };
+      }),
+    );
+
+    reporter.captureMessage("hello");
+
+    expect(seen).toEqual([TRACE]);
+    expect(onlyEvent(transport.events).trace).toEqual({ traceId: TRACE_ID.toUpperCase(), spanId: SPAN_ID, flags: 0 });
+  });
+
+  const mangled: [string, unknown][] = [
+    ["a non-hex traceId", { traceId: "z".repeat(32), spanId: SPAN_ID, flags: 1 }],
+    ["an all-zero traceId", { traceId: "0".repeat(32), spanId: SPAN_ID, flags: 1 }],
+    ["a spanId of the wrong length", { traceId: TRACE_ID, spanId: "00f067aa", flags: 1 }],
+    ["a non-integer flags", { traceId: TRACE_ID, spanId: SPAN_ID, flags: 1.5 }],
+    ["a string", "trace"],
+    ["null", null],
+  ];
+
+  it.each(mangled)("drops %s a processor sets, and keeps the event", (_name, trace) => {
+    const transport = createTestTransport();
+    const reporter = createReporter((b) => b.transport(transport).addProcessor((event) => ({ ...event, trace }) as unknown as ErrorEvent));
+
+    reporter.captureMessage("hello");
+
+    const event = onlyEvent(transport.events);
+    expect(event.message).toBe("hello");
+    expect("trace" in event).toBe(false);
+  });
+
+  it("drops a mangled trace beforeSend sets, and keeps the event", () => {
+    activateSpan();
+    const transport = createTestTransport();
+    const reporter = createReporter((b) =>
+      b.transport(transport).beforeSend((event) => ({ ...event, trace: { ...TRACE, traceId: "short" } })),
+    );
+
+    reporter.captureException(new Error("boom"));
+
+    expect("trace" in onlyEvent(transport.events)).toBe(false);
   });
 });

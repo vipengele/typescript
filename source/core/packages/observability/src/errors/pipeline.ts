@@ -14,6 +14,7 @@ import { type Resource, Scope, snapshot } from "@vipengele/ts-core-common/scope"
 import type { RedactionPolicy } from "@vipengele/ts-core-redaction";
 import { mergeAttributes } from "../merge-attributes";
 import { type RedactionSetting, redactAttributes, redactError } from "../redaction";
+import { isSpanId, isTraceFlags, isTraceId, type LogTrace, readActiveTrace } from "../trace";
 import { createDeduper, type Deduper } from "./dedupe";
 import type { ErrorEvent, ExceptionRecord, Mechanism, StackFrame } from "./event";
 import { createEventId } from "./event-id";
@@ -180,9 +181,11 @@ function isIgnored(payload: NormalizedPayload, pipeline: Pipeline): boolean {
  * Stage 5: stamps what the pipeline knows about the event rather than what the caller handed over.
  * The scope's attributes lie beneath the call's own, the call's winning on a shared key, each side
  * normalized on its own so a large scope chain cannot push a call attribute past the breadth bound.
+ * The span active at capture time rides along as `trace`; no active span leaves the key out.
  */
 function enrich(payload: NormalizedPayload, input: CaptureInput, mechanism: Mechanism, id: string, pipeline: Pipeline): ErrorEvent {
-  return {
+  const trace = readActiveTrace();
+  const event: ErrorEvent = {
     id,
     time: pipeline.clock(),
     level: toLevel(input.level),
@@ -190,6 +193,10 @@ function enrich(payload: NormalizedPayload, input: CaptureInput, mechanism: Mech
     mechanism,
     attributes: mergeAttributes([scopeAttributes(pipeline), normalizeAttributes(input.attributes ?? {}, pipeline.limits)]),
   };
+  if (trace !== undefined) {
+    event.trace = trace;
+  }
+  return event;
 }
 
 /**
@@ -245,6 +252,25 @@ function redactEvent(event: ErrorEvent, policy: RedactionPolicy): ErrorEvent {
     redacted.mechanism = { ...event.mechanism, data: redactAttributes(event.mechanism.data, policy) };
   }
   return redacted;
+}
+
+/**
+ * `event` with a `trace` that is not an object with valid hex ids and integer flags removed, and a
+ * valid one rebuilt from the {@link LogTrace} fields alone. The event is kept either way: a
+ * malformed `trace` must never reach a transport, but the error it describes is still worth sending.
+ */
+function validateTrace(event: ErrorEvent): ErrorEvent {
+  const { trace, ...rest } = event;
+  if (trace === undefined) {
+    return event;
+  }
+  if (typeof trace === "object" && trace !== null) {
+    const { traceId, spanId, flags } = trace as Partial<LogTrace>;
+    if (isTraceId(traceId) && isSpanId(spanId) && isTraceFlags(flags)) {
+      return { ...rest, trace: { traceId, spanId, flags } };
+    }
+  }
+  return rest;
 }
 
 /** `processor`'s result for `event`, or `null` when it drops the event or returns anything but an object. */
@@ -312,10 +338,11 @@ function run(input: CaptureInput, mechanism: Mechanism, id: string, pipeline: Pi
   if (sent === null) {
     return;
   }
+  const checked = validateTrace(sent);
   const bypass = mechanism.handled === false;
   // Stage 9: deduplication. An event that passes here is the one the next event is compared with,
   // whether or not the rate limit then drops it.
-  if (!bypass && state.deduper?.isDuplicate(sent) === true) {
+  if (!bypass && state.deduper?.isDuplicate(checked) === true) {
     return;
   }
   // Stage 10: the rate limit.
@@ -323,7 +350,7 @@ function run(input: CaptureInput, mechanism: Mechanism, id: string, pipeline: Pi
     return;
   }
   // Stage 11: the transport.
-  pipeline.transport?.send(sent, resource);
+  pipeline.transport?.send(checked, resource);
 }
 
 /**
