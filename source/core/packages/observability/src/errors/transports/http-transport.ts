@@ -72,6 +72,7 @@ export function createHttpTransport(options: HttpTransportOptions): Transport {
     url: resolved.url,
     headers: resolved.headers,
     contentType: resolved.contentType,
+    requestTimeoutMs: resolved.requestTimeoutMs,
     classify: replayClass,
     fetch: resolved.fetch,
     clock: resolved.clock,

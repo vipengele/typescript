@@ -27,6 +27,8 @@ export interface OfflineWrapperOptions<T> {
   readonly url: string;
   readonly headers?: OfflineHeaders;
   readonly contentType?: string;
+  /** Bounds each replay attempt; see `OfflineQueueOptions.requestTimeoutMs`. */
+  readonly requestTimeoutMs?: number;
   readonly classify?: (status: number) => StatusClass;
   readonly fetch?: DeliveryFetch;
   readonly clock?: Clock;
@@ -69,6 +71,7 @@ export function openOffline<T>(options: OfflineWrapperOptions<T>): Offline<T> | 
     url: options.url,
     headers: options.headers,
     contentType: options.contentType,
+    requestTimeoutMs: options.requestTimeoutMs,
     classify: options.classify,
     fetch: options.fetch,
     store,

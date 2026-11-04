@@ -36,6 +36,12 @@ export interface OfflineQueueOptions<T> {
   readonly headers?: OfflineHeaders;
   /** The `content-type` every replay is sent with; defaults to `application/json`. */
   readonly contentType?: string;
+  /**
+   * Bounds each replay attempt, the `headers` thunk and the request together, timed on `scheduler`. An
+   * attempt with no response by then is aborted and keeps its body, so a headers thunk or a fetch that
+   * never settles cannot hold a replay. Omitted, an attempt ends only by settling or by `close`.
+   */
+  readonly requestTimeoutMs?: number;
   /** Reads a replay's status; defaults to the OTLP/HTTP classification. A `"retryable"` status keeps the body. */
   readonly classify?: (status: number) => StatusClass;
   /** Defaults to `globalThis.fetch`, looked up at each replay request. */
@@ -88,6 +94,18 @@ function defaultFetch(url: string, init: DeliveryRequest): Promise<DeliveryRespo
   return globalThis.fetch(url, init);
 }
 
+/** Rejects with the reason once `signal` aborts, at once when it already has; never resolves. */
+function whenAborted(signal: AbortSignal): Promise<never> {
+  return new Promise((_resolve, reject) => {
+    const fail = (): void => reject(signal.reason);
+    if (signal.aborted) {
+      fail();
+    } else {
+      signal.addEventListener("abort", fail, { once: true });
+    }
+  });
+}
+
 /** The headers of one replay request: the configured ones, the thunk run and awaited once, and `content-type` last. */
 async function requestHeaders(headers: OfflineHeaders | undefined, contentType: string): Promise<Record<string, string>> {
   const configured = typeof headers === "function" ? await headers() : headers;
@@ -106,7 +124,10 @@ async function requestHeaders(headers: OfflineHeaders | undefined, contentType: 
  * Replay starts once the store opens and on each `online` event at `window`, and sends the saved
  * bodies oldest first, one request at a time; a replay already running is not started again. A
  * 2xx deletes the body, a status that is not retried deletes it and reports it `"rejected"`, and a
- * network error or a retryable status stops the replay and keeps it. A replay delivers at least
+ * network error or a retryable status stops the replay and keeps it. With `requestTimeoutMs`, an
+ * attempt (the headers read and the request) with no response by then is aborted and stops the
+ * replay too; `close` abandons a headers read still pending, so neither leaves a replay running
+ * for good. A replay delivers at least
  * once: a body sent but not yet deleted is sent again by the next replay.
  */
 export class OfflineQueue<T> {
@@ -313,15 +334,41 @@ export class OfflineQueue<T> {
     }
   }
 
-  /** One replay request. A throw from the `headers` thunk or from `fetch`, or a rejection, keeps the body. */
+  /**
+   * One replay request. A throw from the `headers` thunk or from `fetch`, or a rejection, keeps the
+   * body. `close` abandons a headers read still pending and aborts the `fetch`; `requestTimeoutMs`
+   * abandons the whole attempt, headers read and `fetch` alike, when no response has arrived by then.
+   */
   async #send(body: string): Promise<ReplayVerdict> {
     const doFetch = this.#fetch;
+    const attempt = new AbortController();
+    const expired = new AbortController();
+    const abortAttempt = (): void => attempt.abort();
+    const timer = new AbortController();
+    this.#abort.signal.addEventListener("abort", abortAttempt, { once: true });
+    if (this.#closed) {
+      abortAttempt();
+    }
+    const limit = this.#options.requestTimeoutMs;
+    if (limit !== undefined) {
+      // A cancelled sleep rejects, so only an elapsed one reaches the abort.
+      void this.#scheduler.sleep(limit, timer.signal).then(() => {
+        expired.abort();
+        abortAttempt();
+      }, noop);
+    }
     let response: DeliveryResponse;
     try {
-      const headers = await requestHeaders(this.#options.headers, this.#contentType);
-      response = await doFetch(this.#options.url, { method: "POST", headers, body, signal: this.#abort.signal });
+      const headers = await Promise.race([whenAborted(attempt.signal), requestHeaders(this.#options.headers, this.#contentType)]);
+      response = await Promise.race([
+        doFetch(this.#options.url, { method: "POST", headers, body, signal: attempt.signal }),
+        whenAborted(expired.signal),
+      ]);
     } catch {
       return "stop";
+    } finally {
+      timer.abort();
+      this.#abort.signal.removeEventListener("abort", abortAttempt);
     }
     response.body?.cancel().catch(noop);
     const verdict = this.#classify(response.status);

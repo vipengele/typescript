@@ -668,6 +668,132 @@ describe("replay", () => {
   });
 });
 
+describe("replay attempt bound", () => {
+  const never = () => new Promise<Record<string, string>>(() => {});
+
+  test("a headers thunk that never settles stops the replay at requestTimeoutMs, keeps the body and lets a later online replay", async () => {
+    const time = createManualTime();
+    const store = new FakeStore();
+    store.seed("one");
+    const window = new FakeWindow();
+    const { fetch, bodies } = scriptedFetch();
+    let calls = 0;
+    create({
+      store: Promise.resolve(store),
+      fetch,
+      window,
+      scheduler: time.scheduler,
+      requestTimeoutMs: 1000,
+      headers: () => (++calls === 1 ? never() : { "x-key": "k" }),
+    });
+    await settled();
+    expect(calls).toBe(1);
+
+    await time.advance(999);
+    window.fire("online");
+    await settled();
+    expect(calls).toBe(1);
+
+    await time.advance(1);
+    await settled();
+    expect(bodies).toEqual([]);
+    expect(store.bodies.map((body) => body.body)).toEqual(["one"]);
+    expect(time.pendingSleeps).toBe(0);
+
+    window.fire("online");
+    await settled();
+
+    expect(bodies).toEqual(["one"]);
+    expect(store.bodies).toEqual([]);
+  });
+
+  test("close unsticks a headers thunk that never settles when there is no timeout", async () => {
+    const store = new FakeStore();
+    store.seed("one");
+    const window = new FakeWindow();
+    const { fetch, requests } = manualFetch();
+    const { queue } = create({ store: Promise.resolve(store), fetch, window, headers: never });
+    await settled();
+
+    queue.close();
+    await settled();
+    window.fire("online");
+    await settled();
+
+    expect(requests).toEqual([]);
+    expect(store.bodies).toHaveLength(1);
+    expect(store.calls.filter((call) => call === "oldest")).toHaveLength(1);
+  });
+
+  test("a close that lands while the store is read abandons the attempt before the headers are read", async () => {
+    const store = new FakeStore();
+    store.seed("one");
+    const oldest = store.oldest.bind(store);
+    const read = deferred<void>();
+    store.oldest = async (key) => {
+      const record = await oldest(key);
+      await read.promise;
+      return record;
+    };
+    const { fetch, requests } = manualFetch();
+    const { queue } = create({ store: Promise.resolve(store), fetch });
+    await settled();
+
+    queue.close();
+    read.resolve();
+    await settled();
+
+    expect(requests).toEqual([]);
+    expect(store.bodies).toHaveLength(1);
+  });
+
+  test("aborts a fetch that has no response at requestTimeoutMs and keeps the body", async () => {
+    const time = createManualTime();
+    const store = new FakeStore();
+    store.seed("one", "two");
+    const { fetch, requests } = manualFetch();
+    create({ store: Promise.resolve(store), fetch, scheduler: time.scheduler, requestTimeoutMs: 500 });
+    await settled();
+    expect(requests[0]?.init.signal.aborted).toBe(false);
+
+    await time.advance(500);
+    await settled();
+
+    expect(requests[0]?.init.signal.aborted).toBe(true);
+    expect(requests).toHaveLength(1);
+    expect(store.bodies.map((body) => body.body)).toEqual(["one", "two"]);
+  });
+
+  test("stops the replay at requestTimeoutMs on a fetch that ignores its signal", async () => {
+    const time = createManualTime();
+    const store = new FakeStore();
+    store.seed("one");
+    const window = new FakeWindow();
+    const { fetch, requests } = manualFetch();
+    create({ store: Promise.resolve(store), fetch, window, scheduler: time.scheduler, requestTimeoutMs: 500 });
+    await settled();
+
+    await time.advance(500);
+    await settled();
+    window.fire("online");
+    await settled();
+
+    expect(requests).toHaveLength(2);
+  });
+
+  test("cancels the timer once the attempt settles", async () => {
+    const time = createManualTime();
+    const store = new FakeStore();
+    store.seed("one");
+    const { fetch } = scriptedFetch();
+    create({ store: Promise.resolve(store), fetch, scheduler: time.scheduler, requestTimeoutMs: 500 });
+    await settled();
+
+    expect(store.bodies).toEqual([]);
+    expect(time.pendingSleeps).toBe(0);
+  });
+});
+
 describe("close", () => {
   test("removes the online listener", async () => {
     const window = new FakeWindow();

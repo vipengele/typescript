@@ -743,6 +743,42 @@ describe("createHttpTransport offline", () => {
     expect(requests[0]?.headers).toEqual({ authorization: "Bearer x", "content-type": "text/plain" });
   });
 
+  it("gives up a replay whose async headers thunk hangs after requestTimeoutMs, so a later online replays", async () => {
+    const listeners = new Set<() => void>();
+    vi.stubGlobal("onpagehide", null);
+    vi.stubGlobal("addEventListener", (type: string, listener: () => void) => {
+      if (type === "online") {
+        listeners.add(listener);
+      }
+    });
+    vi.stubGlobal("removeEventListener", (_type: string, listener: () => void) => {
+      listeners.delete(listener);
+    });
+    const time = createManualTime();
+    const db = memoryIndexedDb([{ id: 1, key, body: "saved body", count: 2 }]);
+    const { fetch, requests } = bodyFetch(200);
+    let calls = 0;
+    setup(time, {
+      fetch,
+      requestTimeoutMs: 1000,
+      headers: () => (++calls === 1 ? new Promise<Record<string, string>>(() => {}) : Promise.resolve({ authorization: "Bearer x" })),
+      ...offline({ indexedDB: db.factory }),
+    });
+    await vi.waitFor(() => expect(calls).toBe(1));
+
+    await time.advance(1000);
+    await settleNow();
+    expect(requests).toEqual([]);
+    expect(db.rows).toHaveLength(1);
+
+    for (const listener of listeners) {
+      listener();
+    }
+
+    await vi.waitFor(() => expect(db.rows).toEqual([]));
+    expect(requests.map((request) => request.body)).toEqual(["saved body"]);
+  });
+
   it("reports a saved body the endpoint rejects on replay as rejected, with no events", async () => {
     const time = createManualTime();
     const db = memoryIndexedDb([{ id: 1, key, body: "saved body", count: 2 }]);
