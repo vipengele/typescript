@@ -74,7 +74,11 @@ Error Event, Scope, Breadcrumb, Transport) before naming things.
     hands records on in batches by size, interval, flush/close and page hide, with an opt-in
     `flushOnExit`, ADR-0023), `clock` supplying `time`. Attributes may be a thunk
     (`AttributesThunk`), given to a call or to `with`, run once per record after the level and sink
-    checks, or once per bound logger; a throw or non-record result gives `{}` (ADR-0019). Log Processors
+    checks, or once per bound logger; a throw or non-record result gives `{}` (ADR-0019). A category
+    can be sampled and rate-limited (`sample`, `rateLimit`, `random` on the builder; `;sample=`,
+    `;limit=`, `;upto=` modifiers in a spec string, `VPG_LOG`, browser sources and the console
+    handle): the check runs after the level and sink checks and before the record is built, sampling
+    first, one token bucket per rule, and `warn` and above pass by default (ADR-0025). Log Processors
     (`addProcessor` for every sink, `addSink(sink, { processors })` for one, `redactionProcessor`)
     run after the built-in redaction and fail closed: a throwing processor drops the record for its
     sink(s). A throwing sink or processor goes to the provider's `onSinkError(error, source)` and
