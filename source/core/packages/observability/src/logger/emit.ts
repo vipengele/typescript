@@ -12,6 +12,7 @@ import { mergeAttributes } from "../merge-attributes";
 import { redactAttributes, redactError } from "../redaction";
 import type { AttributesThunk } from "./logger";
 import { isNormalized, markNormalized } from "./normalized";
+import type { Admission } from "./policy";
 import type { EmitSettings, LogProcessor, LogRecord, Sink } from "./record";
 import { isSpanId, isTraceFlags, isTraceId, type LogTrace, readActiveTrace } from "./trace";
 
@@ -88,6 +89,9 @@ function callAttributes(attributes: AttributesInput | AttributesThunk | undefine
   return normalizeAttributes(attributes ?? {});
 }
 
+/** The attribute an admitted record carries the count of records its rate-limit rule dropped since the last one it reported. */
+export const DROPPED_ATTRIBUTE = "vipengele.logger.dropped";
+
 /**
  * The deeply frozen, marked record for one call. Its attributes merge from least to most specific — the
  * current Scope's, then each of the Logger's `bindings` layers in order, then the call's — each layer
@@ -96,6 +100,10 @@ function callAttributes(attributes: AttributesInput | AttributesThunk | undefine
  * error lets every sink receive the same object without one sink's writes, at any depth, changing
  * what the next one sees. The span active in OpenTelemetry, when there is one, is read here and
  * carried as the record's `trace`; with none the record has no `trace` key.
+ *
+ * `time` becomes the record's time; when it is `undefined` the clock is read here. A `dropped`
+ * count above zero is written as {@link DROPPED_ATTRIBUTE} after redaction, over any attribute of
+ * the same name from any layer, so neither a caller's attribute nor the redaction policy changes it.
  */
 function createRecord(
   settings: EmitSettings,
@@ -105,18 +113,20 @@ function createRecord(
   attributes: AttributesInput | AttributesThunk | undefined,
   error: unknown,
   bindings: readonly BindingLayer[],
+  time = settings.clock(),
+  dropped = 0,
 ): LogRecord {
-  const time = settings.clock();
   const normalized = mergeAttributes([scopeAttributes(), ...bindings.map((layer) => layer.read()), callAttributes(attributes)]);
   const serialized = error === undefined ? undefined : serializeError(error);
   const trace = readActiveTrace();
   const policy = settings.redaction;
+  const redacted = policy === null ? normalized : redactAttributes(normalized, policy);
   const record: { -readonly [K in keyof LogRecord]: LogRecord[K] } = {
     time,
     level,
     category,
     message,
-    attributes: policy === null ? normalized : redactAttributes(normalized, policy),
+    attributes: dropped > 0 ? { ...redacted, [DROPPED_ATTRIBUTE]: dropped } : redacted,
   };
   if (serialized !== undefined) {
     record.error = policy === null ? serialized : redactError(serialized, policy);
@@ -356,16 +366,23 @@ function runProcessors(settings: EmitSettings, processors: readonly LogProcessor
 
 /**
  * Turns one enabled Logger call into a {@link LogRecord} and writes it, with the Resource in
- * force, to every sink of `settings`. Never throws. It checks no level: a Logger checks before
- * calling it, and a provider calls it directly for a console handle's confirmation, which no
- * category's level may suppress.
+ * force, to every sink of `settings`. Never throws. It checks no level, sampling rule or rate
+ * limit: a Logger checks all three before calling it, and a provider calls it directly for a
+ * console handle's confirmation, which no category's level or policy may suppress.
+ *
+ * `admission` is what the Logger's policy check admitted the call with. Its `time`, when there is
+ * one, is the record's time and the clock is not read again; its `dropped` count is written into
+ * the record as {@link DROPPED_ATTRIBUTE}, and the admission is settled once the record is built,
+ * so a build that throws leaves the count to the next admitted record. Without one the clock is
+ * read and no count is written.
  *
  * `bindings` are the layers the Logger carries from `with`, each read once per record. They lie
  * over the current Scope's attributes, a later layer winning over an earlier one, and the call's
  * `attributes` win over all of them key by key. A throw while reading the Scope leaves its
  * attributes out rather than dropping the record.
  *
- * `attributes` given as a function runs only here, after the sink check and once per record. A
+ * `attributes` given as a function runs only here, after the level, sink, sampling and rate-limit
+ * checks and once per record. A
  * throw from it, a result that is not a record, or a run while another attributes thunk is running
  * yields an empty call layer: the record is still written, and nothing is reported.
  *
@@ -412,6 +429,7 @@ export function emitRecord(
   attributes: AttributesInput | AttributesThunk | undefined,
   error: unknown,
   bindings: readonly BindingLayer[] = [],
+  admission?: Admission,
 ): void {
   const { sinks } = settings;
   if (sinks.length === 0) {
@@ -421,7 +439,9 @@ export function emitRecord(
   let record: LogRecord | null;
   let resource: Resource;
   try {
-    record = runProcessors(settings, settings.processors, createRecord(settings, level, category, message, attributes, error, bindings));
+    const built = createRecord(settings, level, category, message, attributes, error, bindings, admission?.time, admission?.dropped);
+    admission?.settle();
+    record = runProcessors(settings, settings.processors, built);
     if (record === null) {
       return;
     }

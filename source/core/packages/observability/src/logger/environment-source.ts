@@ -1,4 +1,5 @@
 import type { Threshold } from "@vipengele/ts-core-common";
+import type { PolicyLayer } from "./policy";
 import { parseSpec } from "./spec";
 
 /** The environment variable an operator sets a level spec in (ADR-0005). */
@@ -27,9 +28,13 @@ export function readEnvironmentSpec(source: EnvironmentSource = globalThis as En
   }
 }
 
-/** The outcome of {@link parseEnvironmentSpec}: the levels of the environment layer and its issues. */
+/**
+ * The outcome of {@link parseEnvironmentSpec}: the levels of the environment layer, its sampling and
+ * rate-limit rules and its issues.
+ */
 export interface EnvironmentLevels {
   readonly levels: Readonly<Record<string, Threshold>>;
+  readonly policy: PolicyLayer;
   readonly issues: readonly string[];
 }
 
@@ -39,5 +44,5 @@ export interface EnvironmentLevels {
  */
 export function parseEnvironmentSpec(spec: string): EnvironmentLevels {
   const parsed = parseSpec(spec);
-  return { levels: parsed.levels, issues: parsed.issues.map((issue) => `${ENVIRONMENT_VARIABLE}: ${issue}`) };
+  return { levels: parsed.levels, policy: parsed.policy, issues: parsed.issues.map((issue) => `${ENVIRONMENT_VARIABLE}: ${issue}`) };
 }

@@ -5,6 +5,7 @@ import { describe, expect, test, vi } from "vitest";
 import { isLoggingConfigError } from "./config-error";
 import { entryFor, type LevelEntry } from "./levels";
 import { createLogger, type Logger } from "./logger";
+import type { Admission, LogPolicy } from "./policy";
 import { createLoggerProvider, type LoggerProvider } from "./provider";
 import type { EmitSettings, LogProcessor, Sink } from "./record";
 import type { LoggingSettings } from "./settings";
@@ -24,6 +25,26 @@ function layersOf(settings: LoggingSettings): Record<string, Record<string, Thre
     overrides: { ...settings.layers.overrides },
     environment: { ...settings.layers.environment },
   };
+}
+
+/** The rule keys of each policy layer of `settings`, sampling and rate limit apart. */
+function policyLayersOf(settings: LoggingSettings): Record<string, { sample: string[]; rateLimit: string[] }> {
+  return Object.fromEntries(
+    Object.entries(settings.policyLayers).map(([name, layer]) => [
+      name,
+      { sample: Object.keys(layer.sample), rateLimit: Object.keys(layer.rateLimit) },
+    ]),
+  );
+}
+
+/** Admits an `info` call in `category` under the policy `emit` holds, at time 0, drawing 0. */
+function admit(emit: () => EmitSettings, category: string): Admission | undefined {
+  return (emit().policy as LogPolicy).admit(
+    category,
+    "info",
+    () => 0,
+    () => 0,
+  );
 }
 
 function sink(): Sink {
@@ -560,6 +581,152 @@ describe("emit settings", () => {
   });
 });
 
+describe("sampling and rate-limit policy", () => {
+  const ONE_TOKEN = { a: { burst: 1, perMinute: 1 } } as const;
+  const NO_RULES = { sample: [], rateLimit: [] };
+
+  test("a provider starts with no rule in any policy layer and Math.random", () => {
+    const provider = createLoggerProvider();
+    const emit = emitOf(provider.logger("a"));
+
+    expect(policyLayersOf(provider.override("a", null))).toEqual({
+      defaults: NO_RULES,
+      builder: NO_RULES,
+      overrides: NO_RULES,
+      environment: NO_RULES,
+    });
+    expect(Object.keys(emit().policy?.table.sample ?? {})).toEqual([]);
+    expect(Object.keys(emit().policy?.table.rateLimit ?? {})).toEqual([]);
+    expect(emit().random).toBe(Math.random);
+  });
+
+  test("the starting configure puts the builder's rules and random source in force", () => {
+    const random = () => 0.5;
+    const provider = createLoggerProvider((b) => b.sample({ a: 0.5 }).rateLimit(ONE_TOKEN).random(random));
+    const emit = emitOf(provider.logger("a"));
+
+    expect(emit().random).toBe(random);
+    expect({ ...emit().policy?.table.sample }).toEqual({ a: { rate: 0.5, upTo: "info" } });
+    expect(emit().policy?.table.rateLimit.a).toMatchObject({ burst: 1, perMinute: 1, upTo: "info" });
+  });
+
+  test("a configure puts its rules in the builder policy layer and replaces the random source", () => {
+    const random = () => 0.5;
+    const provider = createLoggerProvider((b) => b.random(random).sample({ b: 0.5 }));
+
+    const settings = provider.configure((b) => b.sample({ a: 0.5 }).rateLimit(ONE_TOKEN));
+
+    expect(policyLayersOf(settings)).toEqual({
+      defaults: NO_RULES,
+      builder: { sample: ["a"], rateLimit: ["a"] },
+      overrides: NO_RULES,
+      environment: NO_RULES,
+    });
+    expect(Object.keys(settings.policy.sample)).toEqual(["a"]);
+    expect(settings.random).toBe(Math.random);
+    expect(emitOf(provider.logger("a"))().random).toBe(Math.random);
+  });
+
+  test("an override keeps the builder's rules and random source in force", () => {
+    const random = () => 0.5;
+    const provider = createLoggerProvider((b) => b.sample({ a: 0.5 }).random(random));
+
+    const settings = provider.override("a", "debug");
+
+    expect(Object.keys(settings.policyLayers.builder.sample)).toEqual(["a"]);
+    expect(Object.keys(settings.policy.sample)).toEqual(["a"]);
+    expect(emitOf(provider.logger("a"))().random).toBe(random);
+  });
+
+  test("reset goes back to no rule and Math.random", () => {
+    const provider = createLoggerProvider((b) =>
+      b
+        .sample({ a: 0.5 })
+        .rateLimit(ONE_TOKEN)
+        .random(() => 0.5),
+    );
+    const emit = emitOf(provider.logger("a"));
+
+    const settings = provider.reset();
+
+    expect(policyLayersOf(settings)).toEqual({ defaults: NO_RULES, builder: NO_RULES, overrides: NO_RULES, environment: NO_RULES });
+    expect(emit().random).toBe(Math.random);
+    expect(admit(emit, "a")).toMatchObject({ time: undefined, dropped: 0 });
+  });
+
+  test("a configure that throws leaves the policy in force untouched", () => {
+    const provider = createLoggerProvider((b) => b.rateLimit(ONE_TOKEN));
+    const emit = emitOf(provider.logger("a"));
+    const policy = emit().policy;
+
+    expect(() => provider.configure((b) => b.rateLimit({ a: { burst: 0, perMinute: 1 } }))).toThrow(isConfigError);
+
+    expect(emit().policy).toBe(policy);
+  });
+
+  test("an unchanged rule keeps its bucket and dropped count across override, configure, the console handle and settle", () => {
+    const name = "__vipengeleProviderPolicyTest";
+    const provider = createLoggerProvider((b) => b.rateLimit(ONE_TOKEN), { environment: () => "z:debug", warn: () => {} });
+    const logger = provider.logger("a");
+    const emit = emitOf(logger);
+    expect(admit(emit, "a")).toBeDefined();
+    expect(admit(emit, "a")).toBeUndefined();
+    const before = emit().policy;
+    const state = before?.states.values().next().value;
+    expect(state?.dropped).toBe(1);
+
+    logger.enabled("info");
+    expect(emit().policy).not.toBe(before);
+    provider.override("b", "debug");
+    provider.configure((b) => b.rateLimit(ONE_TOKEN).addLevels({ c: "info" }));
+    const uninstall = provider.installConsole(name);
+    try {
+      (globalThis as unknown as Record<string, (spec: string) => void>)[name]?.("d:debug");
+    } finally {
+      uninstall();
+    }
+
+    expect(emit().policy?.states.size).toBe(1);
+    expect(emit().policy?.states.values().next().value).toBe(state);
+    expect(admit(emit, "a")).toBeUndefined();
+    expect(state?.dropped).toBe(2);
+  });
+
+  test("a changed rule starts with a full bucket and no drops", () => {
+    const provider = createLoggerProvider((b) => b.rateLimit(ONE_TOKEN));
+    const emit = emitOf(provider.logger("a"));
+    expect(admit(emit, "a")).toBeDefined();
+    expect(admit(emit, "a")).toBeUndefined();
+
+    provider.configure((b) => b.rateLimit({ a: { burst: 1, perMinute: 2 } }));
+
+    expect(admit(emit, "a")).toMatchObject({ time: 0, dropped: 0 });
+    expect(admit(emit, "a")).toBeUndefined();
+  });
+
+  test("a rule configured again after a reset starts afresh", () => {
+    const provider = createLoggerProvider((b) => b.rateLimit(ONE_TOKEN));
+    const emit = emitOf(provider.logger("a"));
+    expect(admit(emit, "a")).toBeDefined();
+    expect(admit(emit, "a")).toBeUndefined();
+
+    provider.reset();
+    provider.configure((b) => b.rateLimit(ONE_TOKEN));
+
+    expect(admit(emit, "a")).toMatchObject({ time: 0, dropped: 0 });
+  });
+
+  test("providers never share rule state", () => {
+    const one = createLoggerProvider((b) => b.rateLimit(ONE_TOKEN));
+    const other = createLoggerProvider((b) => b.rateLimit(ONE_TOKEN));
+    const emitOne = emitOf(one.logger("a"));
+    expect(admit(emitOne, "a")).toBeDefined();
+    expect(admit(emitOne, "a")).toBeUndefined();
+
+    expect(admit(emitOf(other.logger("a")), "a")).toBeDefined();
+  });
+});
+
 /** A sink whose every `write` throws `failure`. */
 function throwing(failure: unknown): Sink {
   return {
@@ -739,6 +906,70 @@ describe("failure reports", () => {
 
     expect(onFirst).toHaveBeenCalledOnce();
     expect(onSecond).toHaveBeenCalledOnce();
+  });
+});
+
+describe("the environment policy layer", () => {
+  const ENV = "db:debug;sample=0.5;limit=2/2";
+  const ENV_RULES = { sample: ["db"], rateLimit: ["db"] };
+  const NO_RULES = { sample: [], rateLimit: [] };
+
+  test("VPG_LOG's modifiers come in with its levels on the first level check", () => {
+    const publish = vi.fn();
+    const provider = createLoggerProvider((b) => b.sample({ db: 0.9, other: 0.9 }), { environment: () => ENV, publish });
+    const logger = provider.logger("db");
+    const emit = emitOf(logger);
+    expect(Object.keys(emit().policy?.table.rateLimit ?? {})).toEqual([]);
+
+    logger.enabled("debug");
+
+    const published = publish.mock.lastCall?.[0] as LoggingSettings;
+    expect(policyLayersOf(published).environment).toEqual(ENV_RULES);
+    expect(emit().policy?.table.sample.db).toEqual({ rate: 0.5, upTo: "info" });
+    expect(emit().policy?.table.sample.other).toEqual({ rate: 0.9, upTo: "info" });
+    expect(emit().policy?.table.rateLimit.db).toMatchObject({ burst: 2, perMinute: 2 });
+  });
+
+  test("configure, override and reset each carry it, above the builder's rules", () => {
+    const provider = createLoggerProvider(undefined, { environment: () => ENV });
+
+    const configured = provider.configure((b) => b.sample({ db: 0.1 }));
+    expect(policyLayersOf(configured).environment).toEqual(ENV_RULES);
+    expect(configured.policy.sample.db).toEqual({ rate: 0.5, upTo: "info" });
+    expect(policyLayersOf(provider.override("x", "info")).environment).toEqual(ENV_RULES);
+    const reset = provider.reset();
+    expect(policyLayersOf(reset)).toEqual({ defaults: NO_RULES, builder: NO_RULES, overrides: NO_RULES, environment: ENV_RULES });
+  });
+
+  test("a build that ignores the environment leaves its rules out, and the next configure brings them back", () => {
+    const provider = createLoggerProvider(undefined, { environment: () => ENV });
+
+    expect(policyLayersOf(provider.configure((b) => b.ignoreEnvironment())).environment).toEqual(NO_RULES);
+    expect(policyLayersOf(provider.override("x", "info")).environment).toEqual(NO_RULES);
+    expect(policyLayersOf(provider.configure(() => {})).environment).toEqual(ENV_RULES);
+  });
+
+  test("a bad VPG_LOG modifier is reported and its entry's level still applies", () => {
+    const onIssues = vi.fn();
+    const provider = createLoggerProvider(undefined, { environment: () => "db:debug;sample=2", onIssues });
+
+    expect(provider.logger("db").enabled("debug")).toBe(true);
+    expect(onIssues).toHaveBeenCalledOnce();
+    expect(onIssues.mock.lastCall?.[0]?.[0]).toMatch(/^VPG_LOG: Level spec entry "db:debug;sample=2" keeps its level but skips modifier /);
+  });
+
+  test("override touches levels only, keeping the overrides policy layer", () => {
+    const name = "__vipengeleProviderOverridePolicyTest";
+    const provider = createLoggerProvider(undefined, { warn: () => {} });
+    const uninstall = provider.installConsole(name);
+    try {
+      (globalThis as unknown as Record<string, (spec: string | null) => void>)[name]?.("db:debug;limit=1/1");
+      expect(policyLayersOf(provider.override("db", null)).overrides).toEqual({ sample: [], rateLimit: ["db"] });
+      (globalThis as unknown as Record<string, (spec: string | null) => void>)[name]?.(null);
+      expect(policyLayersOf(provider.override("x", "info")).overrides).toEqual(NO_RULES);
+    } finally {
+      uninstall();
+    }
   });
 });
 

@@ -18,6 +18,9 @@ function browser(search: unknown, localStorage?: unknown): BrowserSourcesHost {
   return { window: {}, document: {}, location: { search }, localStorage };
 }
 
+/** The policy of a spec whose entries carry no modifier. */
+const NO_POLICY = { sample: {}, rateLimit: {} };
+
 function throwing(): never {
   throw new Error("blocked");
 }
@@ -30,8 +33,8 @@ describe("readBrowserSources", () => {
       kind: "read",
       storageKey: "vipengele.log",
       specs: [
-        { levels: { a: "error", c: "trace" }, issues: [] },
-        { levels: { a: "debug", b: "info" }, issues: [] },
+        { levels: { a: "error", c: "trace" }, policy: NO_POLICY, issues: [] },
+        { levels: { a: "debug", b: "info" }, policy: NO_POLICY, issues: [] },
       ],
       unreadableStored: undefined,
     });
@@ -46,8 +49,8 @@ describe("readBrowserSources", () => {
       kind: "read",
       storageKey: "app.log",
       specs: [
-        { levels: { b: "trace" }, issues: [] },
-        { levels: { a: "debug" }, issues: [] },
+        { levels: { b: "trace" }, policy: NO_POLICY, issues: [] },
+        { levels: { a: "debug" }, policy: NO_POLICY, issues: [] },
       ],
       unreadableStored: undefined,
     });
@@ -103,7 +106,7 @@ describe("readBrowserSources", () => {
     const expected = {
       kind: "read",
       storageKey: "vipengele.log",
-      specs: [{ levels: { a: "info" }, issues: [] }],
+      specs: [{ levels: { a: "info" }, policy: NO_POLICY, issues: [] }],
       unreadableStored: undefined,
     };
 
@@ -121,7 +124,7 @@ describe("readBrowserSources", () => {
     const expected = {
       kind: "read",
       storageKey: "vipengele.log",
-      specs: [{ levels: { a: "info" }, issues: [] }],
+      specs: [{ levels: { a: "info" }, policy: NO_POLICY, issues: [] }],
       unreadableStored: undefined,
     };
     const blocked = {
@@ -158,9 +161,14 @@ describe("readBrowserSources", () => {
       specs: [
         {
           levels: { a: "info" },
+          policy: NO_POLICY,
           issues: ['localStorage "app.log": Level spec entry "bad" is skipped: expected "category:level" with exactly one ":".'],
         },
-        { levels: { c: "info" }, issues: ['URL parameter "log": Level spec entry "b:loud" is skipped: invalid level "loud".'] },
+        {
+          levels: { c: "info" },
+          policy: NO_POLICY,
+          issues: ['URL parameter "log": Level spec entry "b:loud" is skipped: invalid level "loud".'],
+        },
       ],
       unreadableStored: undefined,
     });
@@ -175,6 +183,7 @@ describe("readBrowserSources", () => {
       specs: [
         {
           levels: {},
+          policy: NO_POLICY,
           issues: [
             'localStorage "vipengele.log": Level spec entry "[object Object]" is skipped: expected "category:level" with exactly one ":".',
             'localStorage "vipengele.log": the stored spec holds no level and is removed from storage.',
@@ -182,6 +191,23 @@ describe("readBrowserSources", () => {
         },
       ],
       unreadableStored: "[object Object]",
+    });
+  });
+
+  test("carries the rules each source's modifiers set", () => {
+    const reading = readBrowserSources(
+      undefined,
+      browser("?log=b:debug;limit=5/10", storage({ "vipengele.log": "a:info;sample=0.5;upto=debug" })),
+    );
+
+    expect(reading).toEqual({
+      kind: "read",
+      storageKey: "vipengele.log",
+      specs: [
+        { levels: { a: "info" }, policy: { sample: { a: { rate: 0.5, upTo: "debug" } }, rateLimit: {} }, issues: [] },
+        { levels: { b: "debug" }, policy: { sample: {}, rateLimit: { b: { burst: 5, perMinute: 10, upTo: "info" } } }, issues: [] },
+      ],
+      unreadableStored: undefined,
     });
   });
 

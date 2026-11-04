@@ -45,47 +45,87 @@ async function collectedBetween(start: number, end: number): Promise<boolean> {
   return collections.some((time) => time >= start && time <= end);
 }
 
+/**
+ * The heap growth of {@link MEASURED_CALLS} calls of `call`, after {@link WARM_UP_CALLS} warm-up
+ * calls, for each attempt no garbage collection started in, up to the first such attempt.
+ *
+ * Only an attempt with no collection inside it is measured, since a collection can hide the
+ * loop's allocation; a few attempts absorb a collection the runner causes on its own. An
+ * allocating call either grows the heap past the margin or triggers a collection in every
+ * attempt, and fails both ways.
+ */
+async function measureGrowths(call: () => void): Promise<number[]> {
+  observer.observe({ entryTypes: ["gc"] });
+  for (let i = 0; i < WARM_UP_CALLS; i++) {
+    call();
+  }
+  const growths: number[] = [];
+  for (let attempt = 0; attempt < ATTEMPTS && growths.length === 0; attempt++) {
+    const start = performance.now();
+    const before = nodeProcess.memoryUsage().heapUsed;
+    for (let i = 0; i < MEASURED_CALLS; i++) {
+      call();
+    }
+    const after = nodeProcess.memoryUsage().heapUsed;
+    const end = performance.now();
+    if (!(await collectedBetween(start, end))) {
+      growths.push(after - before);
+    }
+  }
+  return growths;
+}
+
+/** An OpenTelemetry registry whose `context` getter counts its reads, returning the count's reader. */
+function installCountingRegistry(): () => number {
+  let registryReads = 0;
+  registry[REGISTRY_SLOT] = {
+    get context() {
+      registryReads++;
+      return undefined;
+    },
+  };
+  return () => registryReads;
+}
+
+// One thunk for every call: an arrow written inline at the call site is a closure the caller
+// allocates on each call, whatever the logger does with it.
+const thunk = (): Record<string, unknown> => ({ computed: 1 });
+
 describe("a disabled call's heap cost", () => {
   test("a disabled debug call with a hoisted thunk grows the heap by no more than a fixed margin and reads no trace", async () => {
-    observer.observe({ entryTypes: ["gc"] });
-    // An OpenTelemetry registry whose `context` getter counts its reads: a disabled call reads none.
-    let registryReads = 0;
-    registry[REGISTRY_SLOT] = {
-      get context() {
-        registryReads++;
-        return undefined;
-      },
-    };
+    const registryReads = installCountingRegistry();
     const provider = createLoggerProvider((b) => b.addLevels({ "*": "info" }).addSink({ write: () => {} }));
     const logger = provider.logger("hot.path").with(() => ({ bound: 1 }));
-    // One thunk for every call: an arrow written inline at the call site is a closure the caller
-    // allocates on each call, whatever the logger does with it.
-    const thunk = (): Record<string, unknown> => ({ computed: 1 });
 
-    for (let i = 0; i < WARM_UP_CALLS; i++) {
-      logger.debug("hot", thunk);
-    }
-
-    // Only an attempt with no collection inside it is measured, since a collection can hide the
-    // loop's allocation; a few attempts absorb a collection the runner causes on its own. An
-    // allocating call either grows the heap past the margin or triggers a collection in every
-    // attempt, and fails both ways.
-    const growths: number[] = [];
-    for (let attempt = 0; attempt < ATTEMPTS && growths.length === 0; attempt++) {
-      const start = performance.now();
-      const before = nodeProcess.memoryUsage().heapUsed;
-      for (let i = 0; i < MEASURED_CALLS; i++) {
-        logger.debug("hot", thunk);
-      }
-      const after = nodeProcess.memoryUsage().heapUsed;
-      const end = performance.now();
-      if (!(await collectedBetween(start, end))) {
-        growths.push(after - before);
-      }
-    }
+    const growths = await measureGrowths(() => logger.debug("hot", thunk));
 
     expect(growths).toHaveLength(1);
     expect(growths[0]).toBeLessThan(MAX_GROWTH_BYTES);
-    expect(registryReads).toBe(0);
+    expect(registryReads()).toBe(0);
+  });
+});
+
+describe("a dropped call's heap cost", () => {
+  test("a sampled-out debug call with a hoisted thunk grows the heap by no more than a fixed margin and reads no trace", async () => {
+    const registryReads = installCountingRegistry();
+    const write = (): void => {
+      throw new Error("a sampled-out call writes nothing");
+    };
+    // The draw is a small integer: a fractional one, such as `Math.random`'s, is a heap number the
+    // random source allocates on every call, whatever the logger does with it.
+    const provider = createLoggerProvider((b) =>
+      b
+        .addLevels({ "*": "debug" })
+        .addSink({ write })
+        .random(() => 1)
+        .sample({ "hot.path": 0 }),
+    );
+    const logger = provider.logger("hot.path").with(() => ({ bound: 1 }));
+
+    const growths = await measureGrowths(() => logger.debug("hot", thunk));
+
+    expect(growths).toHaveLength(1);
+    expect(growths[0]).toBeLessThan(MAX_GROWTH_BYTES);
+    expect(registryReads()).toBe(0);
   });
 });

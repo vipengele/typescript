@@ -7,8 +7,17 @@ import { emitRecord } from "./emit";
 import { parseEnvironmentSpec } from "./environment-source";
 import { type LevelEntry, resolveEntry, validateThreshold } from "./levels";
 import { createLogger, type Logger } from "./logger";
+import { EMPTY_POLICY_LAYER, LogPolicy, type PolicyLayer } from "./policy";
 import type { EmitSettings, LogProcessor, Sink } from "./record";
-import { DEFAULT_LEVELS, EMPTY_LAYER, createSettings, freezeLayer, type LevelLayer, type LoggingSettings } from "./settings";
+import {
+  createSettings,
+  DEFAULT_LEVELS,
+  EMPTY_LAYER,
+  EMPTY_POLICY_LAYERS,
+  freezeLayer,
+  type LevelLayer,
+  type LoggingSettings,
+} from "./settings";
 import { FALLBACK_ENTRY } from "./slots";
 
 /**
@@ -95,6 +104,10 @@ export interface LoggerProviderOptions {
  * `LoggingSettings`, and the sinks, clock and redaction of its build — and hands out Loggers that
  * read it on every call. The environment layer sits above every other, so a level in `VPG_LOG`
  * beats the same category's level from the builder or an override.
+ *
+ * The provider also holds the state of each rate-limit rule in force: its token bucket and its
+ * count of dropped records. Every commit keeps the state of a rule it leaves unchanged, by
+ * category key and value, and starts a changed or new rule afresh.
  */
 export interface LoggerProvider {
   /**
@@ -115,7 +128,8 @@ export interface LoggerProvider {
    * Sets the override for `category` (a Category or the root `*`) to `level`, or removes it when
    * `level` is `null`, letting the layers beneath show through. Throws a `LoggingConfigError` on
    * an invalid category key or level, changing nothing. An override never beats the environment
-   * layer's level for the same category. Returns a snapshot of the new configuration, the
+   * layer's level for the same category. Levels only: the sampling and rate-limit rules in force,
+   * those a console handle set included, are kept. Returns a snapshot of the new configuration, the
    * environment layer included.
    */
   override(category: string, level: Threshold | null): LoggingSettings;
@@ -123,9 +137,9 @@ export interface LoggerProvider {
   /**
    * Drops every override and the builder layer and restores the defaults (`{ "*": "warn" }`), and
    * with them the output of a build that sets none: no sinks, `systemClock`, the `secretKeys`
-   * redaction and no browser sources. Storage is left as it is. The environment layer is kept,
-   * and restored when the build in force ignored it. Returns a snapshot of the new configuration,
-   * the environment layer included.
+   * redaction, `Math.random`, no sampling or rate-limit rule and no browser sources. Storage is
+   * left as it is. The environment layer is kept, and restored when the build in force ignored it.
+   * Returns a snapshot of the new configuration, the environment layer included.
    */
   reset(): LoggingSettings;
 
@@ -135,9 +149,12 @@ export interface LoggerProvider {
   /**
    * Installs a console handle on this provider at `globalThis[name]` and returns the function that
    * removes it. The handle takes a level spec string, a `{ levels }` object, `null` or nothing. A
-   * spec or `{ levels }` is validated whole — a skipped or repeated entry, or no level at all,
-   * throws a `LoggingConfigError` and changes nothing — then merged into the overrides, as
-   * `override` sets them; `null` removes every override; nothing reports the levels in force.
+   * spec or `{ levels }` is validated whole — a skipped or repeated entry or modifier, or no level
+   * at all, throws a `LoggingConfigError` and changes nothing — then merged into the overrides, as
+   * `override` sets them. A spec string's entry for a category replaces that category's override
+   * whole: its level, and in the overrides policy layer its sampling and rate-limit rules, which
+   * its modifiers set. A `{ levels }` object sets levels only, keeping a category's rules. `null` removes every level and policy
+   * override; nothing reports the levels and rules in force.
    *
    * While the build in force has browser sources, a change is also merged into the spec stored
    * under their storage key, and `null` removes that spec; the URL is never written. Blocked
@@ -147,8 +164,8 @@ export interface LoggerProvider {
    *
    * Every call confirms itself with one `info` record under `vipengele.logger.console`, written
    * whatever level governs that category, through the processors and sinks in force: it lists the
-   * effective levels, names every override `VPG_LOG` takes precedence over and says whether the
-   * change was stored. With no sink in force, the same line goes to the `warn` option instead.
+   * effective levels, then, when any is in force, the sampling and rate-limit rules, names every
+   * override `VPG_LOG` takes precedence over and says whether the change was stored. With no sink in force, the same line goes to the `warn` option instead.
    *
    * Throws a `LoggingConfigError` when `name` is not a non-empty string, or `globalThis[name]`
    * holds anything but `undefined` or a console handle, which is replaced. The returned function
@@ -156,6 +173,15 @@ export interface LoggerProvider {
    */
   installConsole(name: string): () => void;
 }
+
+/** The environment layers: the levels and the sampling and rate-limit rules `VPG_LOG` sets. */
+interface EnvironmentLayers {
+  readonly levels: LevelLayer;
+  readonly policy: PolicyLayer;
+}
+
+/** The environment layers of a configuration that ignores the environment. */
+const NO_ENVIRONMENT: EnvironmentLayers = Object.freeze({ levels: EMPTY_LAYER, policy: EMPTY_POLICY_LAYER });
 
 /** The Resource of a provider given no `resource`: every key reserved, none set. */
 function emptyResource(): Resource {
@@ -194,8 +220,8 @@ export function createLoggerProvider(configure?: ConfigureCallback, options: Log
    */
   let settled = false;
 
-  /** The environment layer as parsed on the one read, `undefined` until then. */
-  let environment: LevelLayer | undefined;
+  /** The environment level and policy layers as parsed on the one read, `undefined` until then. */
+  let environment: EnvironmentLayers | undefined;
 
   /** The issues of the environment spec, held from the read until they are reported. */
   let environmentIssues: readonly string[] = [];
@@ -239,15 +265,20 @@ export function createLoggerProvider(configure?: ConfigureCallback, options: Log
     onSinkError = options.onSinkError.bind(options);
   }
 
-  let emitSettings = emitSettingsOf(settings);
+  let emitSettings = emitSettingsOf(settings, new LogPolicy(settings.policy));
 
-  /** What the provider's Loggers emit through under `current`; it cannot throw, so it never splits a commit. */
-  function emitSettingsOf(current: LoggingSettings): EmitSettings {
+  /**
+   * What the provider's Loggers emit through under `current`, with `policy` holding the state of its
+   * rate-limit rules; it cannot throw, so it never splits a commit.
+   */
+  function emitSettingsOf(current: LoggingSettings, policy: LogPolicy): EmitSettings {
     return Object.freeze({
       sinks: current.sinks,
       processors: current.processors,
       clock: current.clock,
       redaction: current.redaction,
+      random: current.random,
+      policy,
       resource,
       onSinkError,
     });
@@ -270,19 +301,22 @@ export function createLoggerProvider(configure?: ConfigureCallback, options: Log
     }
   }
 
-  /** The environment layer, read and parsed on the first call and cached for the provider's life. Never throws. */
-  function readEnvironment(): LevelLayer {
+  /**
+   * The environment level and policy layers, read and parsed on the first call and cached for the
+   * provider's life. Never throws.
+   */
+  function readEnvironment(): EnvironmentLayers {
     if (environment === undefined) {
       const parsed = parseEnvironmentSpec(readRawEnvironment());
-      environment = freezeLayer(parsed.levels);
+      environment = { levels: freezeLayer(parsed.levels), policy: parsed.policy };
       environmentIssues = parsed.issues;
     }
     return environment;
   }
 
-  /** The environment layer of a configuration whose build does or does not ignore it. */
-  function environmentFor(ignore: boolean): LevelLayer {
-    return ignore ? EMPTY_LAYER : readEnvironment();
+  /** The environment layers of a configuration whose build does or does not ignore them. */
+  function environmentFor(ignore: boolean): EnvironmentLayers {
+    return ignore ? NO_ENVIRONMENT : readEnvironment();
   }
 
   /** Reports the environment spec's issues once, after the read; a throwing `onIssues` is swallowed. */
@@ -307,9 +341,23 @@ export function createLoggerProvider(configure?: ConfigureCallback, options: Log
     return settings;
   }
 
-  /** Commits `overrides` as the overrides layer over the rest of the configuration in force. */
-  function setOverrides(overrides: Readonly<Record<string, Threshold>>): LoggingSettings {
-    const next = commit(createSettings({ ...settings.layers, overrides, environment: environmentFor(ignoring) }, settings));
+  /**
+   * Commits `overrides` as the overrides layer, and `policy` as the overrides policy layer, over the
+   * rest of the configuration in force; the overrides policy layer in force is kept unless `policy`
+   * is given.
+   */
+  function setOverrides(
+    overrides: Readonly<Record<string, Threshold>>,
+    policy: PolicyLayer = settings.policyLayers.overrides,
+  ): LoggingSettings {
+    const env = environmentFor(ignoring);
+    const next = commit(
+      createSettings({ ...settings.layers, overrides, environment: env.levels }, settings, {
+        ...settings.policyLayers,
+        overrides: policy,
+        environment: env.policy,
+      }),
+    );
     reportEnvironmentIssues();
     return next;
   }
@@ -329,9 +377,14 @@ export function createLoggerProvider(configure?: ConfigureCallback, options: Log
     }
   }
 
+  /**
+   * Puts `next` in force. Its policy is rebuilt over the policy in force, so a rate-limit rule
+   * `next` leaves unchanged keeps its bucket and dropped count, and a changed or new rule starts
+   * afresh.
+   */
   function apply(next: LoggingSettings): void {
     settings = next;
-    emitSettings = emitSettingsOf(next);
+    emitSettings = emitSettingsOf(next, new LogPolicy(next.policy, emitSettings.policy));
   }
 
   function commit(next: LoggingSettings): LoggingSettings {
@@ -349,10 +402,16 @@ export function createLoggerProvider(configure?: ConfigureCallback, options: Log
    */
   function settle(): void {
     settled = true;
-    const layer = environmentFor(ignoring);
-    if (Object.keys(layer).length > 0) {
+    const env = environmentFor(ignoring);
+    // Every environment rule comes with a level for the same key, so a layer with no level has no rule.
+    if (Object.keys(env.levels).length > 0) {
       try {
-        commit(createSettings({ ...settings.layers, environment: layer }, settings));
+        commit(
+          createSettings({ ...settings.layers, environment: env.levels }, settings, {
+            ...settings.policyLayers,
+            environment: env.policy,
+          }),
+        );
       } catch {
         // `apply` has run; only `publish` can have thrown.
       }
@@ -378,7 +437,14 @@ export function createLoggerProvider(configure?: ConfigureCallback, options: Log
   // only past that point, as `configure` removes one only past its own commit.
   if (configure !== undefined) {
     const build = buildOf(configure);
-    apply(createSettings({ defaults: build.defaults, builder: build.builder, overrides: EMPTY_LAYER, environment: EMPTY_LAYER }, build));
+    apply(
+      createSettings({ defaults: build.defaults, builder: build.builder, overrides: EMPTY_LAYER, environment: EMPTY_LAYER }, build, {
+        defaults: EMPTY_POLICY_LAYER,
+        builder: build.policy,
+        overrides: EMPTY_POLICY_LAYER,
+        environment: EMPTY_POLICY_LAYER,
+      }),
+    );
     ignoring = build.ignoreEnvironment;
     clearUnreadableStoredSpecs(build);
     reportIssues(build.issues);
@@ -387,14 +453,21 @@ export function createLoggerProvider(configure?: ConfigureCallback, options: Log
   return Object.freeze({
     configure(callback: ConfigureCallback): LoggingSettings {
       const build = buildOf(callback);
+      const env = environmentFor(build.ignoreEnvironment);
       const next = createSettings(
         {
           defaults: build.defaults,
           builder: build.builder,
           overrides: settings.layers.overrides,
-          environment: environmentFor(build.ignoreEnvironment),
+          environment: env.levels,
         },
         build,
+        {
+          defaults: EMPTY_POLICY_LAYER,
+          builder: build.policy,
+          overrides: settings.policyLayers.overrides,
+          environment: env.policy,
+        },
       );
       ignoring = build.ignoreEnvironment;
       reported = new WeakSet();
@@ -419,8 +492,12 @@ export function createLoggerProvider(configure?: ConfigureCallback, options: Log
     reset(): LoggingSettings {
       reported = new WeakSet();
       ignoring = false;
+      const env = environmentFor(false);
       const next = commit(
-        createSettings({ defaults: DEFAULT_LEVELS, builder: EMPTY_LAYER, overrides: EMPTY_LAYER, environment: environmentFor(false) }),
+        createSettings({ defaults: DEFAULT_LEVELS, builder: EMPTY_LAYER, overrides: EMPTY_LAYER, environment: env.levels }, undefined, {
+          ...EMPTY_POLICY_LAYERS,
+          environment: env.policy,
+        }),
       );
       reportEnvironmentIssues();
       return next;

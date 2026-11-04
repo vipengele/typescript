@@ -217,6 +217,9 @@ describe("the handle", () => {
 
   test.each([
     ["a skipped entry", "a:loud", 'Nothing changed: Level spec entry "a:loud" is skipped: invalid level "loud".'],
+    ["a skipped modifier", "a:debug;sample=2", 'Nothing changed: Level spec entry "a:debug;sample=2" keeps its level but skips modifier'],
+    ["a repeated modifier", "a:debug;sample=0.1;sample=0.2", 'repeats modifier "sample"'],
+    ["a { levels } level carrying a modifier", { levels: { a: "debug;sample=0.5" } }, 'invalid level "debug;sample=0.5"'],
     ["a stringified object", "[object Object]", 'Nothing changed: Level spec entry "[object Object]" is skipped'],
     ["a repeated category", "a:debug,a:info", "repeats category"],
     ["a spec with no level", " , ", 'Nothing changed: level spec " , " sets no level. Pass null to remove every override.'],
@@ -320,6 +323,80 @@ describe("the handle", () => {
   });
 });
 
+describe("the handle's sampling and rate-limit rules", () => {
+  /** The overrides policy layer of `settings`, each table spread into a plain object. */
+  function policyOverrides(settings: LoggingSettings) {
+    const { sample, rateLimit } = settings.policyLayers.overrides;
+    return { sample: { ...sample }, rateLimit: { ...rateLimit } };
+  }
+
+  test("a spec string's modifiers feed the overrides policy layer and the confirmation names them", () => {
+    const publish = vi.fn();
+    const { handle, messages } = setup(undefined, { publish });
+
+    handle("db:debug;sample=0.5;limit=20/60;upto=warn");
+
+    const published = publish.mock.lastCall?.[0] as LoggingSettings;
+    expect(policyOverrides(published)).toEqual({
+      sample: { db: { rate: 0.5, upTo: "warn" } },
+      rateLimit: { db: { burst: 20, perMinute: 60, upTo: "warn" } },
+    });
+    expect(published.policy.sample.db).toEqual({ rate: 0.5, upTo: "warn" });
+    expect(messages()).toEqual([
+      "Logger levels changed: *:warn, db:debug. Sampling and rate limits: db (sample 0.5 up to warn, limit 20/60 up to warn). " +
+        "Not saved: the configuration in force reads no browser sources, so this applies until the page or process ends.",
+    ]);
+  });
+
+  test("a report names the rules in force after the levels sentence", () => {
+    const { handle, name, messages } = setup((b) =>
+      b.sample({ db: 0.5 }).rateLimit({ db: { burst: 2, perMinute: 60, upTo: "warn" }, x: false }),
+    );
+
+    handle();
+
+    expect(messages()[0]).toBe(
+      "Logger levels: *:warn. Sampling and rate limits: db (sample 0.5 up to info, limit 2/60 up to warn), x (limit off). " +
+        `Call ${name}("category:level"), ${name}({ levels }) or ${name}(null) to change them.`,
+    );
+  });
+
+  test("a later entry for a category replaces its whole policy override; other categories keep theirs", () => {
+    const publish = vi.fn();
+    const { handle } = setup(undefined, { publish });
+
+    handle("db:debug;sample=0.1;limit=1/1,net:info;sample=0.2");
+    handle("db:info;limit=2/2");
+
+    expect(policyOverrides(publish.mock.lastCall?.[0] as LoggingSettings)).toEqual({
+      sample: { net: { rate: 0.2, upTo: "info" } },
+      rateLimit: { db: { burst: 2, perMinute: 2, upTo: "info" } },
+    });
+  });
+
+  test("a { levels } object and an override change levels only, keeping the rules", () => {
+    const publish = vi.fn();
+    const { provider, handle } = setup(undefined, { publish });
+    handle("db:debug;sample=0.1");
+
+    handle({ levels: { db: "error" } });
+    const settings = provider.override("db", null);
+
+    expect({ ...settings.layers.overrides }).toEqual({});
+    expect(policyOverrides(settings)).toEqual({ sample: { db: { rate: 0.1, upTo: "info" } }, rateLimit: {} });
+  });
+
+  test("null clears the level and policy overrides alike, naming the rules that remain", () => {
+    const { provider, handle, messages } = setup((b) => b.rateLimit({ app: { burst: 1, perMinute: 1 } }));
+    handle("db:debug;sample=0.1;limit=off");
+
+    handle(null);
+
+    expect(policyOverrides(provider.override("x", null))).toEqual({ sample: {}, rateLimit: {} });
+    expect(messages().at(-1)).toBe("Logger overrides removed. Levels: *:warn. Sampling and rate limits: app (limit 1/1 up to info).");
+  });
+});
+
 describe("persistence", () => {
   /** A host over `settings` whose overrides `setOverrides` replaces, and whose confirmations are collected. */
   function fakeHost(storageKey: string | null): { host: ConsoleHandleHost; confirmed: string[]; overrides: () => LevelLayer } {
@@ -333,8 +410,8 @@ describe("persistence", () => {
       overrides: () => settings.layers.overrides,
       host: {
         settings: () => settings,
-        setOverrides(overrides) {
-          settings = createSettings({ ...settings.layers, overrides }, settings);
+        setOverrides(overrides, policy) {
+          settings = createSettings({ ...settings.layers, overrides }, settings, { ...settings.policyLayers, overrides: policy });
           return settings;
         },
         confirm: (message) => confirmed.push(message),
@@ -463,6 +540,27 @@ describe("persistence", () => {
     expect(confirmed[0]).toBe(
       'Logger overrides removed. Levels: *:warn. Could not remove the spec stored under localStorage "app.log": storage is blocked.',
     );
+  });
+
+  test("a stored spec keeps its modifiers across a write, and a new entry's are saved", () => {
+    const storage = fakeStorage({ "app.log": "a:info;sample=0.5;upto=debug,b:error;limit=off" });
+    const { handle } = install("app.log", storage);
+
+    handle("c:trace;limit=3/6;upto=warn,d:debug;sample=0.25;limit=1/2");
+
+    expect(storage.items.get("app.log")).toBe(
+      "a:info;sample=0.5;upto=debug,b:error;limit=off,c:trace;limit=3/6;upto=warn,d:debug;sample=0.25;limit=1/2",
+    );
+  });
+
+  test("a spec entry replaces the stored entry for its category whole; a { levels } entry keeps its modifiers", () => {
+    const storage = fakeStorage({ "app.log": "a:info;sample=0.5,b:info;limit=1/1" });
+    const { handle } = install("app.log", storage);
+
+    handle("a:debug");
+    handle({ levels: { b: "trace" } });
+
+    expect(storage.items.get("app.log")).toBe("a:debug,b:trace;limit=1/1");
   });
 
   test("the stored spec round-trips through parseSpec", () => {

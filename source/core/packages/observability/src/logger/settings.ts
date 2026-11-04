@@ -2,6 +2,14 @@ import { systemClock, type Threshold } from "@vipengele/ts-core-common";
 import { secretKeys } from "@vipengele/ts-core-redaction";
 import { ROOT_CATEGORY, validateCategoryKey } from "./categories";
 import { entryFor, type LevelEntry, type LevelTable, validateThreshold } from "./levels";
+import {
+  EMPTY_POLICY_LAYER,
+  flattenPolicyLayers,
+  freezePolicyLayer,
+  type PolicyLayer,
+  type PolicyLayerInput,
+  type PolicyTable,
+} from "./policy";
 import type { EmitSettings, RedactionSetting, SinkRegistration } from "./record";
 
 /**
@@ -34,11 +42,28 @@ export type LayerName = (typeof LAYER_ORDER)[number];
 export type LoggingLayers = Readonly<Record<LayerName, LevelLayer>>;
 
 /**
- * The builder state that governs what a Logger emits through, as a build carries it: the sinks in
- * order, each with its own processors, the global processors, the clock and the redaction setting.
- * A `configure` replaces all of them together.
+ * Every policy layer of a {@link LoggingSettings}, by name, in the same {@link LAYER_ORDER} as the
+ * level layers: `defaults` holds no rule, `builder` the build's `sample` and `rateLimit` rules,
+ * `overrides` the rules set live on top of the build, and `environment` the rules of `VPG_LOG`.
  */
-export type OutputSettings = Pick<EmitSettings, "sinks" | "processors" | "clock" | "redaction">;
+export type PolicyLayers = Readonly<Record<LayerName, PolicyLayer>>;
+
+/** Every policy layer empty: a configuration with no sampling or rate-limit rule. */
+export const EMPTY_POLICY_LAYERS: PolicyLayers = Object.freeze({
+  defaults: EMPTY_POLICY_LAYER,
+  builder: EMPTY_POLICY_LAYER,
+  overrides: EMPTY_POLICY_LAYER,
+  environment: EMPTY_POLICY_LAYER,
+});
+
+/**
+ * The builder state that governs what a Logger emits through, as a build carries it: the sinks in
+ * order, each with its own processors, the global processors, the clock, the redaction setting and
+ * the source sampling draws against. A `configure` replaces all of them together.
+ */
+export type OutputSettings = Pick<EmitSettings, "sinks" | "processors" | "clock" | "redaction"> & {
+  readonly random: () => number;
+};
 
 /** The browser sources of the build in force: the `localStorage` key its level spec is read from. */
 export interface BrowserSourcesSetting {
@@ -47,17 +72,21 @@ export interface BrowserSourcesSetting {
 
 /**
  * What a {@link LoggingSettings} carries from the build in force besides its layers: the
- * {@link OutputSettings} and, optionally, its browser sources (`null` when omitted).
+ * {@link OutputSettings}, its random source optional (`Math.random` when omitted), and, optionally,
+ * its browser sources (`null` when omitted).
  */
-export type BuildSettings = OutputSettings & { readonly browserSources?: BrowserSourcesSetting | null };
+export type BuildSettings = Omit<OutputSettings, "random"> & {
+  readonly random?: () => number;
+  readonly browserSources?: BrowserSourcesSetting | null;
+};
 
 /**
  * A snapshot of the configuration in force: each layer as it stood, `levels`, the effective table
- * those layers flatten to, the {@link OutputSettings} of the build in force and its
- * `browserSources`. Every part this
+ * those layers flatten to, each policy layer as it stood, `policy`, the table those flatten to, the
+ * {@link OutputSettings} of the build in force and its `browserSources`. Every part this
  * module creates is frozen and none is shared with the state it was taken from, so a snapshot
  * never changes after it is returned; the sinks, the processors, the clock and the redaction
- * policy themselves are the caller's own objects, held by reference.
+ * policy and the random source themselves are the caller's own objects, held by reference.
  *
  * When no layer configures the root `*`, `levels` has no root: `resolveEntry` gives `undefined`
  * for a category no other key governs, and a reader of the shared table falls back to `warn`.
@@ -65,6 +94,9 @@ export type BuildSettings = OutputSettings & { readonly browserSources?: Browser
 export interface LoggingSettings extends OutputSettings {
   readonly layers: LoggingLayers;
   readonly levels: LevelTable;
+  readonly policyLayers: PolicyLayers;
+  /** The policy layers flattened in {@link LAYER_ORDER}: the sampling and rate-limit rules in force. */
+  readonly policy: PolicyTable;
   /**
    * The browser sources of the build in force: the storage key of its last `addBrowserSources`
    * call, or `null` when it made none or ran outside a browser.
@@ -87,11 +119,17 @@ export function defaultRedaction(): RedactionSetting {
 }
 
 /**
- * The output of a build that sets none: no sinks, no processors, the system clock and the default
- * redaction.
+ * The output of a build that sets none: no sinks, no processors, the system clock, the default
+ * redaction and `Math.random`.
  */
 export function defaultOutput(): OutputSettings {
-  return Object.freeze({ sinks: Object.freeze([]), processors: Object.freeze([]), clock: systemClock, redaction: defaultRedaction() });
+  return Object.freeze({
+    sinks: Object.freeze([]),
+    processors: Object.freeze([]),
+    clock: systemClock,
+    redaction: defaultRedaction(),
+    random: Math.random,
+  });
 }
 
 /** A frozen copy of `registration`, its processor list copied into a frozen array. */
@@ -127,29 +165,37 @@ export function flattenLayers(layers: readonly LevelLayer[]): LevelTable {
 }
 
 /**
- * A {@link LoggingSettings} snapshot of `layers` and `output`. Each layer is copied through
- * {@link freezeLayer}, so the snapshot is independent of the objects passed in, and a layer that
- * holds an invalid category key or threshold throws a `LoggingConfigError`. `levels` is the
- * layers flattened in {@link LAYER_ORDER}. The sink list, each registration's processor list and
- * the global processor list are copied into frozen arrays, and `browserSources` into a frozen
- * object (`null` when `output` has none); `output` defaults to {@link defaultOutput}.
+ * A {@link LoggingSettings} snapshot of `layers`, `output` and `policyLayers`. Each level layer is
+ * copied through {@link freezeLayer} and each policy layer through `freezePolicyLayer`, so the
+ * snapshot is independent of the objects passed in, and a layer that holds an invalid category
+ * key, threshold or rule throws a `LoggingConfigError`. `levels` and `policy` are the layers
+ * flattened in {@link LAYER_ORDER}; `policyLayers` defaults to {@link EMPTY_POLICY_LAYERS}. The
+ * sink list, each registration's processor list and the global processor list are copied into
+ * frozen arrays, and `browserSources` into a frozen object (`null` when `output` has none);
+ * `random` is `Math.random` when `output` has none; `output` defaults to {@link defaultOutput}.
  */
 export function createSettings(
   layers: Readonly<Record<LayerName, Readonly<Record<string, unknown>>>>,
   output: BuildSettings = defaultOutput(),
+  policyLayers: Readonly<Record<LayerName, PolicyLayerInput>> = EMPTY_POLICY_LAYERS,
 ): LoggingSettings {
   const browserSources = output.browserSources ?? null;
   const copied = {} as Record<LayerName, LevelLayer>;
+  const policies = {} as Record<LayerName, PolicyLayer>;
   for (const name of LAYER_ORDER) {
     copied[name] = freezeLayer(layers[name]);
+    policies[name] = freezePolicyLayer(policyLayers[name]);
   }
   return Object.freeze({
     layers: Object.freeze(copied),
     levels: flattenLayers(LAYER_ORDER.map((name) => copied[name])),
+    policyLayers: Object.freeze(policies),
+    policy: flattenPolicyLayers(LAYER_ORDER.map((name) => policies[name])),
     sinks: Object.freeze(output.sinks.map(freezeRegistration)),
     processors: Object.freeze([...output.processors]),
     clock: output.clock,
     redaction: output.redaction,
+    random: output.random ?? Math.random,
     browserSources: browserSources === null ? null : Object.freeze({ storageKey: browserSources.storageKey }),
   });
 }

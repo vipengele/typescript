@@ -142,8 +142,10 @@ final word on what is sent.
 _Avoid_: filter, middleware, interceptor
 
 **Sampling**:
-Reporting only a chosen fraction of Error Events, picked at random, before any work is spent on the
-rest. A decision of the Reporter, never of a Transport.
+Keeping only a chosen fraction of Error Events or Log Records, picked at random, before any work is
+spent on the rest. A decision of the Reporter or the Logger, never of a Transport or a Sink. A
+sampling rule on the Logger applies to `trace`, `debug` and `info` by default; `warn` and above
+always pass, the counterpart of the Reporter letting an unhandled Error Event through.
 _Avoid_: rate limiting (a Rate Limit caps volume; Sampling keeps a fraction of any volume)
 
 **Deduplication**:
@@ -153,9 +155,11 @@ deduplicated.
 _Avoid_: grouping (the backend groups events into issues)
 
 **Rate Limit**:
-A cap on how many Error Events a Reporter sends over time, allowing a short burst. It protects the
-backend from a flood of reports, not the process from the work of building them, and never holds
-back an unhandled Error Event.
+A cap on how many Error Events a Reporter sends, or Log Records a Logger writes, over time,
+allowing a short burst. On the Reporter it protects the backend from a flood of reports, not the
+process from the work of building them, and never holds back an unhandled Error Event. On the Logger
+it also saves the work of building the record, and by default holds back only `trace`, `debug` and
+`info`; `warn` and above always pass.
 _Avoid_: throttling, sampling (Sampling keeps a fraction regardless of volume)
 
 **Frame**:

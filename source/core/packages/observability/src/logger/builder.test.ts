@@ -3,6 +3,7 @@ import { composePolicies, secretKeys } from "@vipengele/ts-core-redaction";
 import { describe, expect, test } from "vitest";
 import { createLoggingBuilder } from "./builder";
 import { isLoggingConfigError } from "./config-error";
+import type { RateLimitRule, SampleRule } from "./policy";
 import type { LogProcessor, Sink } from "./record";
 import { createSettings } from "./settings";
 
@@ -26,6 +27,9 @@ describe("createLoggingBuilder", () => {
     expect(build.processors).toEqual([]);
     expect(build.clock).toBe(systemClock);
     expect(build.redaction).toBe(secretKeys);
+    expect(build.random).toBe(Math.random);
+    expect(Object.keys(build.policy.sample)).toEqual([]);
+    expect(Object.keys(build.policy.rateLimit)).toEqual([]);
     expect(build.ignoreEnvironment).toBe(false);
     expect(build.browserSources).toBeNull();
     expect(build.issues).toEqual([]);
@@ -44,6 +48,9 @@ describe("createLoggingBuilder", () => {
     expect(builder.addProcessor(processor())).toBe(builder);
     expect(builder.clock(() => 0)).toBe(builder);
     expect(builder.redaction(null)).toBe(builder);
+    expect(builder.sample({ c: 0.5 })).toBe(builder);
+    expect(builder.rateLimit({ c: { burst: 1, perMinute: 1 } })).toBe(builder);
+    expect(builder.random(() => 0)).toBe(builder);
     expect({ ...builder.build().builder }).toEqual({ a: "info", b: "debug" });
   });
 
@@ -399,6 +406,160 @@ describe("clock", () => {
   });
 });
 
+describe("sample", () => {
+  test("validates and freezes each rule, its upTo defaulting to info", () => {
+    const build = createLoggingBuilder()
+      .sample({ "*": 0.5, db: { rate: 0.1, upTo: "warn" } })
+      .build();
+
+    expect({ ...build.policy.sample }).toEqual({ "*": { rate: 0.5, upTo: "info" }, db: { rate: 0.1, upTo: "warn" } });
+    expect(Object.isFrozen(build.policy)).toBe(true);
+    expect(Object.isFrozen(build.policy.sample)).toBe(true);
+    expect(Object.getPrototypeOf(build.policy.sample)).toBeNull();
+    expect(Object.isFrozen(build.policy.sample.db)).toBe(true);
+  });
+
+  test("a later call's rule for a key replaces an earlier one's and leaves other keys in place", () => {
+    const build = createLoggingBuilder().sample({ a: 0.5, b: 0.2 }).sample({ a: 1 }).build();
+
+    expect({ ...build.policy.sample }).toEqual({ a: { rate: 1, upTo: "info" }, b: { rate: 0.2, upTo: "info" } });
+  });
+
+  test("copies the rules when called, so a later change to them has no effect", () => {
+    const rules: Record<string, number> = { a: 0.5 };
+    const builder = createLoggingBuilder().sample(rules);
+    rules.a = 0.1;
+    rules.b = 0.1;
+
+    expect({ ...builder.build().policy.sample }).toEqual({ a: { rate: 0.5, upTo: "info" } });
+  });
+
+  test("keeps a __proto__ category as an own key", () => {
+    const rules = Object.defineProperty({}, proto, { value: 0.5, enumerable: true });
+    const build = createLoggingBuilder().sample(rules).build();
+
+    expect(Object.hasOwn(build.policy.sample, proto)).toBe(true);
+  });
+
+  test.each([
+    ["a rate above 1, after a valid rule", { ok: 0.5, a: 1.5 }],
+    ["a negative rate", { a: -0.1 }],
+    ["a rate that is not a number", { a: "half" }],
+    ["an invalid upTo", { a: { rate: 0.5, upTo: "loud" } }],
+    ["an invalid category key", { "a..b": 0.5 }],
+  ])("throws a LoggingConfigError at the call on %s, leaving the builder unchanged", (_name, rules) => {
+    const builder = createLoggingBuilder().sample({ c: 0.5 });
+
+    expect(() => builder.sample(rules as Readonly<Record<string, SampleRule>>)).toThrow(expect.toSatisfy(isLoggingConfigError));
+    expect({ ...builder.build().policy.sample }).toEqual({ c: { rate: 0.5, upTo: "info" } });
+  });
+
+  test("throws a LoggingConfigError at the call on an argument that is not an object", () => {
+    expect(() => createLoggingBuilder().sample(null as unknown as Readonly<Record<string, SampleRule>>)).toThrow(
+      expect.toSatisfy(isLoggingConfigError),
+    );
+  });
+});
+
+describe("spec modifiers", () => {
+  test("addSpec puts the rules its modifiers set in the policy layer", () => {
+    const build = createLoggingBuilder().addSpec("db:debug;sample=0.1;limit=20/60;upto=warn").build();
+
+    expect({ ...build.builder }).toEqual({ db: "debug" });
+    expect({ ...build.policy.sample }).toEqual({ db: { rate: 0.1, upTo: "warn" } });
+    expect({ ...build.policy.rateLimit }).toEqual({ db: { burst: 20, perMinute: 60, upTo: "warn" } });
+    expect(build.issues).toEqual([]);
+  });
+
+  test("spec rules and sample/rateLimit rules apply in the order they were added", () => {
+    const build = createLoggingBuilder()
+      .sample({ a: 0.5, b: 0.5 })
+      .addSpec("a:debug;sample=0.1;limit=off")
+      .rateLimit({ a: { burst: 3, perMinute: 3 } })
+      .addSpec("b:info")
+      .build();
+
+    expect({ ...build.policy.sample }).toEqual({ a: { rate: 0.1, upTo: "info" }, b: { rate: 0.5, upTo: "info" } });
+    expect({ ...build.policy.rateLimit }).toEqual({ a: { burst: 3, perMinute: 3, upTo: "info" } });
+  });
+
+  test("a bad modifier is carried to issues and the level still applies", () => {
+    const build = createLoggingBuilder().addSpec("db:debug;sample=2").build();
+
+    expect({ ...build.builder }).toEqual({ db: "debug" });
+    expect(Object.keys(build.policy.sample)).toEqual([]);
+    expect(build.issues).toHaveLength(1);
+    expect(build.issues[0]).toContain("keeps its level but skips modifier");
+  });
+});
+
+describe("rateLimit", () => {
+  test("validates and freezes each rule, its upTo defaulting to info, and keeps a clearing false", () => {
+    const build = createLoggingBuilder()
+      .rateLimit({ "*": { burst: 20, perMinute: 60 }, db: { burst: 5, perMinute: 1, upTo: "error" }, "db.pool": false })
+      .build();
+
+    expect({ ...build.policy.rateLimit }).toEqual({
+      "*": { burst: 20, perMinute: 60, upTo: "info" },
+      db: { burst: 5, perMinute: 1, upTo: "error" },
+      "db.pool": false,
+    });
+    expect(Object.isFrozen(build.policy.rateLimit)).toBe(true);
+    expect(Object.getPrototypeOf(build.policy.rateLimit)).toBeNull();
+    expect(Object.isFrozen(build.policy.rateLimit.db)).toBe(true);
+  });
+
+  test("a later call's rule for a key replaces an earlier one's and leaves other keys in place", () => {
+    const build = createLoggingBuilder()
+      .rateLimit({ a: { burst: 1, perMinute: 1 }, b: { burst: 2, perMinute: 2 } })
+      .rateLimit({ a: false })
+      .build();
+
+    expect({ ...build.policy.rateLimit }).toEqual({ a: false, b: { burst: 2, perMinute: 2, upTo: "info" } });
+  });
+
+  test("is independent of the sampling rules", () => {
+    const build = createLoggingBuilder()
+      .sample({ a: 0.5 })
+      .rateLimit({ b: { burst: 1, perMinute: 1 } })
+      .build();
+
+    expect(Object.keys(build.policy.sample)).toEqual(["a"]);
+    expect(Object.keys(build.policy.rateLimit)).toEqual(["b"]);
+  });
+
+  test.each([
+    ["a burst below 1", { a: { burst: 0, perMinute: 1 } }],
+    ["a perMinute of 0", { a: { burst: 1, perMinute: 0 } }],
+    ["an infinite burst", { a: { burst: Number.POSITIVE_INFINITY, perMinute: 1 } }],
+    ["true", { a: true }],
+    ["an invalid upTo", { a: { burst: 1, perMinute: 1, upTo: "loud" } }],
+    ["an invalid category key", { ".a": { burst: 1, perMinute: 1 } }],
+  ])("throws a LoggingConfigError at the call on %s, leaving the builder unchanged", (_name, rules) => {
+    const builder = createLoggingBuilder().rateLimit({ c: false });
+
+    expect(() => builder.rateLimit(rules as Readonly<Record<string, RateLimitRule>>)).toThrow(expect.toSatisfy(isLoggingConfigError));
+    expect({ ...builder.build().policy.rateLimit }).toEqual({ c: false });
+  });
+
+  test("throws a LoggingConfigError at the call on an argument that is not an object", () => {
+    expect(() => createLoggingBuilder().rateLimit("a" as unknown as Readonly<Record<string, RateLimitRule>>)).toThrow(
+      expect.toSatisfy(isLoggingConfigError),
+    );
+  });
+});
+
+describe("random", () => {
+  test("defaults to Math.random, and a later call replaces an earlier one", () => {
+    const first = () => 0.25;
+    const second = () => 0.75;
+
+    expect(createLoggingBuilder().build().random).toBe(Math.random);
+    expect(createLoggingBuilder().random(first).build().random).toBe(first);
+    expect(createLoggingBuilder().random(first).random(second).build().random).toBe(second);
+  });
+});
+
 describe("redaction", () => {
   test("replaces the default policy", () => {
     const policy = composePolicies(secretKeys, { keys: ["ssn"] });
@@ -492,5 +653,24 @@ describe("build", () => {
     expect(settings.processors).toEqual([global]);
     expect(settings.clock).toBe(clock);
     expect(settings.redaction).toBeNull();
+  });
+
+  test("feeds a settings snapshot its policy layer and random source", () => {
+    const random = () => 0.5;
+    const build = createLoggingBuilder()
+      .sample({ a: 0.5 })
+      .rateLimit({ b: { burst: 1, perMinute: 1 } })
+      .random(random)
+      .build();
+    const settings = createSettings({ defaults: build.defaults, builder: build.builder, overrides: {}, environment: {} }, build, {
+      defaults: {},
+      builder: build.policy,
+      overrides: {},
+      environment: {},
+    });
+
+    expect({ ...settings.policy.sample }).toEqual({ a: { rate: 0.5, upTo: "info" } });
+    expect(settings.policy.rateLimit.b).toMatchObject({ burst: 1, perMinute: 1, upTo: "info" });
+    expect(settings.random).toBe(random);
   });
 });

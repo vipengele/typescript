@@ -373,6 +373,31 @@ VPG_LOG="*:warn,services:debug" node server.js
 Logging.configure((b) => b.ignoreEnvironment().addLevels({ "*": "info" }));
 ```
 
+**Policy modifiers** — a spec entry may follow its level with `;`-separated modifiers that set the
+category's sampling and rate-limit rules (see [Sampling and rate limits](#sampling-and-rate-limits)):
+
+```sh
+VPG_LOG="*:warn,db:debug;sample=0.1;limit=20/60;upto=info"
+```
+
+- **`;sample=<rate>`** keeps that share of records, from 0 to 1. `sample=1` clears a sampling rule
+  the category would otherwise inherit.
+- **`;limit=<burst>/<perMinute>`** sets a token bucket. `limit=off` clears a rate limit the category
+  would otherwise inherit.
+- **`;upto=<level>`** names the highest level the entry's rules apply to, `info` unless given. An
+  `upto` on an entry that sets neither `sample` nor `limit` is reported and ignored.
+- **Bad modifiers** — a modifier that cannot be read is skipped and reported like any bad entry,
+  naming its source, and the entry's level still applies. This holds for `addSpec`, `VPG_LOG` and the
+  browser sources.
+- **Layers** — rules are layered like levels (defaults, builder, overrides, `VPG_LOG`), each kind
+  resolving by the longest matching prefix on its own. A key that sets only a level does not clear a
+  rule it inherits.
+- **Console handle** — it stays strict: a spec with any issue, a bad modifier included, throws
+  `LoggingConfigError` and changes nothing. A spec entry replaces that category's whole override,
+  level and rules, so an entry with no modifiers clears the rules an earlier call set for it. The
+  `{ levels }` form and `Logging.override` are level-only and leave a category's rules alone;
+  `handle(null)` clears both levels and rules. A stored spec keeps its modifiers.
+
 **Browser sources** — `addBrowserSources(options?)` reads a level spec from `localStorage` and from
 the URL, and does nothing outside a browser:
 
@@ -441,6 +466,59 @@ no sink is in force.
 
 **What the logger does not have:** configuration files. Levels are set in code, with `configure`,
 `override` and spec strings, and from `VPG_LOG` and the browser sources above.
+
+### Sampling and rate limits
+
+A category can sample its records and cap their rate, so a hot loop at `debug` cannot flood a sink.
+Both checks run before the record is built: a dropped call runs no attributes thunk and reads
+neither the Scope, the bindings nor the redaction policy.
+
+```ts
+Logging.configure((b) =>
+  b
+    .addLevels({ "*": "info", db: "debug" })
+    .sample({ db: 0.1, "db.pool": { rate: 0.5, upTo: "debug" } }) // keep 10% of db records
+    .rateLimit({ db: { burst: 20, perMinute: 60 }, "db.noisy": false }) // 20 at once, then 1 a second
+    .random(() => 0.42) // the number a sampling rule draws against; Math.random unless set
+    .addSink(createConsoleSink()),
+);
+```
+
+- **Builder methods** — `sample(rules)` takes a category key (a Category or `*`) to a `SampleRule`:
+  a rate from 0 to 1, or `{ rate, upTo? }`. `rateLimit(rules)` takes a key to a `RateLimitRule`:
+  `{ burst, perMinute, upTo? }`, or `false` to clear an inherited rule. `random(source)` replaces
+  `Math.random`. The same rules come from a spec string (`db:debug;sample=0.1;limit=20/60`). A rule
+  governs a category by the longest dotted prefix, as a level does; `sample: 1` and `rateLimit:
+  false` clear one. A bad rule given in code throws `LoggingConfigError` and leaves the builder
+  unchanged.
+- **Level exemption** — a rule covers `trace`, `debug` and `info`. `warn`, `error` and `fatal`
+  always pass. `upTo` (or `upto=` in a spec) names another highest level, so `upTo: "error"` covers
+  everything below `fatal`.
+- **Order** — sampling first, then the rate limit. A sampled-out record takes no token and is not
+  counted as dropped.
+- **One bucket per rule** — a rate-limit rule owns one token bucket, shared by every category it
+  governs: `db` at `20/60` caps `db`, `db.pool` and `db.query` together, not each. The bucket holds
+  `burst` tokens and refills at `perMinute` a minute. Its state lives with the provider and survives
+  `configure`, `override` and the console handle for as long as the rule's key and value are
+  unchanged; changing the rule starts a full bucket.
+- **Dropped count** — a record a rule's bucket rejects is counted against the rule. The next record
+  the rule admits, whichever category it is under, carries `vipengele.logger.dropped: n`. The
+  attribute is written after the call's attributes and the redaction policy, so it wins over a
+  caller's attribute of the same name. The count resets once that record is built; a record whose
+  build fails leaves it for the next one. Sampling drops are not counted.
+- **Silent failures** — a throwing clock or `random` drops the record without a report, takes no
+  token and is not counted. A call a rate limit covers reads the clock once, and that reading is the
+  record's `time`.
+- **Never limited** — the console handle's confirmation record is never sampled or limited.
+  `Logger.enabled` reports the level alone, so an enabled call can still be dropped.
+- **Older copies** — the default provider is shared by every copy of the package in a realm. A
+  newer copy's `configure` against a default provider an older copy created hands its callback a
+  builder without `sample` and `rateLimit`, and an older copy skips a spec entry that carries
+  modifiers.
+
+**Types** — `SampleRule`, `RateLimitRule` and `PolicyLayer` (what `ParsedSpec.policy` and
+`LoggingBuild.policy` hold) are exported, with `PolicyLayers`, `SampleRules`, `RateLimitRules`,
+`SampleSetting` and `RateLimitSetting`.
 
 ### Trace correlation
 

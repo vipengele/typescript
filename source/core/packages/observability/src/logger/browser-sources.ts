@@ -97,7 +97,7 @@ function readStored(host: BrowserSourcesHost, key: string): string | undefined {
 /** `parseSpec(spec)` with each issue prefixed by `label`, so a warning says where the entry came from. */
 function parseLabelled(spec: string, label: string): ParsedSpec {
   const parsed = parseSpec(spec);
-  return { levels: parsed.levels, issues: parsed.issues.map((issue) => `${label}: ${issue}`) };
+  return { levels: parsed.levels, policy: parsed.policy, issues: parsed.issues.map((issue) => `${label}: ${issue}`) };
 }
 
 /**
@@ -133,6 +133,7 @@ export function readBrowserSources(options: unknown, host: BrowserSourcesHost = 
       unreadableStored = stored;
       specs.push({
         levels: parsed.levels,
+        policy: parsed.policy,
         issues: [...parsed.issues, `${label}: the stored spec holds no level and is removed from storage.`],
       });
     } else {

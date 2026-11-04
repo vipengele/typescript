@@ -45,6 +45,16 @@ describe("parseEnvironmentSpec", () => {
     ]);
   });
 
+  test("carries the rules the spec's modifiers set, naming VPG_LOG in a skipped modifier's issue", () => {
+    const parsed = parseEnvironmentSpec("db:debug;sample=0.25;limit=nope");
+
+    expect({ ...parsed.levels }).toEqual({ db: "debug" });
+    expect({ ...parsed.policy.sample }).toEqual({ db: { rate: 0.25, upTo: "info" } });
+    expect(Object.keys(parsed.policy.rateLimit)).toEqual([]);
+    expect(parsed.issues).toHaveLength(1);
+    expect(parsed.issues[0]).toMatch(/^VPG_LOG: Level spec entry "db:debug;sample=0.25;limit=nope" keeps its level but skips modifier /);
+  });
+
   test("an empty spec yields no levels and no issues", () => {
     const parsed = parseEnvironmentSpec("");
 
