@@ -1,5 +1,5 @@
 import type { Resource } from "@vipengele/ts-core-common/scope";
-import { drain, type OfflineOptions, openOffline } from "../../delivery/offline/wrapper";
+import { drain, openOffline } from "../../delivery/offline/wrapper";
 import type { StatusClass } from "../../delivery/retry-policy";
 import type { ErrorEvent } from "../event";
 import type { Transport } from "../transport";
@@ -7,14 +7,6 @@ import { classify } from "./http/classify";
 import { type HttpTransportOptions, resolveOptions } from "./http/options";
 import { createEventQueue, type DropReason } from "./http/queue";
 import { encodeBatch, type RequestDropReason, type RequestOptions, type Settlement, sendBatch } from "./http/request";
-
-/** Every reason a drop is reported with: the queue's and request's, and the offline store refusing a save. */
-type TransportDropReason = DropReason | "offline-full";
-
-/** {@link HttpTransportOptions} with the offline queue's settings, read as given. */
-interface OfflineHttpTransportOptions extends HttpTransportOptions {
-  readonly offline?: true | OfflineOptions;
-}
 
 /** The drop reasons whose events the offline queue saves instead of reporting. */
 type SavedReason = "retries-exhausted" | "closed";
@@ -71,10 +63,10 @@ interface FlushWaiter {
 export function createHttpTransport(options: HttpTransportOptions): Transport {
   const resolved = resolveOptions(options);
   const { scheduler, console: warnings } = resolved;
-  const onDrop = resolved.onDrop as ((events: readonly ErrorEvent[], reason: TransportDropReason) => void) | undefined;
+  const { onDrop } = resolved;
   const queue = createEventQueue(resolved);
   const stop = new AbortController();
-  const warned = new Set<TransportDropReason>();
+  const warned = new Set<DropReason>();
   const waiters = new Set<FlushWaiter>();
   const offline = openOffline<never>({
     url: resolved.url,
@@ -86,7 +78,7 @@ export function createHttpTransport(options: HttpTransportOptions): Transport {
     scheduler,
     // Only a saved body the endpoint rejects on replay reaches the queue's own drop report.
     onDrop: () => report([], "rejected"),
-    offline: (options as OfflineHttpTransportOptions).offline,
+    offline: resolved.offline,
     keySuffix: "http-errors",
   });
   const requestOptions: RequestOptions = offline === undefined ? resolved : { ...resolved, isOffline: offline.queue.isOffline };
@@ -102,7 +94,7 @@ export function createHttpTransport(options: HttpTransportOptions): Transport {
   let closed = false;
   let closing: Promise<boolean> | undefined;
 
-  function report(events: readonly ErrorEvent[], reason: TransportDropReason): void {
+  function report(events: readonly ErrorEvent[], reason: DropReason): void {
     try {
       if (onDrop !== undefined) {
         onDrop(events, reason);
@@ -143,7 +135,7 @@ export function createHttpTransport(options: HttpTransportOptions): Transport {
       return;
     }
     // A refused save reports `"offline-full"` or the reason it was given, never another delivery reason.
-    offline.queue.saveBody(body, events.length, reason, (dropped) => report(events, dropped as TransportDropReason));
+    offline.queue.saveBody(body, events.length, reason, (dropped) => report(events, dropped === "offline-full" ? dropped : reason));
     settle(events.length);
   }
 

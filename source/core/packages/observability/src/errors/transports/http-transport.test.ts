@@ -3,10 +3,9 @@ import type { Resource } from "@vipengele/ts-core-common/scope";
 import { createManualTime, type ManualTime } from "@vipengele/ts-core-common/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { failingIndexedDb, memoryIndexedDb } from "../../delivery/offline/fake-indexed-db.test-support";
-import type { OfflineOptions } from "../../delivery/offline/wrapper";
 import type { ErrorEvent } from "../event";
 import type { Transport } from "../transport";
-import type { HttpTransportOptions } from "./http/options";
+import type { HttpTransportOfflineOptions, HttpTransportOptions } from "./http/options";
 import type { DropReason } from "./http/queue";
 import { createHttpTransport } from "./http-transport";
 import { isHttpTransportConfigError } from "./http-transport-config-error";
@@ -478,9 +477,9 @@ describe("createHttpTransport send never throws", () => {
   });
 });
 
-/** The `offline` option, which the transport reads from its options as given. */
-function offline(settings: true | OfflineOptions): Partial<HttpTransportOptions> {
-  return { offline: settings } as Partial<HttpTransportOptions>;
+/** The `offline` option. */
+function offline(settings: true | HttpTransportOfflineOptions): Partial<HttpTransportOptions> {
+  return { offline: settings };
 }
 
 /** A step of {@link bodyFetch}: a status, a rejection as a network error gives, or a request that never settles. */
