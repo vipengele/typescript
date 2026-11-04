@@ -1,3 +1,12 @@
+export {
+  type BatchDropReason,
+  type BatchEntry,
+  type BatchingSink,
+  type BatchingSinkLimits,
+  type BatchingSinkOptions,
+  type BatchSink,
+  createBatchingSink,
+} from "./batching-sink";
 export type { BrowserSourcesOptions } from "./browser-sources";
 export type { LoggingBuild, LoggingBuilder, SinkOptions } from "./builder";
 export { isLoggingConfigError, LOGGING_CONFIG_ERROR_CODE, LoggingConfigError } from "./config-error";

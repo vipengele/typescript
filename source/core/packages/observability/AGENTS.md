@@ -101,7 +101,19 @@ Run commands from `source/core` (`pnpm build`, `pnpm type-check`, `pnpm test`, `
 - `createOtlpLogSink` (`logger/otlp-sink.ts`, exported from `./logger`) returns an `OtlpLogSink`,
   `Sink & { flush, close }`. The sink owns its lifecycle, and the `Sink` interface, the provider and
   the `vipengele.logger.provider.v1` slot protocol are unchanged (ADR-0022). It validates `url` and
-  `limits` (`LoggingConfigError`) and adds no Node exit hook: the host awaits `close()`.
+  `limits` (`LoggingConfigError`) and adds no Node exit hook: the host awaits `close()`. The
+  batching sink has an opt-in one (`flushOnExit`).
+- `createBatchingSink` (`logger/batching-sink.ts`, exported from `./logger`) returns a
+  `BatchingSink`, `Sink & { flush, close }`, wrapping a `BatchSink` (`writeBatch(entries)`, each
+  entry a record with its own Resource) or a plain `Sink` replayed record by record. One batch is
+  in flight at a time, and a returned Promise is awaited before the next. `limits` take the delivery
+  core's names and defaults (`maxQueueSize`, `maxBatchSize`, `scheduleDelayMs`), and a bad option
+  throws `LoggingConfigError`. `onDrop(reason, count, error?)` reports `queue-full`, `failed` and
+  `closed`. Page hide drains the whole buffer by default, through `delivery/unload.ts` only
+  (`delivery/` never imports from `./logger`); `lifecycle: {}` turns it off. `flushOnExit` adds one
+  process `exit` listener, where the `processExitHooks` capability holds, that reuses the hide
+  drain, so it completes only for a synchronous `writeBatch`. It never calls the inner's `flush` or
+  `close` (ADR-0023).
 - `createOtlpTransport` (`errors/transports/otlp-transport.ts`, exported from `./errors`) returns an
   `OtlpTransport`, a `Transport` with `flush` and `close`. It validates `url` and `limits`
   (`ReporterConfigError`) and adds no exit hook: the reporter's `close()` or a `globalHandlers`
