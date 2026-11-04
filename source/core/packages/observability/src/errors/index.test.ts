@@ -1,17 +1,14 @@
 import {
-  Scope,
   type Resource as CommonResource,
   type ScopeAttributes as CommonScopeAttributes,
   type ScopeUser as CommonScopeUser,
+  Scope,
 } from "@vipengele/ts-core-common/scope";
 import { expect, expectTypeOf, test } from "vitest";
-import * as entry from "./index";
+import type { DropReason as DeliveryDropReason } from "../delivery/delivery";
 import type {
-  Resource,
-  ScopeAttributes,
-  ScopeUser,
-  ErrorEvent,
   DropReason,
+  ErrorEvent,
   ErrorEventProcessor,
   ExitPolicy,
   GlobalErrorEventLike,
@@ -25,10 +22,15 @@ import type {
   IntegrationHost,
   OtlpTransport,
   OtlpTransportDropReason,
+  OtlpTransportOfflineOptions,
   OtlpTransportOptions,
   RateLimitOptions,
   ReporterBuilder,
+  Resource,
+  ScopeAttributes,
+  ScopeUser,
 } from "./index";
+import * as entry from "./index";
 
 test("the entry point exports the reporter, the built-in transports and the builder", () => {
   expect(entry.createReporter).toBeTypeOf("function");
@@ -95,6 +97,13 @@ test("the entry point exports the OTLP transport's options, drop reasons and ret
   expectTypeOf(entry.createOtlpTransport).returns.toEqualTypeOf<OtlpTransport>();
   expectTypeOf<OtlpTransport>().toExtend<entry.Transport>();
   expectTypeOf<Parameters<NonNullable<OtlpTransportOptions["onDrop"]>>[0]>().toEqualTypeOf<OtlpTransportDropReason>();
+  expectTypeOf<OtlpTransportDropReason>().toEqualTypeOf<DeliveryDropReason | "offline-full">();
+  expectTypeOf<NonNullable<OtlpTransportOptions["offline"]>>().toEqualTypeOf<true | OtlpTransportOfflineOptions>();
+  expectTypeOf<OtlpTransportOfflineOptions>().toEqualTypeOf<{
+    readonly maxEntries?: number;
+    readonly maxBytes?: number;
+    readonly indexedDB?: IDBFactory;
+  }>();
 });
 
 test("the entry point exports the HTTP transport's config error, guard and types", () => {

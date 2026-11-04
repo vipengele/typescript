@@ -17,6 +17,15 @@ import { detectLifecycleTargets, type LifecycleTargets, largestFittingPrefix, UN
  */
 export type DropReason = "queue-full" | "rejected" | "retries-exhausted" | "closed" | "unload-budget";
 
+/**
+ * The drop reasons for entries the collector never refused: the ones `undelivered` is handed in
+ * place of `onDrop`, for a host that can still deliver them later.
+ */
+export type UndeliveredReason = Extract<DropReason, "retries-exhausted" | "closed" | "unload-budget">;
+
+/** How an export or a drain can end a batch it does not deliver. */
+type SettleReason = "rejected" | UndeliveredReason;
+
 /** One item to export, the Resource it was enqueued with, and when the delivery received it. */
 export interface DeliveryEntry<T> {
   readonly item: T;
@@ -80,8 +89,24 @@ export interface DeliveryOptions<T> {
   readonly limits?: Partial<DeliveryLimits>;
   /** The delay before each retry a `Retry-After` does not name; defaults to full-jitter exponential backoff from 1 s to 30 s. */
   readonly backoff?: BackoffStrategy;
-  /** Told how many entries were dropped and why; a throw is swallowed. */
+  /**
+   * Told how many entries were dropped and why; a throw is swallowed. Not told of an
+   * {@link UndeliveredReason} while `undelivered` is given.
+   */
   readonly onDrop?: (reason: DropReason, count: number) => void;
+  /**
+   * Handed the entries themselves, in place of `onDrop`, when they leave the delivery undelivered
+   * rather than refused: once per batch for `"retries-exhausted"`; for `"closed"`, the buffer, then
+   * the batch in flight; for `"unload-budget"`, the entries past the keepalive budget. A throw is
+   * swallowed. Internal to the package: no wrapper's public options carry it.
+   */
+  readonly undelivered?: (entries: ReadonlyArray<DeliveryEntry<T>>, reason: UndeliveredReason) => void;
+  /**
+   * Read after an attempt fails with a network error or a timeout; `true` ends the batch as
+   * `"retries-exhausted"` at once, with no backoff and no further attempt. A status is retried
+   * regardless. Defaults to never offline. Internal to the package: no wrapper's public options carry it.
+   */
+  readonly isOffline?: () => boolean;
   /**
    * Where `pagehide` and `visibilitychange` arrive. Omitted, they are detected on `globalThis`
    * (`detectLifecycleTargets`); given, exactly these are watched, so `{}` watches none.
@@ -132,18 +157,14 @@ const UNSENT: AttemptResult = Object.freeze({ kind: "unsent" });
 
 function noop(): void {}
 
+function neverOffline(): boolean {
+  return false;
+}
+
 function requirePositiveInteger(name: string, value: number): void {
   if (!Number.isInteger(value) || value < 1) {
     throw new RangeError(`createDelivery expects ${name} to be an integer of at least 1, got ${value}`);
   }
-}
-
-function retryable(outcome: Outcome<unknown>): boolean {
-  if (!outcome.ok) {
-    return true;
-  }
-  const result = outcome.value as AttemptResult;
-  return result.kind === "status" && classifyStatus(result.status) === "retryable";
 }
 
 function retryAfterOf(outcome: Outcome<unknown>): number | undefined {
@@ -173,7 +194,7 @@ function requestHeaders(options: Pick<DeliveryOptions<unknown>, "headers">): Rec
 }
 
 /** How a batch whose last attempt answered `status` ended: delivered, or dropped for the returned reason. */
-function dropReasonOf(status: number): DropReason | undefined {
+function dropReasonOf(status: number): "rejected" | "retries-exhausted" | undefined {
   const verdict = classifyStatus(status);
   if (verdict === "delivered") {
     return undefined;
@@ -189,6 +210,8 @@ class DeliveryQueue<T> {
   readonly #clock: Clock;
   readonly #scheduler: Scheduler;
   readonly #onDrop: (reason: DropReason, count: number) => void;
+  readonly #undelivered: ((entries: ReadonlyArray<DeliveryEntry<T>>, reason: UndeliveredReason) => void) | undefined;
+  readonly #isOffline: () => boolean;
   readonly #retry: ReturnType<typeof createRetry>;
   readonly #timeout: ReturnType<typeof createTimeout>;
   readonly #unwatch: () => void;
@@ -213,12 +236,14 @@ class DeliveryQueue<T> {
     this.#clock = options.clock ?? systemClock;
     this.#scheduler = options.scheduler ?? systemScheduler;
     this.#onDrop = options.onDrop ?? noop;
+    this.#undelivered = options.undelivered;
+    this.#isOffline = options.isOffline ?? neverOffline;
     this.#retry = createRetry(
       "vipengele.delivery",
       {
         maxAttempts: limits.maxAttempts,
         backoff: options.backoff ?? withJitter(exponentialBackoff({ initialMs: 1000, maxMs: 30_000 }), "full"),
-        shouldRetry: retryable,
+        shouldRetry: (outcome) => this.#shouldRetry(outcome),
         retryAfter: retryAfterOf,
       },
       { clock: this.#clock, scheduler: this.#backoffScheduler() },
@@ -269,15 +294,47 @@ class DeliveryQueue<T> {
     }
   }
 
+  /**
+   * Reports `entries` as having left undelivered for `reason`: to `undelivered` when it is given,
+   * a throw swallowed, and otherwise to `onDrop` as a count.
+   */
+  #lose(entries: ReadonlyArray<DeliveryEntry<T>>, reason: UndeliveredReason): void {
+    const undelivered = this.#undelivered;
+    if (undelivered === undefined) {
+      this.#drop(reason, entries.length);
+      return;
+    }
+    try {
+      undelivered(entries, reason);
+    } catch {
+      // undelivered is the host's hook; its failure is not the delivery's to report.
+    }
+  }
+
   /** Records how `batch` ended; a batch that already settled, or none at all, ignores the report. */
-  #settle(batch: Batch<T> | undefined, reason: DropReason | undefined): void {
+  #settle(batch: Batch<T> | undefined, reason: SettleReason | undefined): void {
     if (batch === undefined || batch.settled) {
       return;
     }
     batch.settled = true;
-    if (reason !== undefined) {
+    if (reason === "rejected") {
       this.#drop(reason, batch.entries.length);
+    } else if (reason !== undefined) {
+      this.#lose(batch.entries, reason);
     }
+  }
+
+  /**
+   * Whether another attempt follows `outcome`: a retryable status, or a network error or timeout
+   * while the host is online. Offline, another attempt would only fail the same way, so the batch
+   * ends at once and is reported as `"retries-exhausted"`.
+   */
+  #shouldRetry(outcome: Outcome<unknown>): boolean {
+    if (!outcome.ok) {
+      return !this.#isOffline();
+    }
+    const result = outcome.value as AttemptResult;
+    return result.kind === "status" && classifyStatus(result.status) === "retryable";
   }
 
   /**
@@ -400,12 +457,12 @@ class DeliveryQueue<T> {
   }
 
   /** Drops the buffer and the batch in flight as `reason`, aborting the batch's attempt. */
-  #abandon(reason: DropReason): void {
+  #abandon(reason: UndeliveredReason): void {
     this.#stopTimer();
     this.#timerDue = false;
-    const buffered = this.#buffer.splice(0).length;
-    if (buffered > 0) {
-      this.#drop(reason, buffered);
+    const buffered = this.#buffer.splice(0);
+    if (buffered.length > 0) {
+      this.#lose(buffered, reason);
     }
     this.#inFlight?.abort.abort();
     this.#settle(this.#inFlight, reason);
@@ -485,7 +542,7 @@ class DeliveryQueue<T> {
       return;
     }
     if (prefix.count < entries.length) {
-      this.#drop("unload-budget", entries.length - prefix.count);
+      this.#lose(entries.slice(prefix.count), "unload-budget");
     }
     if (prefix.count === 0) {
       return;

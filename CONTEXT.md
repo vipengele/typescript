@@ -227,6 +227,11 @@ Owns batching, retry, `flush()` and `close()`. It drops an Error Event only when
 it; whether an event is reported at all is the Reporter's decision.
 _Avoid_: exporter (OTel's word; use it only for OTLP specifically)
 
+**Offline Queue**:
+The IndexedDB store a Transport or Sink writes to when it cannot deliver a batch, and replays when
+it is created and when the network returns. It is opt-in, bounded, and keeps what it holds over what
+arrives.
+
 **Locale**:
 The language-and-region convention a number or a date is read and written in. Defaults to the
 Runtime's own and can be constructed to override it. One value serves numbers and dates, so the two

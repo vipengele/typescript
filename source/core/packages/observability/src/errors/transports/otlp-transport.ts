@@ -1,6 +1,14 @@
-import type { Clock, Scheduler } from "@vipengele/ts-core-common";
+import { type Clock, type Scheduler, systemClock } from "@vipengele/ts-core-common";
 import type { Resource } from "@vipengele/ts-core-common/scope";
-import { createDelivery, type DeliveryFetch, type DeliveryLimits, type DropReason } from "../../delivery/delivery";
+import {
+  createDelivery,
+  DEFAULT_DELIVERY_LIMITS,
+  type DeliveryEntry,
+  type DeliveryFetch,
+  type DeliveryLimits,
+} from "../../delivery/delivery";
+import type { OfflineDropReason } from "../../delivery/offline/offline-queue";
+import { drain, offlineProblem, openOffline } from "../../delivery/offline/wrapper";
 import { deliveryOptionsProblem } from "../../delivery/options";
 import type { LifecycleTargets } from "../../delivery/unload";
 import { encodeErrorEvents } from "../../otlp/encode-error-events";
@@ -8,8 +16,21 @@ import type { ErrorEvent } from "../event";
 import { ReporterConfigError } from "../reporter-config-error";
 import type { Transport } from "../transport";
 
-/** Why events left the transport without reaching the collector; see the delivery's drop reasons. */
-export type OtlpTransportDropReason = DropReason;
+/**
+ * Why events left the transport without reaching the collector; see the delivery's drop reasons.
+ * `"offline-full"` is a batch the offline queue refused because it was over its bounds.
+ */
+export type OtlpTransportDropReason = OfflineDropReason;
+
+/** How the offline queue is bounded and where it saves; see {@link OtlpTransportOptions.offline}. */
+export interface OtlpTransportOfflineOptions {
+  /** How many batches the queue holds, across every sink and transport sharing the database. Defaults to 30. */
+  readonly maxEntries?: number;
+  /** How many UTF-8 bytes of request body the queue holds. Defaults to 1 MiB. */
+  readonly maxBytes?: number;
+  /** Defaults to `globalThis.indexedDB`. */
+  readonly indexedDB?: IDBFactory;
+}
 
 /** Where an OTLP transport exports to, and how it batches, retries and reports drops. */
 export interface OtlpTransportOptions {
@@ -30,6 +51,15 @@ export interface OtlpTransportOptions {
    * `maxAttempts` are integers of at least 1; the delays and timeouts are positive and finite.
    */
   readonly limits?: Partial<DeliveryLimits>;
+  /**
+   * Saves the batches the transport gives up on (`retries-exhausted`, `unload-budget`, `closed`) in
+   * IndexedDB and replays them on creation and when the window reports `online`. Delivery is at
+   * least once. A batch is kept oldest-first and a full queue refuses the new batch as
+   * `"offline-full"`. Drops are reported after the save's outcome, never synchronously. Without
+   * IndexedDB, or when it cannot be opened, nothing is saved and the drop is reported as without
+   * this option. `lifecycle: {}` also stops the `online` replay.
+   */
+  readonly offline?: true | OtlpTransportOfflineOptions;
   /** Told how many events were dropped and why; a throw is swallowed. */
   readonly onDrop?: (reason: OtlpTransportDropReason, count: number) => void;
 }
@@ -49,12 +79,15 @@ export interface OtlpTransport extends Transport {
  * `flush`/`close`, or `globalHandlers` under an `"exit"` policy, drains it.
  *
  * Throws a `ReporterConfigError` when `url` is not an absolute http or https URL or a limit is invalid.
+ * With `offline`, `flush` and `close` also wait for pending saves and resolve `false` if they
+ * outlast the timeout.
  */
 export function createOtlpTransport(options: OtlpTransportOptions): OtlpTransport {
-  const problem = deliveryOptionsProblem(options.url, options.limits);
+  const problem = deliveryOptionsProblem(options.url, options.limits) ?? offlineProblem(options.offline);
   if (problem !== undefined) {
     throw new ReporterConfigError(`createOtlpTransport expects ${problem}`);
   }
+  const offline = openOffline({ ...options, keySuffix: "errors", encode: encodeEntries });
   const delivery = createDelivery<ErrorEvent>({
     url: options.url,
     headers: options.headers,
@@ -64,13 +97,21 @@ export function createOtlpTransport(options: OtlpTransportOptions): OtlpTranspor
     lifecycle: options.lifecycle,
     limits: options.limits,
     onDrop: options.onDrop,
-    encode: (entries) => encodeErrorEvents(entries.map(({ item, resource, observedMs }) => ({ event: item, resource, observedMs }))),
+    undelivered: offline?.queue.undelivered,
+    isOffline: offline?.queue.isOffline,
+    encode: encodeEntries,
   });
+  const clock = options.clock ?? systemClock;
+  const defaultTimeout = options.limits?.flushTimeoutMs ?? DEFAULT_DELIVERY_LIMITS.flushTimeoutMs;
   return {
     send(event: ErrorEvent, resource: Resource): void {
       delivery.enqueue(event, resource);
     },
-    flush: (timeoutMs) => delivery.flush(timeoutMs),
-    close: (timeoutMs) => delivery.close(timeoutMs),
+    flush: (timeoutMs) => drain((t) => delivery.flush(t), offline, false, clock, timeoutMs, defaultTimeout),
+    close: (timeoutMs) => drain((t) => delivery.close(t), offline, true, clock, timeoutMs, defaultTimeout),
   };
+}
+
+function encodeEntries(entries: ReadonlyArray<DeliveryEntry<ErrorEvent>>): string {
+  return encodeErrorEvents(entries.map(({ item, resource, observedMs }) => ({ event: item, resource, observedMs })));
 }

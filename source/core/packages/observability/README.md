@@ -540,6 +540,23 @@ await otlp.close();
 - **Page unload** — on `pagehide`, or `visibilitychange` to `hidden`, the sink sends the largest
   oldest prefix of its queue that fits 64 KiB as one `keepalive` `fetch` with the configured
   headers. The rest is dropped as `unload-budget`.
+- **Offline queue** — `offline: true`, or `offline: { maxEntries?, maxBytes?, indexedDB? }`, saves
+  a batch the sink gives up on (`retries-exhausted`, `unload-budget` or `closed`) in IndexedDB as its
+  encoded request body, and replays the saved bodies oldest first, one request at a time, when the
+  sink is created and whenever the window reports `online`. A network error while
+  `navigator.onLine` is `false` ends the batch at once, with no further attempt. The queue holds at
+  most `maxEntries` bodies (30) and `maxBytes` UTF-8 bytes (1 MiB) across everything sharing the
+  `vipengele-otlp-offline` database, and keeps the oldest: a batch that would pass either bound is
+  refused and reported as `offline-full`. `indexedDB` defaults to `globalThis.indexedDB`; with none,
+  or when the open fails, nothing is saved and the drop is reported as it is without the option.
+  Delivery is at least once: a body sent but not yet deleted is sent again by the next replay. The
+  save on `pagehide` is best effort, since the browser may end the page before the write
+  completes. With the option on, a drop is reported after the save's outcome rather than
+  synchronously, and `flush` and `close` also wait for pending saves, resolving `false` if they
+  outlast the timeout; a `close` that resolves `false` still closes the database once those saves
+  finish. `lifecycle: {}` watches no window, so it also turns off the `online`
+  replay. With the option off, no database is opened. An invalid `maxEntries` or `maxBytes` throws
+  `LoggingConfigError`.
 - **No `sendBeacon`** — a beacon cannot set request headers, so an authenticated collector would
   refuse it, and a cross-origin beacon with an `application/json` body is blocked by the browser.
   A `keepalive` fetch carries headers and the same budget.
@@ -612,7 +629,7 @@ resolve `true` in that case, since there is nothing to wait on.
 ### HTTP transport
 
 `createHttpTransport` delivers events to an endpoint as batched JSON, retrying what can be retried
-and bounding what it holds (ADR-0022):
+and bounding what it holds (ADR-0023):
 
 ```ts
 import { createHttpTransport, createReporter } from "@vipengele/ts-core-observability/errors";
@@ -711,9 +728,16 @@ drains it, and so does `globalHandlers` under an `"exit"` policy, which waits up
 [Global handlers](#global-handlers).
 
 - **Options** — the same as the log sink's: `url`, `headers`, `fetch`, `clock`, `scheduler`,
-  `lifecycle`, `limits` and `onDrop`, with the same defaults, retry rules, drop reasons, flush and
-  close behaviour, and page-unload `keepalive` request; see [OTLP export](#otlp-export). `clock`
-  stamps each event's observed time. A bad `url` or limit throws `ReporterConfigError`.
+  `lifecycle`, `limits`, `offline` and `onDrop`, with the same defaults, retry rules, drop reasons,
+  flush and close behaviour, and page-unload `keepalive` request; see [OTLP export](#otlp-export).
+  `clock` stamps each event's observed time. A bad `url`, limit or `offline` bound throws
+  `ReporterConfigError`.
+- **Offline queue** — `offline` saves undelivered batches in IndexedDB and replays them, exactly as
+  the log sink's does (see [OTLP export](#otlp-export)): defaults of 30 bodies and 1 MiB, the
+  oldest kept, `offline-full` for a refused batch, at-least-once delivery, a best-effort save on
+  `pagehide`, drops reported after the save's outcome, and `lifecycle: {}` turning off the
+  `online` replay. Its bodies are saved under the transport's own key, so the transport replays
+  only error batches.
 - **Mapping** — an Error Event becomes one OTLP log record under the instrumentation scope
   `@vipengele/ts-core-observability/errors`, grouped by Resource:
   - `time` is `timeUnixNano`, the moment the transport received the event is

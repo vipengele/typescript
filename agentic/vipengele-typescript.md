@@ -88,7 +88,8 @@ Error Event, Scope, Breadcrumb, Transport) before naming things.
     `agentic/rules/transport-send-is-fire-and-forget.md`) every transport — the built-in
     `createConsoleTransport`, `createHttpTransport`, `createTestTransport` and `createOtlpTransport`
     (which exports Error Events as OTLP log records over the delivery core `createOtlpLogSink` uses,
-    drained by its `flush`/`close`, ADR-0022) included — implements.
+    drained by its `flush`/`close`, ADR-0022; both OTLP wrappers take an opt-in IndexedDB `offline`
+    queue that persists undelivered bodies and replays them, ADR-0024) included — implements.
 - `source/ts/` — `@vipengele/ts`, the framework's batteries-included umbrella package
   (`packages/ts/`, nested so `release.yml`'s publish-order globbing sees it). Its name is a
   deliberate exception to the `@vipengele/ts-<project>-<package>` convention (ADR-0003). It

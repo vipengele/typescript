@@ -114,6 +114,17 @@ Run commands from `source/core` (`pnpm build`, `pnpm type-check`, `pnpm test`, `
   `Retry-After`) over `@vipengele/ts-core-resilience`.
   `unload.ts` watches `pagehide` and `visibilitychange` and drains one `keepalive` fetch within
   64 KiB; there is no `sendBeacon` (ADR-0022).
+- `src/delivery/offline/` is the opt-in offline queue behind both wrappers' `offline` option
+  (ADR-0024): `store.ts` (`openOfflineStore`, IndexedDB, bounded by count and UTF-8 bytes across all
+  keys, keep-oldest) and `offline-queue.ts` (`OfflineQueue`, which persists the encoded body of a batch
+  given to the delivery's internal `undelivered` hook and replays on open and `online`). The wrapper
+  keys the queue `${url}|logs` or `${url}|errors`, passes `globalThis.navigator` and the lifecycle
+  window itself, and on `close` closes the store once its saves finish, after `settle` or, when `close` times out, later. The queue never closes the store.
+  `wrapper.ts` holds what both wrappers share (`openOffline`, `offlineProblem`, `drain`), generic over
+  the item type; each wrapper passes its key suffix and `encode` and throws its own config error from
+  the problem text. `fake-indexed-db.test-support.ts` is the in-memory `IDBFactory` their tests use; `*.test-support.ts` files are test-only, excluded from the build and from coverage.
+  `OtlpDropReason` and `OtlpTransportDropReason` add `"offline-full"`; the core's `DropReason` does
+  not.
 - `src/otlp/` is internal and unexported: the OTLP/HTTP JSON encoder. `encode-logs.ts` is the only
   file that knows `LogRecord` and `encode-error-events.ts` the only one that knows `ErrorEvent`;
   `resource.ts` (Resource grouping), `exception.ts` (`exception.*` attributes), `any-value.ts`,
@@ -174,7 +185,7 @@ Run commands from `source/core` (`pnpm build`, `pnpm type-check`, `pnpm test`, `
   `requestTimeoutMs`, retries through `@vipengele/ts-core-resilience/retry`), `classify.ts` (retry or
   reject by status) and `retry-after.ts`.
 - One request is in flight at a time; every wait runs on the injected `Scheduler`. Nothing is `unref`'d and
-  no exit hook is registered, so a process that must not lose events awaits `close()` (ADR-0022).
+  no exit hook is registered, so a process that must not lose events awaits `close()` (ADR-0023).
 - Every undeliverable event goes to `onDrop(events, reason)`; with no `onDrop` it warns once per reason.
   `send` never throws, a throwing `onDrop` is swallowed.
 - `@vipengele/ts-core-resilience` is a `workspace:*` dependency of this package.
