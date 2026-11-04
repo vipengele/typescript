@@ -23,10 +23,21 @@ import { createRateLimiter, DEFAULT_RATE_LIMIT, type RateLimiter, type RateLimit
 import { parseStack } from "./stack/parse-stack";
 import type { Transport } from "./transport";
 
-/** What a caller hands the pipeline: a thrown value or a message, plus its own level and attributes. */
+/**
+ * What a caller hands the pipeline, plus its own level and attributes: a thrown value, a message, or
+ * an error already serialized elsewhere, such as a Log Record's. A `serialized-exception` runs every
+ * stage a thrown value does, its `trace`, when given, standing in for the span active at capture.
+ */
 export type CaptureInput =
   | { readonly kind: "exception"; readonly error: unknown; readonly level?: Level; readonly attributes?: AttributesInput }
-  | { readonly kind: "message"; readonly message: string; readonly level?: Level; readonly attributes?: AttributesInput };
+  | { readonly kind: "message"; readonly message: string; readonly level?: Level; readonly attributes?: AttributesInput }
+  | {
+      readonly kind: "serialized-exception";
+      readonly error: SerializedError;
+      readonly level: Level;
+      readonly attributes: AttributesInput;
+      readonly trace?: LogTrace | undefined;
+    };
 
 /** Runs one event through the pipeline and returns its id, whether or not the event reached the transport. Never throws. */
 export type Capture = (input: CaptureInput, mechanism: Mechanism) => string;
@@ -123,14 +134,29 @@ function boundFrames(frames: StackFrame[], pipeline: Pipeline): StackFrame[] {
 }
 
 /**
- * Stage 3: the caller's thrown value or message, in the Error Event's shape. A message longer than
- * `maxStringLength` is cut and suffixed by the same engine, and with the same `"…[truncated]"`
- * marker, as every string inside the attributes and the exception chain.
+ * Stage 3: the caller's thrown value, serialized error or message, in the Error Event's shape. A
+ * serialized error is not serialized again, only lifted to an {@link ExceptionRecord} like a thrown
+ * value's; it is cloned first, so the event shares no object with the caller, which may hold it
+ * frozen. A message longer than `maxStringLength` is cut and suffixed by the same engine, and with
+ * the same `"…[truncated]"` marker, as every string inside the attributes and the exception chain.
  */
 function normalize(input: CaptureInput, pipeline: Pipeline): NormalizedPayload {
-  return input.kind === "exception"
-    ? { exception: toExceptionRecord(serializeError(input.error, pipeline.limits), pipeline) }
-    : { message: toJsonSafe(input.message, { maxStringLength: pipeline.limits?.maxStringLength }) as string };
+  switch (input.kind) {
+    case "exception":
+      return { exception: toExceptionRecord(serializeError(input.error, pipeline.limits), pipeline) };
+    case "serialized-exception":
+      return { exception: toExceptionRecord(structuredClone(input.error), pipeline) };
+    case "message":
+      return { message: toJsonSafe(input.message, { maxStringLength: pipeline.limits?.maxStringLength }) as string };
+  }
+}
+
+/** The trace an event is enriched with: a serialized exception's own `trace` when it has one, else the span active now. */
+function traceOf(input: CaptureInput): LogTrace | undefined {
+  if (input.kind === "serialized-exception" && input.trace !== undefined) {
+    return { ...input.trace };
+  }
+  return readActiveTrace();
 }
 
 /**
@@ -181,10 +207,11 @@ function isIgnored(payload: NormalizedPayload, pipeline: Pipeline): boolean {
  * Stage 5: stamps what the pipeline knows about the event rather than what the caller handed over.
  * The scope's attributes lie beneath the call's own, the call's winning on a shared key, each side
  * normalized on its own so a large scope chain cannot push a call attribute past the breadth bound.
- * The span active at capture time rides along as `trace`; no active span leaves the key out.
+ * The input's own trace, or else the span active at capture time, rides along as `trace`; neither
+ * leaves the key out.
  */
 function enrich(payload: NormalizedPayload, input: CaptureInput, mechanism: Mechanism, id: string, pipeline: Pipeline): ErrorEvent {
-  const trace = readActiveTrace();
+  const trace = traceOf(input);
   const event: ErrorEvent = {
     id,
     time: pipeline.clock(),

@@ -1,9 +1,10 @@
-import type { SerializeErrorOptions } from "@vipengele/ts-core-common";
+import { type SerializedError, type SerializeErrorOptions, serializeError } from "@vipengele/ts-core-common";
 import { type Resource, Scope } from "@vipengele/ts-core-common/scope";
+import { secretKeys } from "@vipengele/ts-core-redaction";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ErrorEvent } from "./event";
 import type { IntegrationHost } from "./integration";
-import { createCapture } from "./pipeline";
+import { type CaptureInput, createCapture, type Pipeline } from "./pipeline";
 import { createReporter } from "./reporter";
 import { createTestTransport } from "./transports/test-transport";
 
@@ -1168,5 +1169,185 @@ describe("the active trace in an event", () => {
     reporter.captureException(new Error("boom"));
 
     expect("trace" in onlyEvent(transport.events)).toBe(false);
+  });
+});
+
+describe("a serialized exception", () => {
+  const LOGGED = { handled: true, source: "logger" } as const;
+  const OTHER_TRACE = { traceId: "a".repeat(32), spanId: "b".repeat(16), flags: 0 };
+
+  /** A capture function over a test transport, with `options` laid over a fixed clock and no processors. */
+  function aCapture(options: Partial<Pipeline> = {}) {
+    const transport = createTestTransport();
+    return { transport, capture: createCapture({ clock: () => 1, processors: [], transport, ...options }) };
+  }
+
+  function serialized(error: SerializedError, extra: Partial<CaptureInput> = {}): CaptureInput {
+    return { kind: "serialized-exception", error, level: "error", attributes: {}, ...extra } as CaptureInput;
+  }
+
+  /** An error with a `cause` whose own cause is an `AggregateError`, each link carrying data and a stack. */
+  function aChain(): Error {
+    const inner = new AggregateError(
+      [new TypeError("first"), Object.assign(new RangeError("second"), { password: "hunter2" })],
+      "both failed",
+    );
+    const cause = new Error("socket hang up", { cause: inner });
+    return Object.assign(new Error("fetch failed", { cause }), { token: "abc", status: 503 });
+  }
+
+  /** `value` with every nested object frozen. */
+  function deepFreeze<T>(value: T): T {
+    if (typeof value === "object" && value !== null) {
+      for (const nested of Object.values(value)) {
+        deepFreeze(nested);
+      }
+      Object.freeze(value);
+    }
+    return value;
+  }
+
+  it("produces the same exception record, frames included, as the thrown error it was serialized from", () => {
+    const error = aChain();
+    const { transport, capture } = aCapture({ dedupe: false });
+
+    capture({ kind: "exception", error }, LOGGED);
+    capture(serialized(serializeError(error)), LOGGED);
+
+    const [thrown, logged] = transport.events as [ErrorEvent, ErrorEvent];
+    expect(logged.exception).toEqual(thrown.exception);
+    expect(logged.exception?.frames.length).toBeGreaterThan(0);
+    expect(logged.exception?.cause?.cause?.errors?.map((link) => link.message)).toEqual(["first", "second"]);
+    expect(logged.exception?.cause?.cause?.errors?.[0]?.frames.length).toBeGreaterThan(0);
+    expect("message" in logged).toBe(false);
+  });
+
+  it("cuts each link's frames at maxBreadth, as for a thrown error", () => {
+    const error = aChain();
+    const { transport, capture } = aCapture({ limits: { maxBreadth: 1 } });
+
+    capture(serialized(serializeError(error)), LOGGED);
+
+    const exception = onlyEvent(transport.events).exception;
+    expect(exception?.frames).toHaveLength(1);
+    expect(exception?.cause?.frames).toHaveLength(1);
+  });
+
+  it("is matched by ignoreErrors as the thrown error it was serialized from is", () => {
+    class TimeoutError extends Error {
+      override name = "TimeoutError";
+    }
+    const { transport, capture } = aCapture({ ignoreErrors: [/^TimeoutError: request/, /^socket/], dedupe: false });
+
+    capture(serialized(serializeError(new TimeoutError("request took too long"))), LOGGED);
+    capture(serialized(serializeError(new Error("socket hang up"))), LOGGED);
+    capture(serialized(serializeError(new Error("fetch failed", { cause: new Error("socket hang up") }))), LOGGED);
+
+    expect(onlyEvent(transport.events).exception?.message).toBe("fetch failed");
+  });
+
+  it("is a duplicate of the thrown error it was serialized from, and of an identical serialized capture", () => {
+    const error = aChain();
+    const { transport, capture } = aCapture();
+
+    capture({ kind: "exception", error }, LOGGED);
+    capture(serialized(serializeError(error)), LOGGED);
+    capture(serialized(serializeError(error)), LOGGED);
+
+    expect(onlyEvent(transport.events).exception?.message).toBe("fetch failed");
+  });
+
+  it("is redacted as the thrown error it was serialized from is, its attributes included", () => {
+    const error = aChain();
+    const attributes = { apiKey: "sk-live", user: "ada" };
+    const { transport, capture } = aCapture({ redaction: secretKeys, dedupe: false });
+
+    capture({ kind: "exception", error, attributes }, LOGGED);
+    capture(serialized(serializeError(error), { attributes }), LOGGED);
+
+    const [thrown, logged] = transport.events as [ErrorEvent, ErrorEvent];
+    expect(logged).toEqual({ ...thrown, id: logged.id });
+    expect(logged.attributes.apiKey).not.toBe("sk-live");
+    expect(logged.attributes.user).toBe("ada");
+    expect(logged.exception?.data?.token).not.toBe("abc");
+    expect(logged.exception?.cause?.cause?.errors?.[1]?.data?.password).not.toBe("hunter2");
+  });
+
+  it("redacts a synthetic link's JSON message as for the thrown value it was serialized from", () => {
+    const thrownValue = { password: "hunter2", reason: "nope" };
+    const { transport, capture } = aCapture({ redaction: secretKeys, dedupe: false });
+
+    capture({ kind: "exception", error: thrownValue }, LOGGED);
+    capture(serialized(serializeError(thrownValue)), LOGGED);
+
+    const [thrown, logged] = transport.events as [ErrorEvent, ErrorEvent];
+    expect(logged.exception).toEqual(thrown.exception);
+    expect(logged.exception?.message).not.toContain("hunter2");
+  });
+
+  it("honours the level and attributes it is given", () => {
+    const { transport, capture } = aCapture();
+
+    Scope.isolated("request", { request: "r1", shared: "scope" }, () => {
+      capture(serialized(serializeError(new Error("boom")), { level: "fatal", attributes: { shared: "call", order: 7 } }), LOGGED);
+    });
+
+    const event = onlyEvent(transport.events);
+    expect(event.level).toBe("fatal");
+    expect(event.attributes).toEqual({ request: "r1", shared: "call", order: 7 });
+    expect(event.mechanism).toEqual(LOGGED);
+  });
+
+  it("carries its own trace over the span active at capture", () => {
+    activateSpan();
+    const { transport, capture } = aCapture();
+
+    capture(serialized(serializeError(new Error("boom")), { trace: OTHER_TRACE }), LOGGED);
+
+    expect(onlyEvent(transport.events).trace).toEqual(OTHER_TRACE);
+  });
+
+  it("carries the span active at capture when it has no trace of its own", () => {
+    activateSpan();
+    const { transport, capture } = aCapture();
+
+    capture(serialized(serializeError(new Error("boom"))), LOGGED);
+
+    expect(onlyEvent(transport.events).trace).toEqual({ traceId: TRACE_ID, spanId: SPAN_ID, flags: 1 });
+  });
+
+  it("drops a malformed trace of its own, and keeps the event", () => {
+    activateSpan();
+    const { transport, capture } = aCapture();
+
+    capture(serialized(serializeError(new Error("boom")), { trace: { ...OTHER_TRACE, traceId: "short" } }), LOGGED);
+
+    const event = onlyEvent(transport.events);
+    expect(event.exception?.message).toBe("boom");
+    expect("trace" in event).toBe(false);
+  });
+
+  it("leaves a frozen input untouched, and hands processors an event that shares no object with it", () => {
+    const error = deepFreeze(serializeError(aChain()));
+    const snapshot = structuredClone(error);
+    const input = deepFreeze(serialized(error, { attributes: { token: "abc" }, trace: OTHER_TRACE }));
+    const { transport, capture } = aCapture({
+      redaction: null,
+      processors: [
+        (event) => {
+          (event.exception?.data as Record<string, unknown>).token = "changed";
+          (event.exception?.cause as { message: string }).message = "changed";
+          (event.trace as { flags: number }).flags = 1;
+          return event;
+        },
+      ],
+    });
+
+    capture(input, LOGGED);
+
+    const event = onlyEvent(transport.events);
+    expect(event.exception?.data?.token).toBe("changed");
+    expect(error).toEqual(snapshot);
+    expect(input).toEqual(serialized(snapshot, { attributes: { token: "abc" }, trace: OTHER_TRACE }));
   });
 });
