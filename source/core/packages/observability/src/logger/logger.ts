@@ -3,6 +3,7 @@ import { mergeAttributes } from "../merge-attributes";
 import { validateCategory } from "./categories";
 import { type BindingLayer, emitRecord, evaluateAttributes, freezeDeep } from "./emit";
 import { enabled, type LevelEntry } from "./levels";
+import type { Admission } from "./policy";
 import type { EmitSettings } from "./record";
 
 /**
@@ -144,10 +145,28 @@ function childBindings(bindings: readonly Layer[], added: Layer): Layer[] {
 
 /** The {@link Logger} for an already validated category, carrying `bindings` on every record. */
 function bindLogger(category: string, resolve: LevelResolver, emit: () => EmitSettings, bindings: readonly Layer[]): Logger {
+  /**
+   * Checks the level, then that a sink is in force, then the sampling rule and the rate limit, and
+   * builds and writes a record only for a call that passes all of them. A call dropped at any step
+   * runs no thunk and reads neither the Scope nor the bindings, and one dropped before the rate
+   * limit reads no clock either.
+   */
   function log(level: Level, message: string, attributes: AttributesInput | AttributesThunk | undefined, error: unknown): void {
-    if (enabled(resolve(category), level)) {
-      emitRecord(emit(), level, category, message, attributes, error, bindings);
+    if (!enabled(resolve(category), level)) {
+      return;
     }
+    const settings = emit();
+    if (settings.sinks.length === 0) {
+      return;
+    }
+    let admission: Admission | undefined;
+    if (settings.policy !== undefined) {
+      admission = settings.policy.admit(category, level, settings.random ?? Math.random, settings.clock);
+      if (admission === undefined) {
+        return;
+      }
+    }
+    emitRecord(settings, level, category, message, attributes, error, bindings, admission);
   }
 
   const logger: Logger = Object.freeze({

@@ -1,9 +1,10 @@
 import type { Attributes, SerializedError } from "@vipengele/ts-core-common";
 import { type Resource, Scope } from "@vipengele/ts-core-common/scope";
 import { type RedactionPolicy, secretKeys } from "@vipengele/ts-core-redaction";
-import { afterEach, describe, expect, test, vi } from "vitest";
-import { type BindingLayer, emitRecord, evaluateAttributes } from "./emit";
+import { afterEach, describe, expect, type Mock, test, vi } from "vitest";
+import { type BindingLayer, DROPPED_ATTRIBUTE, emitRecord, evaluateAttributes } from "./emit";
 import { isNormalized, markNormalized } from "./normalized";
+import type { Admission } from "./policy";
 import type { EmitSettings, LogProcessor, LogRecord, Sink, SinkRegistration } from "./record";
 import { redactionProcessor } from "./redaction-processor";
 import type { LogTrace } from "./trace";
@@ -1957,5 +1958,108 @@ describe("emitRecord trace", () => {
     expect(onSinkError).toHaveBeenCalledOnce();
     expect(onSinkError.mock.calls[0]?.[0]).toBeInstanceOf(TypeError);
     expect(onSinkError.mock.calls[0]?.[1]).toBe(processor);
+  });
+});
+
+/** An admission at `time` carrying `dropped`, whose `settle` is a spy. */
+function admission(time: number | undefined, dropped: number): Admission & { readonly settle: Mock<() => void> } {
+  return { time, dropped, settle: vi.fn<() => void>() };
+}
+
+describe("emitRecord admission", () => {
+  test("the admission's time is the record's time, and the clock is not read", () => {
+    const sink = collector();
+    const clock = vi.fn(() => 5);
+
+    emitRecord(settings({ sinks: [sink], clock }), "info", "a", "m", undefined, undefined, [], admission(42.5, 0));
+
+    expect(sink.written[0]?.record.time).toBe(42.5);
+    expect(clock).not.toHaveBeenCalled();
+  });
+
+  test("an admission without a time reads the clock for the record's time", () => {
+    const sink = collector();
+    const clock = vi.fn(() => 5);
+
+    emitRecord(settings({ sinks: [sink], clock }), "info", "a", "m", undefined, undefined, [], admission(undefined, 0));
+
+    expect(sink.written[0]?.record.time).toBe(5);
+    expect(clock).toHaveBeenCalledOnce();
+  });
+
+  test("no dropped count writes no dropped attribute, and the admission is settled once the record is built", () => {
+    const sink = collector();
+    const admitted = admission(1, 0);
+
+    emitRecord(settings({ sinks: [sink] }), "info", "a", "m", { k: 1 }, undefined, [], admitted);
+
+    expect(sink.written[0]?.record.attributes).toEqual({ k: 1 });
+    expect(admitted.settle).toHaveBeenCalledOnce();
+  });
+
+  test("a dropped count is written last, over a caller's attribute of the same name and past the redaction policy, and the record stays frozen", () => {
+    const sink = collector();
+    const redaction: RedactionPolicy = { keys: [DROPPED_ATTRIBUTE, "secret"] };
+
+    emitRecord(
+      settings({ sinks: [sink], redaction }),
+      "debug",
+      "a",
+      "m",
+      { [DROPPED_ATTRIBUTE]: "caller", secret: "s", k: 1 },
+      undefined,
+      [layer({ [DROPPED_ATTRIBUTE]: "bound" })],
+      admission(1, 3),
+    );
+
+    const { record } = sink.written[0] as Written;
+    expect(record.attributes[DROPPED_ATTRIBUTE]).toBe(3);
+    expect(record.attributes.secret).not.toBe("s");
+    expect(record.attributes.k).toBe(1);
+    expect(Object.isFrozen(record.attributes)).toBe(true);
+    expect(isNormalized(record)).toBe(true);
+  });
+
+  test("the dropped count reaches every sink through global and per-sink processors that pass the attributes on", () => {
+    const first = collector();
+    const second = collector();
+    const rebuild: LogProcessor = (record) => ({ ...record, attributes: { ...record.attributes } });
+
+    emitRecord(
+      settings({ sinks: [registered(first, rebuild), second], processors: [rebuild], redaction: null }),
+      "info",
+      "a",
+      "m",
+      undefined,
+      undefined,
+      [],
+      admission(1, 2),
+    );
+
+    expect(first.written[0]?.record.attributes).toEqual({ [DROPPED_ATTRIBUTE]: 2 });
+    expect(second.written[0]?.record.attributes).toEqual({ [DROPPED_ATTRIBUTE]: 2 });
+  });
+
+  test("a build that throws drops the record without settling the admission", () => {
+    const sink = collector();
+    const admitted = admission(undefined, 4);
+    const clock = (): number => {
+      throw new Error("clock failed");
+    };
+
+    emitRecord(settings({ sinks: [sink], clock }), "info", "a", "m", undefined, undefined, [], admitted);
+
+    expect(sink.written).toHaveLength(0);
+    expect(admitted.settle).not.toHaveBeenCalled();
+  });
+
+  test("a global processor dropping the record still settles the admission", () => {
+    const sink = collector();
+    const admitted = admission(1, 4);
+
+    emitRecord(settings({ sinks: [sink], processors: [() => null] }), "info", "a", "m", undefined, undefined, [], admitted);
+
+    expect(sink.written).toHaveLength(0);
+    expect(admitted.settle).toHaveBeenCalledOnce();
   });
 });
