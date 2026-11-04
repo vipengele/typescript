@@ -87,8 +87,9 @@ export type { RedactionSetting };
  * createLogger(category: string, resolve: LevelResolver, emit: () => EmitSettings): Logger
  * ```
  *
- * `emit` is read on every call that passes the level check. Building the record (reading the
- * clock, serializing the error, redacting) happens inside one `try`/`catch`: a throwing clock or
+ * `emit` is read on every call that passes the level check. A call with a sink then meets the
+ * sampling rule and the rate limit, and only one that passes both builds a record. Building the
+ * record (reading the clock unless the rate limit already did, serializing the error, redacting) happens inside one `try`/`catch`: a throwing clock or
  * redaction policy drops that record, delivers it to no sink and does not reach the caller. The
  * global processors run next, then delivery runs per sink: the sink's own processors, then its
  * `write` in its own `try`/`catch`. A failing processor or `write` is reported to `onSinkError`.

@@ -8,7 +8,8 @@ import type { EmitSettings } from "./record";
 
 /**
  * Attributes computed only when a record is written. Given to an emit method, it runs once per
- * record that passes the level check and has a sink to go to, never at a disabled level; given to
+ * record that passes the level check, has a sink to go to and survives sampling and the rate limit,
+ * never at a disabled level; given to
  * `with`, once per bound Logger. A throw from it, or a result that is not a plain record, gives an
  * empty record in place of its attributes, and the record is still written.
  */
@@ -24,8 +25,11 @@ export type LevelResolver = (category: string) => LevelEntry;
  * next call.
  *
  * Each emit method checks the level first: at a disabled level it reads nothing else, not even the
- * clock. An enabled call builds one record and writes it to every sink in force; it returns
- * nothing and never throws, whatever a sink, the clock or the redaction policy does. The methods do
+ * clock. An enabled call with a sink then meets the sampling rule and the rate limit that govern
+ * its category, in that order; a call either drops reads no thunk, Scope or bindings, and only a
+ * call a rate-limit rule covers reads the clock, once. A call that passes builds one record and
+ * writes it to every sink in force; it returns nothing and never throws, whatever a sink, the
+ * clock, the random source or the redaction policy does. The methods do
  * not depend on `this`, so a method taken off the Logger works on its own.
  *
  * `error` is a thrown value of any kind; `undefined` means the call has none, while any other
@@ -33,8 +37,8 @@ export type LevelResolver = (category: string) => LevelEntry;
  * function passed as `error` is an error value too, never an {@link AttributesThunk}: only the
  * `attributes` argument is read as a thunk.
  *
- * `attributes` given as an {@link AttributesThunk} runs after the level check and the sink check,
- * once per record however many sinks receive it, and before normalization and redaction, so a
+ * `attributes` given as an {@link AttributesThunk} runs after the level check, the sink check, the
+ * sampling rule and the rate limit, once per record however many sinks receive it, and before normalization and redaction, so a
  * secret key it returns is redacted like any other. A thunk that logs from inside itself sees an
  * empty record for its own layer.
  */
@@ -42,7 +46,11 @@ export interface Logger {
   /** The Category this Logger writes under. */
   readonly category: string;
 
-  /** Whether a record at `level` passes the threshold that governs this Logger's category right now. */
+  /**
+   * Whether a record at `level` passes the threshold that governs this Logger's category right now.
+   * An enabled call can still be dropped, by a sampling rule or a rate limit that governs the
+   * category, or because no sink is in force; this reads neither.
+   */
   enabled(level: Level): boolean;
 
   /**
@@ -56,7 +64,8 @@ export interface Logger {
    * `with` with an empty record returns this Logger itself.
    *
    * Given an {@link AttributesThunk}, `with` always returns a new Logger and runs nothing. The
-   * thunk runs at the returned Logger's first record that passes the level check and has a sink;
+   * thunk runs at the returned Logger's first record that passes the level check, has a sink and survives
+   * sampling and the rate limit;
    * its result is normalized, frozen and reused for every later record. A throw leaves the binding
    * empty for that record and is not kept, so the next record runs the thunk again. A Logger made
    * by `with` on the returned one carries the value when the returned Logger has already evaluated

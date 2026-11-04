@@ -381,7 +381,8 @@ function runProcessors(settings: EmitSettings, processors: readonly LogProcessor
  * `attributes` win over all of them key by key. A throw while reading the Scope leaves its
  * attributes out rather than dropping the record.
  *
- * `attributes` given as a function runs only here, after the sink check and once per record. A
+ * `attributes` given as a function runs only here, after the level, sink, sampling and rate-limit
+ * checks and once per record. A
  * throw from it, a result that is not a record, or a run while another attributes thunk is running
  * yields an empty call layer: the record is still written, and nothing is reported.
  *

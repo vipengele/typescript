@@ -6,15 +6,26 @@ Run commands from `source/core` (`pnpm build`, `pnpm type-check`, `pnpm test`, `
 
 ## Logger emit path (`src/logger`)
 
-- `logger.ts` checks the level, then hands the call to `emitRecord` (`emit.ts`) with the
-  `EmitSettings` (`record.ts`) read on every call: `sinks`, `clock`, `redaction`, `resource`,
-  `onSinkError`. `sinks`/`clock`/`redaction` are builder state (`builder.ts`); `resource` and
+- `logger.ts` checks the level, then the sinks, then sampling, then the rate limit
+  (`LogPolicy.admit`, `policy.ts`), then hands the call to `emitRecord` (`emit.ts`) with the
+  `EmitSettings` (`record.ts`) read on every call: `sinks`, `clock`, `redaction`, `policy`, `random`,
+  `resource`, `onSinkError`. `sinks`/`clock`/`redaction` are builder state (`builder.ts`); `resource` and
   `onSinkError` are provider options wired from `logging.ts` (`logger.ts` cannot import it).
 - With no sink, `emitRecord` reads nothing (not the clock, attributes, thunk or error). A disabled
-  call stops at the level check: the Logger allocates nothing and runs nothing.
+  call stops at the level check: the Logger allocates nothing and runs nothing. A call dropped by
+  sampling or the rate limit runs no thunk and reads no Scope, bindings or redaction; only a call a
+  rate-limit rule covers reads the clock (once, in `admit`), and that time becomes the record's
+  `time`. A throwing clock or `random` drops the call silently.
+- Policy state (`LogPolicy`: one token bucket and dropped counter per rate-limit rule, shared by every
+  category the rule governs) is provider-local and carried across every commit while a rule's key and
+  value are unchanged. The next admitted record carries `vipengele.logger.dropped`, written after
+  redaction over any caller attribute of that name; `Admission.settle()` resets the count once the
+  record is built. Sampling drops are not counted. The console handle's confirmation calls
+  `emitRecord` directly and is never sampled or limited. Policy layers mirror the level layers; only
+  the console handle's spec string feeds the overrides policy layer (ADR-0025).
 - `attributes` of an emit method is `AttributesInput | AttributesThunk` (`logger.ts`), dispatched on
   `typeof === "function"` of that argument alone; in `warn`/`error`/`fatal` a function in the `error`
-  position is an error value. `createRecord` runs a per-call thunk once per record through
+  position is an error value. `createRecord` runs a per-call thunk once per record, after the sampling and rate-limit checks, through
   `evaluateAttributes` (`emit.ts`), before normalization and redaction. A throw, a re-entrant call or
   a non-record result (string, array, `null`, `undefined`) gives `{}`; nothing reaches `onSinkError`.
   The re-entrancy flag is module-level, so it is global within one copy of the package and not shared
