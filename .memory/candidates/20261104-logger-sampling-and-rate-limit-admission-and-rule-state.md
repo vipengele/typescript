@@ -1,15 +1,20 @@
 ---
-about: "the logger has no sampling or rate-limit stage; the only token bucket is errors/rate-limit.ts and its state is per-capture, not shared across package copies"
+about: "where the logger's sampling and rate-limit check sits, where its per-rule state lives, and the spec-rebuild sites that silently drop a ParsedSpec field"
 saw:
-  - source/core/packages/observability/src/logger/emit.ts
   - source/core/packages/observability/src/logger/logger.ts
-  - source/core/packages/observability/src/errors/rate-limit.ts
-  - source/core/packages/observability/src/errors/pipeline.ts
-  - docs/adr/0020-the-reporter-owns-policy-drops-and-the-transport-owns-delivery-drops.md
+  - source/core/packages/observability/src/logger/emit.ts
+  - source/core/packages/observability/src/logger/policy.ts
+  - source/core/packages/observability/src/logger/provider.ts
+  - source/core/packages/observability/src/logger/spec.ts
+  - source/core/packages/observability/src/logger/browser-sources.ts
+  - source/core/packages/observability/src/logger/environment-source.ts
+  - source/core/packages/observability/src/logger/builder.ts
+  - source/core/packages/observability/src/token-bucket.ts
+  - docs/adr/0025-logger-sampling-and-rate-limits-drop-before-the-record-is-built.md
 ---
-Explored for the issue "sampling and rate limiting of records" for the logger.
-
-- Logger.log (logger.ts bindLogger, `log`) does level check then `emitRecord`; emitRecord (emit.ts) returns on `sinks.length === 0`, then ONE guard runs createRecord (clock, scope, bindings, call thunk, serializeError, redaction, trace), global processors, then `settings.resource()`; then per sink: per-sink processors, `sink.write` in its own try (reportFailure -> onSinkError). Attribute thunk runs inside createRecord, so a drop before createRecord skips the thunk (ADR-0019), a drop in a processor happens after it.
-- Only token bucket: errors/rate-limit.ts `createRateLimiter({burst, perMinute})`, `take(epochMs)`, lazy refill from event time, no clock/timer. Not in common/resilience (grep "token bucket" hits only errors/). Instance per `createCapture` (pipeline.ts), not a globalThis slot.
-- Reporter sampling: `sampleRate` + injectable `random` (builder.ts `random()`, default Math.random), pipeline.ts `isSampled`. Drops are silent and uncounted (ADR-0020). Logger builder has `clock` but no random.
-- Category resolution: levels.ts resolveEntry, longest dotted prefix then `*` (categories.ts governingKeys); level tables are `{level, severity}` only, spec `cat:level` (spec.ts) carries nothing else, so per-category sampling cannot ride the level table/slot without a protocol change (ADR-0005 says the table format never changes incompatibly).
+- The check runs in `bindLogger`'s `log` (`logger.ts`): level, then `settings.sinks.length === 0`, then `settings.policy.admit(category, level, random, clock)`, and only an admitted call reaches `emitRecord`. A drop there runs no thunk, Scope read or redaction (ADR-0025, ADR-0019). `confirm` in `provider.ts` calls `emitRecord` directly, so a console-handle confirmation is never sampled or limited.
+- `LogPolicy#admit` (`policy.ts`) never throws: a throwing `random` or `clock` drops the record uncounted and takes no token. The clock is read only when a rate-limit rule covers the call, and that reading is passed through the `Admission` to `createRecord` as the record's `time` (`emit.ts`); without an admission time `createRecord` reads the clock itself.
+- `vipengele.logger.dropped` is spread in after redaction in `createRecord`, so neither a caller attribute nor a redaction policy changes it. `emitRecord` calls `admission.settle()` right after `createRecord` returns and before processors run: a throwing build keeps the count, a processor drop loses it. `settle` subtracts what it reported rather than zeroing.
+- Rule state (one `createTokenBucket` from `src/token-bucket.ts` plus a dropped counter per rule) lives in `LogPolicy.states`, keyed by `JSON.stringify([key, burst, perMinute, upTo])`. The provider's `apply()` builds `new LogPolicy(next.policy, emitSettings.policy)` on every commit, so a rule unchanged in key and value keeps its bucket across configure, override, the console handle and `settle`. No `globalThis` slot holds it; the level-table slot format (ADR-0005) is untouched.
+- `ParsedSpec` carries `policy` beside `levels`/`issues`. Every site that rebuilds that object must copy it or the field is silently dropped: `parseLabelled` and the unreadable-stored branch in `browser-sources.ts`, `parseEnvironmentSpec` in `environment-source.ts`, and `addParsed` in `builder.ts`.
+- `EmitSettings.policy` and `.random` (`record.ts`) are optional only because many test files build `EmitSettings` literals; the provider always sets both.

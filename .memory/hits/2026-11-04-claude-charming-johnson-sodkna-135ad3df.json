@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "notes": {
+    "foreign-level-entries-resolve-up-to-nearest-known-level": {
+      "count": 1,
+      "first": "2026-11-04T03:17:29.091069876Z",
+      "last": "2026-11-04T03:17:29.091069876Z"
+    },
+    "level-tables-are-replaced-never-mutated": {
+      "count": 1,
+      "first": "2026-11-04T03:17:29.080247728Z",
+      "last": "2026-11-04T03:17:29.080247728Z"
+    }
+  }
+}
