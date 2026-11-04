@@ -461,6 +461,38 @@ describe("sample", () => {
   });
 });
 
+describe("spec modifiers", () => {
+  test("addSpec puts the rules its modifiers set in the policy layer", () => {
+    const build = createLoggingBuilder().addSpec("db:debug;sample=0.1;limit=20/60;upto=warn").build();
+
+    expect({ ...build.builder }).toEqual({ db: "debug" });
+    expect({ ...build.policy.sample }).toEqual({ db: { rate: 0.1, upTo: "warn" } });
+    expect({ ...build.policy.rateLimit }).toEqual({ db: { burst: 20, perMinute: 60, upTo: "warn" } });
+    expect(build.issues).toEqual([]);
+  });
+
+  test("spec rules and sample/rateLimit rules apply in the order they were added", () => {
+    const build = createLoggingBuilder()
+      .sample({ a: 0.5, b: 0.5 })
+      .addSpec("a:debug;sample=0.1;limit=off")
+      .rateLimit({ a: { burst: 3, perMinute: 3 } })
+      .addSpec("b:info")
+      .build();
+
+    expect({ ...build.policy.sample }).toEqual({ a: { rate: 0.1, upTo: "info" }, b: { rate: 0.5, upTo: "info" } });
+    expect({ ...build.policy.rateLimit }).toEqual({ a: { burst: 3, perMinute: 3, upTo: "info" } });
+  });
+
+  test("a bad modifier is carried to issues and the level still applies", () => {
+    const build = createLoggingBuilder().addSpec("db:debug;sample=2").build();
+
+    expect({ ...build.builder }).toEqual({ db: "debug" });
+    expect(Object.keys(build.policy.sample)).toEqual([]);
+    expect(build.issues).toHaveLength(1);
+    expect(build.issues[0]).toContain("keeps its level but skips modifier");
+  });
+});
+
 describe("rateLimit", () => {
   test("validates and freezes each rule, its upTo defaulting to info, and keeps a clearing false", () => {
     const build = createLoggingBuilder()

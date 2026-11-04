@@ -92,6 +92,17 @@ describe("addBrowserSources in a browser", () => {
     ]);
   });
 
+  test("the modifiers of each source feed the builder policy layer, the URL's last", () => {
+    globalThis.localStorage.setItem(KEY, "a:info;sample=0.5;limit=2/2");
+    setSearch("?log=a:debug;sample=0.25");
+
+    const build = createLoggingBuilder().sample({ b: 0.75 }).addBrowserSources().build();
+
+    expect({ ...build.builder }).toEqual({ a: "debug" });
+    expect({ ...build.policy.sample }).toEqual({ a: { rate: 0.25, upTo: "info" }, b: { rate: 0.75, upTo: "info" } });
+    expect({ ...build.policy.rateLimit }).toEqual({ a: { burst: 2, perMinute: 2, upTo: "info" } });
+  });
+
   test("build never touches storage, however often it is called", () => {
     globalThis.localStorage.setItem(KEY, "[object Object]");
     const builder = createLoggingBuilder().addBrowserSources();

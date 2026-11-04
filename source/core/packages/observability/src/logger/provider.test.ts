@@ -909,6 +909,70 @@ describe("failure reports", () => {
   });
 });
 
+describe("the environment policy layer", () => {
+  const ENV = "db:debug;sample=0.5;limit=2/2";
+  const ENV_RULES = { sample: ["db"], rateLimit: ["db"] };
+  const NO_RULES = { sample: [], rateLimit: [] };
+
+  test("VPG_LOG's modifiers come in with its levels on the first level check", () => {
+    const publish = vi.fn();
+    const provider = createLoggerProvider((b) => b.sample({ db: 0.9, other: 0.9 }), { environment: () => ENV, publish });
+    const logger = provider.logger("db");
+    const emit = emitOf(logger);
+    expect(Object.keys(emit().policy?.table.rateLimit ?? {})).toEqual([]);
+
+    logger.enabled("debug");
+
+    const published = publish.mock.lastCall?.[0] as LoggingSettings;
+    expect(policyLayersOf(published).environment).toEqual(ENV_RULES);
+    expect(emit().policy?.table.sample.db).toEqual({ rate: 0.5, upTo: "info" });
+    expect(emit().policy?.table.sample.other).toEqual({ rate: 0.9, upTo: "info" });
+    expect(emit().policy?.table.rateLimit.db).toMatchObject({ burst: 2, perMinute: 2 });
+  });
+
+  test("configure, override and reset each carry it, above the builder's rules", () => {
+    const provider = createLoggerProvider(undefined, { environment: () => ENV });
+
+    const configured = provider.configure((b) => b.sample({ db: 0.1 }));
+    expect(policyLayersOf(configured).environment).toEqual(ENV_RULES);
+    expect(configured.policy.sample.db).toEqual({ rate: 0.5, upTo: "info" });
+    expect(policyLayersOf(provider.override("x", "info")).environment).toEqual(ENV_RULES);
+    const reset = provider.reset();
+    expect(policyLayersOf(reset)).toEqual({ defaults: NO_RULES, builder: NO_RULES, overrides: NO_RULES, environment: ENV_RULES });
+  });
+
+  test("a build that ignores the environment leaves its rules out, and the next configure brings them back", () => {
+    const provider = createLoggerProvider(undefined, { environment: () => ENV });
+
+    expect(policyLayersOf(provider.configure((b) => b.ignoreEnvironment())).environment).toEqual(NO_RULES);
+    expect(policyLayersOf(provider.override("x", "info")).environment).toEqual(NO_RULES);
+    expect(policyLayersOf(provider.configure(() => {})).environment).toEqual(ENV_RULES);
+  });
+
+  test("a bad VPG_LOG modifier is reported and its entry's level still applies", () => {
+    const onIssues = vi.fn();
+    const provider = createLoggerProvider(undefined, { environment: () => "db:debug;sample=2", onIssues });
+
+    expect(provider.logger("db").enabled("debug")).toBe(true);
+    expect(onIssues).toHaveBeenCalledOnce();
+    expect(onIssues.mock.lastCall?.[0]?.[0]).toMatch(/^VPG_LOG: Level spec entry "db:debug;sample=2" keeps its level but skips modifier /);
+  });
+
+  test("override touches levels only, keeping the overrides policy layer", () => {
+    const name = "__vipengeleProviderOverridePolicyTest";
+    const provider = createLoggerProvider(undefined, { warn: () => {} });
+    const uninstall = provider.installConsole(name);
+    try {
+      (globalThis as unknown as Record<string, (spec: string | null) => void>)[name]?.("db:debug;limit=1/1");
+      expect(policyLayersOf(provider.override("db", null)).overrides).toEqual({ sample: [], rateLimit: ["db"] });
+      (globalThis as unknown as Record<string, (spec: string | null) => void>)[name]?.(null);
+      expect(policyLayersOf(provider.override("x", "info")).overrides).toEqual(NO_RULES);
+    } finally {
+      uninstall();
+    }
+  });
+});
+
 describe("the environment layer", () => {
   test("sits above every other layer: environment over overrides over builder over defaults", () => {
     const provider = createLoggerProvider((b) => b.addLevels({ "*": "info", a: "error", b: "error", c: "error" }), {

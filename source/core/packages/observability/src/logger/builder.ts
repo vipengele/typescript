@@ -38,8 +38,9 @@ export interface LoggingBuild {
   readonly defaults: LevelLayer;
   readonly builder: LevelLayer;
   /**
-   * The sampling and rate-limit rules passed to `sample` and `rateLimit`, a later call's rule for a
-   * category key replacing an earlier one's; frozen and validated.
+   * The sampling and rate-limit rules passed to `sample` and `rateLimit` and set by the modifiers of
+   * `addSpec` and `addBrowserSources` specs, a later rule for a category key replacing an earlier
+   * one's; frozen and validated.
    */
   readonly policy: PolicyLayer;
   /** `true` once `ignoreEnvironment` was called: the configuration built leaves `VPG_LOG` out. */
@@ -100,8 +101,10 @@ export interface LoggingBuilder {
   addLevels(levels: Readonly<Record<string, Threshold>>): LoggingBuilder;
 
   /**
-   * Adds a level spec (`*:warn,react:debug`) as a source, parsed by `parseSpec`. A bad entry is
-   * skipped, never thrown: it is carried to `build`'s `issues`.
+   * Adds a level spec (`*:warn,react:debug`) as a source, parsed by `parseSpec`. The sampling and
+   * rate-limit rules its modifiers set (`db:debug;sample=0.1;limit=20/60`) join the rules of
+   * `sample` and `rateLimit` in the order they were added. A bad entry or modifier is skipped,
+   * never thrown: it is carried to `build`'s `issues`.
    */
   addSpec(spec: string): LoggingBuilder;
 
@@ -112,7 +115,8 @@ export interface LoggingBuilder {
    * called; outside a browser it adds nothing. Every read is guarded: a throw, a missing `location`
    * or blocked storage means no source, and an empty stored string counts as absent. A bad entry is
    * skipped and carried to `build`'s `issues`, naming the URL parameter or the storage key it came
-   * from. A non-empty stored spec that holds no level is removed from storage once a provider's
+   * from. The rules their modifiers set join the policy layer as an `addSpec` call's do. A
+   * non-empty stored spec that holds no level is removed from storage once a provider's
    * configuration built from this builder is in force, never by `build` itself and never because
    * of the URL. Malformed `options` make `build` throw a `LoggingConfigError`.
    */
@@ -287,8 +291,14 @@ export function createLoggingBuilder(): LoggingBuilder {
   let browserSources: BrowserSourcesSetting | null = null;
   const clears: StoredSpecClear[] = [];
 
+  /**
+   * Adds a parsed spec's levels as a source and its rules to the policy layer, a rule for a
+   * category key replacing the one an earlier spec or `sample`/`rateLimit` call set.
+   */
   function addParsed(parsed: ParsedSpec): void {
     sources.push({ kind: "levels", entries: Object.keys(parsed.levels).map((key) => [key, parsed.levels[key]] as const) });
+    Object.assign(sampleRules, parsed.policy.sample);
+    Object.assign(rateLimitRules, parsed.policy.rateLimit);
     issues.push(...parsed.issues);
   }
 
