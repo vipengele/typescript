@@ -1,4 +1,5 @@
 import type { Attributes, Level, SerializedError } from "@vipengele/ts-core-common";
+import type { LogTrace } from "../trace";
 
 /**
  * A captured exception or message, ready for a Reporter transport (ADR-0007). Shares its error
@@ -22,7 +23,7 @@ export interface ErrorEvent {
    */
   attributes: Attributes;
   fingerprint?: string[];
-  trace?: { traceId: string; spanId: string; flags: number };
+  trace?: LogTrace;
 }
 
 /**

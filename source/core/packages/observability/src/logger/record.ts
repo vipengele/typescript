@@ -2,7 +2,7 @@ import type { Attributes, Clock, Level, SerializedError } from "@vipengele/ts-co
 import type { Resource } from "@vipengele/ts-core-common/scope";
 import type { RedactionSetting } from "../redaction";
 import type { LogPolicy } from "./policy";
-import type { LogTrace } from "./trace";
+import type { LogTrace } from "../trace";
 
 /**
  * One emitted log entry, the shape every {@link Sink} receives (ADR-0007). Its attributes merge
