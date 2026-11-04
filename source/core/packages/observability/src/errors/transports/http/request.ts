@@ -89,10 +89,15 @@ function defaultSerialize(events: readonly ErrorEvent[], resource: Resource): st
  */
 type Encoding = { readonly body: string } | "split" | "unsendable" | "too-large";
 
+/** The request body `events` and their Resource serialize to. Throws whatever the serializer throws. */
+export function serializeEvents(options: ResolvedHttpTransportOptions, events: readonly ErrorEvent[], resource: Resource): string {
+  return (options.serialize ?? defaultSerialize)(events, resource);
+}
+
 function encodeGroup(options: ResolvedHttpTransportOptions, events: ErrorEvent[], resource: Resource): Encoding {
   let body: string;
   try {
-    body = (options.serialize ?? defaultSerialize)(events, resource);
+    body = serializeEvents(options, events, resource);
   } catch {
     return "unsendable";
   }
@@ -184,11 +189,16 @@ function record(context: RequestContext, events: ErrorEvent[], outcome: RequestO
   context.onSettle?.(settlement);
 }
 
+/** `configured` with `Content-Type` set to the transport's `contentType`. */
+function withContentType(options: ResolvedHttpTransportOptions, configured: Record<string, string> | undefined): Headers {
+  const headers = new Headers(configured);
+  headers.set("Content-Type", options.contentType);
+  return headers;
+}
+
 async function resolveHeaders(options: ResolvedHttpTransportOptions): Promise<Headers> {
   const { headers } = options;
-  const resolved = new Headers(typeof headers === "function" ? await headers() : headers);
-  resolved.set("Content-Type", options.contentType);
-  return resolved;
+  return withContentType(options, typeof headers === "function" ? await headers() : headers);
 }
 
 /**
@@ -285,4 +295,44 @@ export async function sendBatch(
   }
   await settle(context, batch.events, batch.resource);
   return context.settlements;
+}
+
+type ConfiguredHeaders = Record<string, string> | Promise<Record<string, string>> | undefined;
+
+function isThenable(value: ConfiguredHeaders): value is Promise<Record<string, string>> {
+  return typeof (value as Partial<PromiseLike<unknown>> | undefined)?.then === "function";
+}
+
+function ignore(): void {}
+
+/**
+ * POSTs `body` once to `options.url` with `keepalive`, so the request outlives the page, and with
+ * the configured headers and `contentType`. Nothing waits for the request and nothing reports its
+ * outcome: a throw or rejection from `fetch` is swallowed. Headers from a function are read once;
+ * a promise of them delays the request until it resolves, and a rejected one sends nothing.
+ * Returns `false`, having sent nothing, when there is no `fetch` or the headers function throws.
+ */
+export function sendKeepalive(options: ResolvedHttpTransportOptions, body: string): boolean {
+  const send = options.fetch ?? globalThis.fetch;
+  if (typeof send !== "function") {
+    return false;
+  }
+  let configured: ConfiguredHeaders;
+  try {
+    configured = typeof options.headers === "function" ? options.headers() : options.headers;
+  } catch {
+    return false;
+  }
+  const post = (headers: Record<string, string> | undefined): Promise<Response> =>
+    send(options.url, { method: "POST", headers: withContentType(options, headers), body, keepalive: true });
+  if (isThenable(configured)) {
+    Promise.resolve(configured).then(post).catch(ignore);
+    return true;
+  }
+  try {
+    Promise.resolve(post(configured)).catch(ignore);
+  } catch {
+    // A page going away leaves nobody to report a request that could not be made to.
+  }
+  return true;
 }

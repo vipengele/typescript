@@ -4,11 +4,19 @@ import type { ErrorEvent } from "../../event";
 /**
  * Why the HTTP transport gave up on an event without delivering it: the queue was full, the event
  * alone exceeds the batch byte limit, its retries ran out, the endpoint refused it, it could not be
- * serialized or sent at all, or the transport closed with it still pending. `"offline-full"` is a
- * batch the offline queue refused because it was over its bounds; only a transport with `offline`
- * reports it.
+ * serialized or sent at all, the transport closed with it still pending, or it was left over, past
+ * the keepalive budget, when the page was hidden or unloaded. `"offline-full"` is a batch the
+ * offline queue refused because it was over its bounds; only a transport with `offline` reports it.
  */
-export type DropReason = "queue-full" | "too-large" | "retries-exhausted" | "rejected" | "unsendable" | "closed" | "offline-full";
+export type DropReason =
+  | "queue-full"
+  | "too-large"
+  | "retries-exhausted"
+  | "rejected"
+  | "unsendable"
+  | "closed"
+  | "unload-budget"
+  | "offline-full";
 
 /** The bounds an {@link EventQueue} holds to. Every value is a positive integer. */
 export interface QueueLimits {

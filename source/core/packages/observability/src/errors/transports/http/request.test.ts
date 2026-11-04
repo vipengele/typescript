@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ErrorEvent } from "../../event";
 import { type HttpTransportOptions, resolveOptions } from "./options";
 import type { Batch } from "./queue";
-import { encodeBatch, type RequestResult, type Settlement, sendBatch } from "./request";
+import { encodeBatch, type RequestResult, type Settlement, sendBatch, sendKeepalive, serializeEvents } from "./request";
 
 const url = "https://errors.example.com/ingest";
 
@@ -733,5 +733,110 @@ describe("encodeBatch", () => {
 
     expect(encodeBatch(aBatch(large), settings(time, { serialize, maxBatchBytes: 15 }))).toEqual([{ events: [large], body: undefined }]);
     expect(encodeBatch(aBatch(large), settings(time, { serialize: throwing }))).toEqual([{ events: [large], body: undefined }]);
+  });
+});
+
+describe("serializeEvents", () => {
+  it("serializes with the default envelope, leaving out Resource keys with no value", () => {
+    const time = createManualTime();
+    const event = anEvent("a");
+
+    expect(JSON.parse(serializeEvents(settings(time), [event], aResource()))).toEqual({
+      resource: {
+        "service.name": "shop",
+        "service.version": "1.0.0",
+        "deployment.environment.name": "production",
+        "process.runtime.name": "nodejs",
+        "process.runtime.version": "24.0.0",
+        "os.type": "linux",
+        "os.version": "6.1",
+      },
+      events: [event],
+    });
+  });
+
+  it("serializes with the configured serializer", () => {
+    const time = createManualTime();
+    const serialize = (group: readonly ErrorEvent[]) => group.map((event) => event.message).join(",");
+
+    expect(serializeEvents(settings(time, { serialize }), [anEvent("a"), anEvent("b")], aResource())).toBe("a,b");
+  });
+});
+
+describe("sendKeepalive", () => {
+  it("POSTs the body once with keepalive, the configured headers and the contentType", () => {
+    const time = createManualTime();
+    const { fetch, calls } = fakeFetch(time, 200);
+
+    expect(sendKeepalive(settings(time, { fetch, headers: { authorization: "Bearer x" }, contentType: "text/plain" }), "body")).toBe(true);
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url).toBe(url);
+    expect(calls[0]?.init).toMatchObject({ method: "POST", body: "body", keepalive: true });
+    expect(Object.fromEntries(new Headers(calls[0]?.init.headers))).toEqual({ authorization: "Bearer x", "content-type": "text/plain" });
+  });
+
+  it("reads a headers function once and sends synchronously when it returns a record", () => {
+    const time = createManualTime();
+    const { fetch, calls } = fakeFetch(time, 200);
+    const headers = vi.fn(() => ({ a: "b" }));
+
+    sendKeepalive(settings(time, { fetch, headers }), "body");
+
+    expect(headers).toHaveBeenCalledOnce();
+    expect(new Headers(calls[0]?.init.headers).get("a")).toBe("b");
+  });
+
+  it("sends once a headers promise resolves", async () => {
+    const time = createManualTime();
+    const { fetch, calls } = fakeFetch(time, 200);
+
+    expect(sendKeepalive(settings(time, { fetch, headers: async () => ({ a: "b" }) }), "body")).toBe(true);
+    expect(calls).toEqual([]);
+
+    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    expect(new Headers(calls[0]?.init.headers).get("a")).toBe("b");
+    expect(calls[0]?.init.keepalive).toBe(true);
+  });
+
+  it("sends nothing when a headers promise rejects, and swallows the rejection", async () => {
+    const time = createManualTime();
+    const { fetch, calls } = fakeFetch(time, 200);
+
+    expect(sendKeepalive(settings(time, { fetch, headers: () => Promise.reject(new Error("no token")) }), "body")).toBe(true);
+    await hop();
+
+    expect(calls).toEqual([]);
+  });
+
+  it("returns false, sending nothing, when the headers function throws", () => {
+    const time = createManualTime();
+    const { fetch, calls } = fakeFetch(time, 200);
+    const headers = () => {
+      throw new Error("no token");
+    };
+
+    expect(sendKeepalive(settings(time, { fetch, headers }), "body")).toBe(false);
+    expect(calls).toEqual([]);
+  });
+
+  it("returns false when there is no fetch", () => {
+    const time = createManualTime();
+    vi.stubGlobal("fetch", undefined);
+
+    expect(sendKeepalive(settings(time), "body")).toBe(false);
+  });
+
+  it("swallows a fetch that throws synchronously or rejects", async () => {
+    const time = createManualTime();
+    const throwing = fakeFetch(time, { throw: new TypeError("bad") });
+    const rejecting = fakeFetch(time, { reject: new TypeError("Failed to fetch") });
+
+    expect(sendKeepalive(settings(time, { fetch: throwing.fetch }), "body")).toBe(true);
+    expect(sendKeepalive(settings(time, { fetch: rejecting.fetch }), "body")).toBe(true);
+    await hop();
+
+    expect(throwing.calls).toHaveLength(1);
+    expect(rejecting.calls).toHaveLength(1);
   });
 });
