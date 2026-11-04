@@ -1,7 +1,8 @@
 import type { Clock, Scheduler } from "@vipengele/ts-core-common";
 import type { DeliveryEntry, DeliveryFetch } from "../delivery";
+import type { StatusClass } from "../retry-policy";
 import { detectLifecycleTargets, type LifecycleTargets } from "../unload";
-import { type OfflineDropReason, OfflineQueue } from "./offline-queue";
+import { type OfflineDropReason, type OfflineHeaders, OfflineQueue } from "./offline-queue";
 import { type OfflineStore, openOfflineStore } from "./store";
 
 const OFFLINE_DATABASE = "vipengele-otlp-offline";
@@ -24,7 +25,9 @@ export interface Offline<T> {
 /** What a wrapper hands {@link openOffline}: its own options plus how its items are keyed and encoded. */
 export interface OfflineWrapperOptions<T> {
   readonly url: string;
-  readonly headers?: Record<string, string> | (() => Record<string, string>);
+  readonly headers?: OfflineHeaders;
+  readonly contentType?: string;
+  readonly classify?: (status: number) => StatusClass;
   readonly fetch?: DeliveryFetch;
   readonly clock?: Clock;
   readonly scheduler?: Scheduler;
@@ -33,7 +36,8 @@ export interface OfflineWrapperOptions<T> {
   readonly offline?: true | OfflineOptions;
   /** Distinguishes this wrapper's bodies from the other's under the same URL. */
   readonly keySuffix: string;
-  readonly encode: (entries: ReadonlyArray<DeliveryEntry<T>>) => string;
+  /** Omitted for a wrapper that saves only already-encoded bodies, through `saveBody`. */
+  readonly encode?: (entries: ReadonlyArray<DeliveryEntry<T>>) => string;
 }
 
 function isPositiveInteger(value: number | undefined): boolean {
@@ -64,6 +68,8 @@ export function openOffline<T>(options: OfflineWrapperOptions<T>): Offline<T> | 
     encode: options.encode,
     url: options.url,
     headers: options.headers,
+    contentType: options.contentType,
+    classify: options.classify,
     fetch: options.fetch,
     store,
     limits,
@@ -90,9 +96,17 @@ function closeWhenIdle<T>(offline: Offline<T>): void {
     .then(closeStore);
 }
 
+/** Waits for the saves within what is left of `budget` since `started`, or for as long as they take with no budget. */
+function settleSaves<T>(offline: Offline<T>, budget: number | undefined, started: number, clock: Clock): Promise<boolean> {
+  if (budget === undefined) {
+    return offline.queue.idle().then(() => true);
+  }
+  return offline.queue.settle(budget - (clock() - started));
+}
+
 /**
  * Runs the delivery's `flush` or `close`, then waits for the offline saves with what is left of the
- * timeout. A closing drain also stops the queue and closes the store: before resolving when the saves
+ * timeout, or, with neither a timeout nor a default, until they finish. A closing drain also stops the queue and closes the store: before resolving when the saves
  * finish within the timeout, and otherwise once they finish, after resolving `false`. Closing the
  * store while a save still waits for it would fail that save and report its entries as dropped.
  */
@@ -102,7 +116,7 @@ export async function drain<T>(
   closing: boolean,
   clock: Clock,
   timeoutMs: number | undefined,
-  defaultTimeout: number,
+  defaultTimeout: number | undefined,
 ): Promise<boolean> {
   if (offline === undefined) {
     return run(timeoutMs);
@@ -110,7 +124,7 @@ export async function drain<T>(
   const budget = timeoutMs ?? defaultTimeout;
   const started = clock();
   const delivered = await run(budget);
-  const settled = await offline.queue.settle(budget - (clock() - started));
+  const settled = await settleSaves(offline, budget, started, clock);
   if (closing) {
     offline.queue.close();
     if (settled) {

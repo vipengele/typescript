@@ -1,8 +1,29 @@
+import type { Resource } from "@vipengele/ts-core-common/scope";
+import { drain, type OfflineOptions, openOffline } from "../../delivery/offline/wrapper";
+import type { StatusClass } from "../../delivery/retry-policy";
 import type { ErrorEvent } from "../event";
 import type { Transport } from "../transport";
+import { classify } from "./http/classify";
 import { type HttpTransportOptions, resolveOptions } from "./http/options";
 import { createEventQueue, type DropReason } from "./http/queue";
-import { type RequestDropReason, type Settlement, sendBatch } from "./http/request";
+import { encodeBatch, type RequestDropReason, type RequestOptions, type Settlement, sendBatch } from "./http/request";
+
+/** Every reason a drop is reported with: the queue's and request's, and the offline store refusing a save. */
+type TransportDropReason = DropReason | "offline-full";
+
+/** {@link HttpTransportOptions} with the offline queue's settings, read as given. */
+interface OfflineHttpTransportOptions extends HttpTransportOptions {
+  readonly offline?: true | OfflineOptions;
+}
+
+/** The drop reasons whose events the offline queue saves instead of reporting. */
+type SavedReason = "retries-exhausted" | "closed";
+
+/** How the offline queue reads a replay's status: the transport's own classification. */
+function replayClass(status: number): StatusClass {
+  const verdict = classify(status);
+  return verdict === "retry" ? "retryable" : verdict;
+}
 
 /** A pending `flush`: resolved once `settled` reaches `target`, or by its timeout. */
 interface FlushWaiter {
@@ -36,27 +57,52 @@ interface FlushWaiter {
  * cannot hold `close` open. A second `close` returns the first one's promise; a `flush` after
  * `close` resolves `true` once `close` has.
  *
+ * With `offline`, a batch given up on as `"retries-exhausted"` or `"closed"` is saved in IndexedDB,
+ * under `${url}|http-errors`, as the exact request body, and replayed as it is; it reaches `onDrop`
+ * only once the save fails (with its own reason) or the store refuses it as `"offline-full"`, after
+ * the save's outcome. A network error or a timeout while the navigator reports no network ends the
+ * batch's retries at once. A saved body the endpoint rejects on replay reaches `onDrop` as
+ * `"rejected"` with no events. `flush` and `close` also wait for pending saves, resolving `false`
+ * if one outlasts the timeout, and `close` closes the store.
+ *
  * Nothing is `unref`'d and no exit hook is registered: a process that must not lose events
  * awaits `close` before it exits.
  */
 export function createHttpTransport(options: HttpTransportOptions): Transport {
   const resolved = resolveOptions(options);
-  const { scheduler, onDrop, console: warnings } = resolved;
+  const { scheduler, console: warnings } = resolved;
+  const onDrop = resolved.onDrop as ((events: readonly ErrorEvent[], reason: TransportDropReason) => void) | undefined;
   const queue = createEventQueue(resolved);
   const stop = new AbortController();
-  const warned = new Set<DropReason>();
+  const warned = new Set<TransportDropReason>();
   const waiters = new Set<FlushWaiter>();
+  const offline = openOffline<never>({
+    url: resolved.url,
+    headers: resolved.headers,
+    contentType: resolved.contentType,
+    classify: replayClass,
+    fetch: resolved.fetch,
+    clock: resolved.clock,
+    scheduler,
+    // Only a saved body the endpoint rejects on replay reaches the queue's own drop report.
+    onDrop: () => report([], "rejected"),
+    offline: (options as OfflineHttpTransportOptions).offline,
+    keySuffix: "http-errors",
+  });
+  const requestOptions: RequestOptions = offline === undefined ? resolved : { ...resolved, isOffline: offline.queue.isOffline };
 
   let accepted = 0;
   let settled = 0;
   let linger: AbortController | undefined;
   let sending = false;
   /** The events of the batch being sent that have not settled yet, in batch order. */
-  let inFlight: readonly ErrorEvent[] = [];
+  let inFlight: ErrorEvent[] = [];
+  /** The Resource of the batch being sent. */
+  let inFlightResource: Resource | undefined;
   let closed = false;
   let closing: Promise<boolean> | undefined;
 
-  function report(events: readonly ErrorEvent[], reason: DropReason): void {
+  function report(events: readonly ErrorEvent[], reason: TransportDropReason): void {
     try {
       if (onDrop !== undefined) {
         onDrop(events, reason);
@@ -87,8 +133,55 @@ export function createHttpTransport(options: HttpTransportOptions): Transport {
     settle(events.length);
   }
 
+  /**
+   * Gives up on `events` as `reason`: saves them as `body` with offline on and a body to save,
+   * reporting them only if the save fails, and drops them otherwise.
+   */
+  function giveUp(events: readonly ErrorEvent[], reason: SavedReason, body: string | undefined): void {
+    if (offline === undefined || body === undefined) {
+      drop(events, reason);
+      return;
+    }
+    // A refused save reports `"offline-full"` or the reason it was given, never another delivery reason.
+    offline.queue.saveBody(body, events.length, reason, (dropped) => report(events, dropped as TransportDropReason));
+    settle(events.length);
+  }
+
+  /** Gives up on `events` as `"closed"`, encoded into the bodies a request would send them as. */
+  function giveUpClosed(events: ErrorEvent[], resource: Resource): void {
+    for (const group of encodeBatch({ events, resource }, resolved)) {
+      giveUp(group.events, "closed", group.body);
+    }
+  }
+
+  /** Gives up on the unsettled part of the batch in flight and everything still queued, as `"closed"`. */
+  function abandonPending(): void {
+    const unsettled = inFlight;
+    inFlight = [];
+    if (offline === undefined) {
+      drop(unsettled, "closed");
+      drop(queue.drain(), "closed");
+      return;
+    }
+    if (unsettled.length > 0) {
+      giveUpClosed(unsettled, inFlightResource as Resource);
+    }
+    for (let batch = queue.takeBatch(); batch !== undefined; batch = queue.takeBatch()) {
+      giveUpClosed(batch.events, batch.resource);
+    }
+  }
+
+  /** Runs `run`, a flush or a close, and with offline on also waits for the saves it leaves pending. */
+  function settleSaves(
+    run: (timeoutMs: number | undefined) => Promise<boolean>,
+    closing: boolean,
+    timeoutMs: number | undefined,
+  ): Promise<boolean> {
+    return offline === undefined ? run(timeoutMs) : drain(run, offline, closing, resolved.clock, timeoutMs, undefined);
+  }
+
   /** Counts a settled group of the batch in flight as delivered or dropped. */
-  function onSettle({ events, outcome }: Settlement): void {
+  function onSettle({ events, outcome, body }: Settlement): void {
     if (stop.signal.aborted) {
       // `close` has dropped what was still in flight. An `"aborted"` group only settles after `stop`
       // aborts, so it never gets past this check.
@@ -98,6 +191,8 @@ export function createHttpTransport(options: HttpTransportOptions): Transport {
     inFlight = inFlight.slice(events.length);
     if (outcome === "delivered") {
       settle(events.length);
+    } else if (outcome === "retries-exhausted") {
+      giveUp(events, outcome, body);
     } else {
       drop(events, outcome as RequestDropReason);
     }
@@ -106,7 +201,8 @@ export function createHttpTransport(options: HttpTransportOptions): Transport {
   async function run(): Promise<void> {
     for (let batch = queue.takeBatch(); batch !== undefined; batch = queue.takeBatch()) {
       inFlight = batch.events;
-      await sendBatch(batch, resolved, stop.signal, onSettle);
+      inFlightResource = batch.resource;
+      await sendBatch(batch, requestOptions, stop.signal, onSettle);
       if (stop.signal.aborted) {
         // `close` has dropped the unsettled events and drained the queue.
         break;
@@ -197,18 +293,18 @@ export function createHttpTransport(options: HttpTransportOptions): Transport {
       if (closing !== undefined) {
         return closing.then(() => true);
       }
-      return flushAccepted(timeoutMs);
+      return settleSaves(flushAccepted, false, timeoutMs);
     },
     close(timeoutMs) {
       if (closing === undefined) {
         closed = true;
-        closing = flushAccepted(timeoutMs).then((drained) => {
-          stop.abort();
-          drop(inFlight, "closed");
-          inFlight = [];
-          drop(queue.drain(), "closed");
-          return drained;
-        });
+        const run = (budget: number | undefined): Promise<boolean> =>
+          flushAccepted(budget).then((drained) => {
+            stop.abort();
+            abandonPending();
+            return drained;
+          });
+        closing = settleSaves(run, true, timeoutMs);
       }
       return closing;
     },

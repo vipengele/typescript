@@ -228,6 +228,90 @@ describe("persisting", () => {
   });
 });
 
+describe("saveBody", () => {
+  function saving(overrides: Partial<OfflineQueueOptions<string>> = {}) {
+    const created = create({ fetch: manualFetch().fetch, ...overrides });
+    const refused: OfflineDropReason[] = [];
+    const save = (body: string, count: number, reason: "retries-exhausted" | "closed" = "closed") =>
+      created.queue.saveBody(body, count, reason, (dropped) => refused.push(dropped));
+    return { ...created, refused, save };
+  }
+
+  test("saves the body as given with the count given, telling no one", async () => {
+    const { store, drops, refused, save } = saving();
+    await settled();
+
+    save("exact body", 3, "retries-exhausted");
+    await settled();
+
+    expect(store.bodies).toEqual([{ id: 1, key: KEY, body: "exact body", count: 3, bytes: 10, storedAt: 1234 }]);
+    expect(drops).toEqual([]);
+    expect(refused).toEqual([]);
+  });
+
+  test("tells the listener, not onDrop, of a body the store refuses as full", async () => {
+    const { store, drops, refused, save } = saving();
+    store.outcome = "full";
+
+    save("x", 2);
+    await settled();
+
+    expect(refused).toEqual(["offline-full"]);
+    expect(drops).toEqual([]);
+  });
+
+  test.each(["retries-exhausted", "closed"] as const)("tells the listener of a failed write with its own reason, %s", async (reason) => {
+    const { store, refused, save } = saving();
+    store.outcome = "failed";
+
+    save("x", 1, reason);
+    await settled();
+
+    expect(refused).toEqual([reason]);
+  });
+
+  test("tells the listener of a body held past the bounds before the store opens, at once", () => {
+    const { refused, save } = saving({ store: new Promise(() => {}), limits: { maxEntries: 1, maxBytes: 1000 } });
+
+    save("a", 1);
+    save("b", 1);
+
+    expect(refused).toEqual(["offline-full"]);
+  });
+
+  test("tells the listener with the reason given when there is no store", async () => {
+    const { refused, save } = saving({ store: Promise.resolve(undefined) });
+
+    save("a", 4, "retries-exhausted");
+    await settled();
+
+    expect(refused).toEqual(["retries-exhausted"]);
+  });
+
+  test("swallows a throwing listener", async () => {
+    const { queue, store } = saving();
+    store.outcome = "full";
+
+    queue.saveBody("x", 1, "closed", () => {
+      throw new Error("observer");
+    });
+    await settled();
+
+    expect(await queue.settle(0)).toBe(true);
+  });
+
+  test("reports undelivered entries as rejected, without a write, when the queue has no encoder", async () => {
+    const { queue, store, drops } = create({ encode: undefined });
+    await settled();
+
+    queue.undelivered(entries("a", "b"), "closed");
+    await settled();
+
+    expect(drops).toEqual([["rejected", 2]]);
+    expect(store.calls.filter((call) => call.startsWith("put"))).toEqual([]);
+  });
+});
+
 describe("with no store", () => {
   test("reports every write with its own reason", async () => {
     const { queue, drops } = create({ store: Promise.resolve(undefined) });
@@ -374,6 +458,39 @@ describe("replay", () => {
     await settled();
 
     expect(requests[0]?.init.headers).toEqual({ "x-key": "k", "content-type": "application/json" });
+  });
+
+  test("awaits a headers thunk that returns a promise, and sends the configured contentType", async () => {
+    const store = new FakeStore();
+    store.seed("one");
+    const { fetch, requests } = manualFetch();
+    create({ store: Promise.resolve(store), fetch, headers: async () => ({ authorization: "Bearer y" }), contentType: "text/plain" });
+    await settled();
+
+    expect(requests[0]?.init.headers).toEqual({ authorization: "Bearer y", "content-type": "text/plain" });
+  });
+
+  test("stops and keeps the body when the headers thunk rejects", async () => {
+    const store = new FakeStore();
+    store.seed("one");
+    const { fetch, bodies } = scriptedFetch();
+    create({ store: Promise.resolve(store), fetch, headers: () => Promise.reject(new Error("no token")) });
+    await settled();
+
+    expect(bodies).toEqual([]);
+    expect(store.bodies).toHaveLength(1);
+  });
+
+  test("reads each status through the classify option", async () => {
+    const store = new FakeStore();
+    store.seed("one", "two");
+    const { fetch, bodies } = scriptedFetch(500);
+    const { drops } = create({ store: Promise.resolve(store), fetch, classify: (status) => (status === 500 ? "retryable" : "delivered") });
+    await settled();
+
+    expect(bodies).toEqual(["one"]);
+    expect(store.bodies).toHaveLength(2);
+    expect(drops).toEqual([]);
   });
 
   test("deletes a body answered with a non-retryable status and reports it rejected", async () => {

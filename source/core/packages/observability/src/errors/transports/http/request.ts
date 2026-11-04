@@ -24,6 +24,24 @@ export type RequestOutcome = "delivered" | "aborted" | RequestDropReason;
 export interface Settlement {
   readonly events: ErrorEvent[];
   readonly outcome: RequestOutcome;
+  /** The request body every attempt sent, on a `"retries-exhausted"` group only. */
+  readonly body?: string;
+}
+
+/** {@link ResolvedHttpTransportOptions} with the transport's internal hooks. */
+export interface RequestOptions extends ResolvedHttpTransportOptions {
+  /**
+   * Read after an attempt fails with a network error or a timeout; `true` settles the group
+   * `"retries-exhausted"` at once, with no backoff and no further attempt. A retryable status is
+   * retried regardless. Defaults to never offline.
+   */
+  readonly isOffline?: () => boolean;
+}
+
+/** A group of a batch's events and its request body, or `undefined` when it has none to send. */
+export interface EncodedGroup {
+  readonly events: ErrorEvent[];
+  readonly body: string | undefined;
 }
 
 /**
@@ -65,15 +83,72 @@ function defaultSerialize(events: readonly ErrorEvent[], resource: Resource): st
   return JSON.stringify({ resource: definedKeys(resource), events });
 }
 
-function createPolicy(options: ResolvedHttpTransportOptions): RetryPolicy {
+/**
+ * How `events` encode: one body within `maxBatchBytes`, `"split"` for several events over it, or why
+ * they cannot be sent — the serializer threw, or a lone event is over it.
+ */
+type Encoding = { readonly body: string } | "split" | "unsendable" | "too-large";
+
+function encodeGroup(options: ResolvedHttpTransportOptions, events: ErrorEvent[], resource: Resource): Encoding {
+  let body: string;
+  try {
+    body = (options.serialize ?? defaultSerialize)(events, resource);
+  } catch {
+    return "unsendable";
+  }
+  if (encoder.encode(body).byteLength <= options.maxBatchBytes) {
+    return { body };
+  }
+  return events.length === 1 ? "too-large" : "split";
+}
+
+/** The two halves a group over `maxBatchBytes` is split into, the first holding the odd event. */
+function halves(events: ErrorEvent[]): [ErrorEvent[], ErrorEvent[]] {
+  const middle = Math.ceil(events.length / 2);
+  return [events.slice(0, middle), events.slice(middle)];
+}
+
+function collect(options: ResolvedHttpTransportOptions, events: ErrorEvent[], resource: Resource, groups: EncodedGroup[]): void {
+  const encoding = encodeGroup(options, events, resource);
+  if (encoding === "split") {
+    for (const half of halves(events)) {
+      collect(options, half, resource, groups);
+    }
+    return;
+  }
+  groups.push({ events, body: typeof encoding === "string" ? undefined : encoding.body });
+}
+
+/**
+ * The request bodies `sendBatch` would send for `batch`, without sending any: serialized and split
+ * in half, recursively, exactly as a request splits a body over `maxBatchBytes`. A group the
+ * serializer throws on, or a lone event over the limit, has no body.
+ */
+export function encodeBatch(batch: Batch, options: ResolvedHttpTransportOptions): EncodedGroup[] {
+  const groups: EncodedGroup[] = [];
+  collect(options, batch.events, batch.resource, groups);
+  return groups;
+}
+
+/** Whether a failed attempt is retried: a retryable status always is, any other failure unless the network is down. */
+function retriesAfter(error: unknown, isOffline: () => boolean): boolean {
+  return isRetryableStatusError(error) || !isOffline();
+}
+
+function never(): boolean {
+  return false;
+}
+
+function createPolicy(options: RequestOptions): RetryPolicy {
   const { maxAttempts, maxDelayMs, random, clock, scheduler } = options;
+  const isOffline = options.isOffline ?? never;
   return createRetry(
     "http-transport",
     {
       maxAttempts,
       backoff: withJitter(exponentialBackoff({ initialMs: INITIAL_BACKOFF_MS, maxMs: maxDelayMs }), "full", random),
       // A rejected status resolves the attempt rather than throwing, so every failure is retryable.
-      shouldRetry: (outcome) => !outcome.ok,
+      shouldRetry: (outcome) => !outcome.ok && retriesAfter(outcome.error, isOffline),
       retryAfter: (outcome) => {
         // shouldRetry declines every ok outcome, so only a failed one reaches here.
         const { error } = outcome as Extract<Outcome<unknown>, { ok: false }>;
@@ -96,7 +171,6 @@ function createAttemptTimeout(options: ResolvedHttpTransportOptions): TimeoutPol
 interface RequestContext {
   readonly options: ResolvedHttpTransportOptions;
   readonly send: typeof fetch;
-  readonly serialize: (events: readonly ErrorEvent[], resource: Resource) => string;
   readonly policy: RetryPolicy;
   readonly timeout: TimeoutPolicy;
   readonly signal: AbortSignal | undefined;
@@ -104,8 +178,8 @@ interface RequestContext {
   readonly onSettle: SettlementListener | undefined;
 }
 
-function record(context: RequestContext, events: ErrorEvent[], outcome: RequestOutcome): void {
-  const settlement: Settlement = { events, outcome };
+function record(context: RequestContext, events: ErrorEvent[], outcome: RequestOutcome, body?: string): void {
+  const settlement: Settlement = body === undefined ? { events, outcome } : { events, outcome, body };
   context.settlements.push(settlement);
   context.onSettle?.(settlement);
 }
@@ -157,24 +231,19 @@ async function settle(context: RequestContext, events: ErrorEvent[], resource: R
     record(context, events, "aborted");
     return;
   }
-  let body: string;
-  try {
-    body = context.serialize(events, resource);
-  } catch {
-    record(context, events, "unsendable");
-    return;
-  }
-  if (encoder.encode(body).byteLength > context.options.maxBatchBytes) {
-    if (events.length === 1) {
-      record(context, events, "too-large");
-      return;
+  const encoding = encodeGroup(context.options, events, resource);
+  if (encoding === "split") {
+    for (const half of halves(events)) {
+      await settle(context, half, resource);
     }
-    const middle = Math.ceil(events.length / 2);
-    await settle(context, events.slice(0, middle), resource);
-    await settle(context, events.slice(middle), resource);
     return;
   }
-  record(context, events, await deliver(context, body));
+  if (typeof encoding === "string") {
+    record(context, events, encoding);
+    return;
+  }
+  const outcome = await deliver(context, encoding.body);
+  record(context, events, outcome, outcome === "retries-exhausted" ? encoding.body : undefined);
 }
 
 /**
@@ -184,8 +253,9 @@ async function settle(context: RequestContext, events: ErrorEvent[], resource: R
  * `"unsendable"`, as is any group the serializer throws on. A body over `maxBatchBytes` is split in
  * half, recursively, and a lone event over it is `"too-large"`. A 2xx is `"delivered"`; 408, 429,
  * 5xx and a network error are retried with full-jitter exponential backoff, or the response's
- * `Retry-After`, each capped at `maxDelayMs`, and settle `"retries-exhausted"` after
- * `maxAttempts`; any other status is `"rejected"` at once. An attempt still unanswered after
+ * `Retry-After`, each capped at `maxDelayMs`, and settle `"retries-exhausted"`, carrying the body,
+ * after `maxAttempts`, or at once on a network error or timeout while `options.isOffline` reports
+ * `true`; any other status is `"rejected"` at once. An attempt still unanswered after
  * `requestTimeoutMs`, timed on the Scheduler, has its `fetch` aborted and is retried like a network
  * error. Aborting `signal` stops the request and the wait between attempts, and every group not
  * yet settled is `"aborted"`.
@@ -195,7 +265,7 @@ async function settle(context: RequestContext, events: ErrorEvent[], resource: R
  */
 export async function sendBatch(
   batch: Batch,
-  options: ResolvedHttpTransportOptions,
+  options: RequestOptions,
   signal?: AbortSignal,
   onSettle?: SettlementListener,
 ): Promise<RequestResult> {
@@ -203,7 +273,6 @@ export async function sendBatch(
   const context: RequestContext = {
     options,
     send,
-    serialize: options.serialize ?? defaultSerialize,
     policy: createPolicy(options),
     timeout: createAttemptTimeout(options),
     signal,
