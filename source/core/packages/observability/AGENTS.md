@@ -102,8 +102,8 @@ Run commands from `source/core` (`pnpm build`, `pnpm type-check`, `pnpm test`, `
 - `createTestSink` (`test-sink.ts`) is the in-memory sink: live `records`/`resources` arrays plus
   `find` and `clear`; it stores the shared frozen records by reference.
 - `ConsoleLike` has no `log`. The routing table in `formatter.ts` is a private copy that mirrors
-  the errors console transport; ADR-0007 "Levels" is the authority. `./logger` and `./errors` must
-  not import each other.
+  the errors console transport; ADR-0007 "Levels" is the authority. `logger/` must not import
+  `errors/`; `errors/` may import types only from `logger/`.
 - `write` has no try/catch: a throwing formatter or console reaches `onSinkError`. `time` is the
   epoch-ms number in JSON lines and UTC ISO text in the ANSI and browser formatters (ADR-0018).
 
@@ -154,7 +154,7 @@ Run commands from `source/core` (`pnpm build`, `pnpm type-check`, `pnpm test`, `
   `severity.ts` and `time.ts` know neither.
 - `src/delivery/` and `src/otlp/` are entry-point-neutral: any entry point may import them, the OTLP
   Transport of `./errors` included (ADR-0010, ADR-0022), so `delivery/` stays free of `LogRecord`,
-  `ErrorEvent` and anything from `./logger`, and `./logger` and `./errors` never import each other.
+  `ErrorEvent` and anything from `./logger`, and `logger/` never imports `errors/` (`errors/` takes only types from `logger/`).
 
 ## Shared redaction helpers (`src/redaction.ts`)
 
@@ -168,6 +168,10 @@ Run commands from `source/core` (`pnpm build`, `pnpm type-check`, `pnpm test`, `
 - `enrich` merges `snapshot(Scope.current())` beneath the call's own attributes (the call wins on a
   shared key). Each side is normalized separately, and a throw while reading the scope yields no scope
   attributes rather than dropping the event. The Resource is never copied into events.
+- `enrich` also sets `trace` (`LogTrace`) from `readActiveTrace`, for every capture including global
+  handlers; no active span gives no `trace` key. Redaction never touches it. After processors and
+  `beforeSend`, a `trace` failing the `src/trace.ts` guards is dropped and the event kept, so a
+  transport never sees a malformed id.
 - Stages: gate, `sampleRate`, normalize, `ignoreErrors`, enrich, redaction, processors, `beforeSend`,
   dedupe, rate limit, transport (ADR-0020). The Reporter owns policy drops and the Transport delivery
   drops; every drop still returns the id. `sampleRate` 1, `ignoreErrors` `[]`, `dedupe` on and
@@ -199,6 +203,24 @@ Run commands from `source/core` (`pnpm build`, `pnpm type-check`, `pnpm test`, `
   `snapshot`. `Scope.setUser`/`setTag`/`setContext` write flat dotted attribute keys, so an event has
   no `tags`, `user` or `contexts` field. `secretKeys` splits keys on every non-alphanumeric
   character, so `session.id` from `Scope.setContext("session", { id })` is masked by default.
+
+## Logger sink (`src/errors/logger-sink.ts`)
+
+- `reporter.loggerSink(options?: LoggerSinkOptions)` returns a `Sink` closing over the private
+  pipeline (`createLoggerSink`, wired in `reporter.ts`). It reports each record with an `error` at
+  `minLevel` (default `"error"`) or above as a handled event, mechanism `{ handled: true, source:
+  "logger" }`, the record's level, its attributes plus `logger.category` and `logger.message`, the
+  record's `trace` (else the active span) and the reporter's clock for `time`. An invalid `minLevel`
+  throws `ReporterConfigError`. A write during the same sink's own capture is dropped (synchronous
+  re-entrancy guard). After `close()` it behaves like `captureException` after close; there is no
+  reporter closed flag. Every stage applies (ADR-0026).
+- It captures through an internal `serialized-exception` kind, not public: the error is already a
+  `SerializedError`, so `serializeError` is skipped, but it is lifted to an `ExceptionRecord` (frames,
+  `cause`/`errors` chain) like a thrown value, and its own `trace` wins over the live span. It is
+  bounded by the logger's serialization limits, not `limits(...)`, except frames cut to `maxBreadth`.
+- `src/trace.ts` holds `readActiveTrace`, `LogTrace` and the guards, shared by `./logger` and
+  `./errors`. `logger/` never imports from `errors/`; `src/logger/no-errors-import.node.test.ts`
+  enforces it. `errors/` imports only types from `logger/` (`LogRecord`, `Sink`, via `import type`).
 
 ## HTTP transport (`src/errors/transports/http-transport.ts`, `http/`)
 
