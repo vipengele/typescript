@@ -1,6 +1,6 @@
 import { type Clock, type Scheduler, systemClock, systemScheduler } from "@vipengele/ts-core-common";
 import type { DeliveryEntry, DeliveryFetch, DeliveryRequest, DeliveryResponse, DropReason, UndeliveredReason } from "../delivery";
-import { classifyStatus } from "../retry-policy";
+import { classifyStatus, type StatusClass } from "../retry-policy";
 import { type LifecycleTarget, utf8ByteLength } from "../unload";
 import { fitsLimits, type NewStoredBody, type OfflineLimits, type OfflineStore, type PutOutcome, type StoreUsage } from "./store";
 
@@ -11,6 +11,12 @@ import { fitsLimits, type NewStoredBody, type OfflineLimits, type OfflineStore, 
  */
 export type OfflineDropReason = DropReason | "offline-full";
 
+/** Replay headers: a fixed record, or a thunk returning one or a promise of one. */
+export type OfflineHeaders = Record<string, string> | (() => Record<string, string> | Promise<Record<string, string>>);
+
+/** Told why a saved body could not be kept; a throw is swallowed. */
+export type SaveDropListener = (reason: OfflineDropReason) => void;
+
 /** The part of a `Navigator` the queue reads. */
 export interface OfflineNavigator {
   readonly onLine?: unknown;
@@ -19,12 +25,25 @@ export interface OfflineNavigator {
 export interface OfflineQueueOptions<T> {
   /** The key the queue's bodies are saved under; a queue replays only its own key. */
   readonly key: string;
-  /** Turns undelivered entries into the request body that is saved and replayed. */
-  readonly encode: (entries: ReadonlyArray<DeliveryEntry<T>>) => string;
+  /**
+   * Turns undelivered entries into the request body that is saved and replayed. Omitted, `undelivered`
+   * reports its entries as `"rejected"`, and bodies reach the queue only through `saveBody`.
+   */
+  readonly encode?: (entries: ReadonlyArray<DeliveryEntry<T>>) => string;
   /** Where a saved body is POSTed on replay. */
   readonly url: string;
-  /** Sent with every replay, read once per request when a thunk; `content-type` is always `application/json`. */
-  readonly headers?: Record<string, string> | (() => Record<string, string>);
+  /** Sent with every replay, read and awaited once per request when a thunk; `content-type` is always `contentType`. */
+  readonly headers?: OfflineHeaders;
+  /** The `content-type` every replay is sent with; defaults to `application/json`. */
+  readonly contentType?: string;
+  /**
+   * Bounds each replay attempt, the `headers` thunk and the request together, timed on `scheduler`. An
+   * attempt with no response by then is aborted and keeps its body, so a headers thunk or a fetch that
+   * never settles cannot hold a replay. Omitted, an attempt ends only by settling or by `close`.
+   */
+  readonly requestTimeoutMs?: number;
+  /** Reads a replay's status; defaults to the OTLP/HTTP classification. A `"retryable"` status keeps the body. */
+  readonly classify?: (status: number) => StatusClass;
   /** Defaults to `globalThis.fetch`, looked up at each replay request. */
   readonly fetch?: DeliveryFetch;
   /** The store the bodies are saved in; `undefined` when none could be opened. Never expected to reject. */
@@ -58,19 +77,39 @@ function failed(): PutOutcome {
   return "failed";
 }
 
+function cannotEncode(): string {
+  throw new TypeError("The offline queue has no encoder");
+}
+
+/** Tells `listener` of a drop, swallowing its throw: the listener is the host's observer. */
+function notify(listener: SaveDropListener, reason: OfflineDropReason): void {
+  try {
+    listener(reason);
+  } catch {
+    // The listener's failure is not the queue's to report.
+  }
+}
+
 function defaultFetch(url: string, init: DeliveryRequest): Promise<DeliveryResponse> {
   return globalThis.fetch(url, init);
 }
 
-/** The headers of one replay request: the configured ones, the thunk run once, and `content-type` always `application/json`. */
-function requestHeaders(headers: OfflineQueueOptions<unknown>["headers"]): Record<string, string> {
-  const configured = typeof headers === "function" ? headers() : headers;
-  return { ...configured, "content-type": "application/json" };
+/** Rejects with the reason once `signal` aborts, at once when it already has; never resolves. */
+function whenAborted(signal: AbortSignal): Promise<never> {
+  return new Promise((_resolve, reject) => {
+    const fail = (): void => reject(signal.reason);
+    if (signal.aborted) {
+      fail();
+    } else {
+      signal.addEventListener("abort", fail, { once: true });
+    }
+  });
 }
 
-function verdictOf(status: number): ReplayVerdict {
-  const verdict = classifyStatus(status);
-  return verdict === "retryable" ? "stop" : verdict;
+/** The headers of one replay request: the configured ones, the thunk run and awaited once, and `content-type` last. */
+async function requestHeaders(headers: OfflineHeaders | undefined, contentType: string): Promise<Record<string, string>> {
+  const configured = typeof headers === "function" ? await headers() : headers;
+  return { ...configured, "content-type": contentType };
 }
 
 /**
@@ -85,12 +124,18 @@ function verdictOf(status: number): ReplayVerdict {
  * Replay starts once the store opens and on each `online` event at `window`, and sends the saved
  * bodies oldest first, one request at a time; a replay already running is not started again. A
  * 2xx deletes the body, a status that is not retried deletes it and reports it `"rejected"`, and a
- * network error or a retryable status stops the replay and keeps it. A replay delivers at least
+ * network error or a retryable status stops the replay and keeps it. With `requestTimeoutMs`, an
+ * attempt (the headers read and the request) with no response by then is aborted and stops the
+ * replay too; `close` abandons a headers read still pending, so neither leaves a replay running
+ * for good. A replay delivers at least
  * once: a body sent but not yet deleted is sent again by the next replay.
  */
 export class OfflineQueue<T> {
   readonly #options: OfflineQueueOptions<T>;
   readonly #fetch: DeliveryFetch;
+  readonly #encode: (entries: ReadonlyArray<DeliveryEntry<T>>) => string;
+  readonly #classify: (status: number) => StatusClass;
+  readonly #contentType: string;
   readonly #clock: Clock;
   readonly #scheduler: Scheduler;
   /** The store once the open settles, with a rejected open read as no store. */
@@ -110,6 +155,9 @@ export class OfflineQueue<T> {
   constructor(options: OfflineQueueOptions<T>) {
     this.#options = options;
     this.#fetch = options.fetch ?? defaultFetch;
+    this.#encode = options.encode ?? cannotEncode;
+    this.#classify = options.classify ?? classifyStatus;
+    this.#contentType = options.contentType ?? "application/json";
     this.#clock = options.clock ?? systemClock;
     this.#scheduler = options.scheduler ?? systemScheduler;
     this.#ready = Promise.resolve(options.store).catch(nothing);
@@ -119,8 +167,26 @@ export class OfflineQueue<T> {
 
   /** The delivery's `undelivered` hook: saves `entries` as one body, reporting them if it cannot. */
   readonly undelivered = (entries: ReadonlyArray<DeliveryEntry<T>>, reason: UndeliveredReason): void => {
-    this.#persist(entries, reason);
+    const count = entries.length;
+    let body: string;
+    try {
+      body = this.#encode(entries);
+    } catch {
+      this.#report("rejected", count);
+      return;
+    }
+    this.#save(body, count, reason, (dropped) => this.#report(dropped, count));
   };
+
+  /**
+   * Saves `body`, already encoded and carrying `count` entries, as `undelivered` saves an encoded
+   * batch, but tells `dropped` rather than `onDrop` when it cannot be kept: `"offline-full"` for a
+   * body over the bounds, `reason` for a failed write or no store. A replay rejecting the body is
+   * still reported to `onDrop`.
+   */
+  saveBody(body: string, count: number, reason: UndeliveredReason, dropped: SaveDropListener): void {
+    this.#save(body, count, reason, (refused) => notify(dropped, refused));
+  }
 
   /** The delivery's `isOffline` hook: whether the navigator reports no network. */
   readonly isOffline = (): boolean => this.#options.navigator?.onLine === false;
@@ -183,28 +249,18 @@ export class OfflineQueue<T> {
 
   #report(reason: OfflineDropReason, count: number): void {
     const onDrop = this.#options.onDrop;
-    try {
-      onDrop(reason, count);
-    } catch {
-      // onDrop is the host's observer; its failure is not the queue's to report.
-    }
+    notify((dropped) => onDrop(dropped, count), reason);
   }
 
-  #persist(entries: ReadonlyArray<DeliveryEntry<T>>, reason: UndeliveredReason): void {
-    const count = entries.length;
-    let body: string;
-    try {
-      body = this.#options.encode(entries);
-    } catch {
-      this.#report("rejected", count);
-      return;
-    }
+  #save(body: string, count: number, reason: UndeliveredReason, report: (reason: OfflineDropReason) => void): void {
     if (!this.#opened && !this.#hold(body)) {
-      this.#report("offline-full", count);
+      // Reported from a tracked microtask, so `settle` and `idle` wait for it and the caller's own
+      // code after `undelivered` or `saveBody` runs first.
+      this.#track(Promise.resolve().then(() => report("offline-full")));
       return;
     }
     const record: NewStoredBody = { key: this.#options.key, body, count, storedAt: this.#clock() };
-    this.#track(this.#ready.then((store) => this.#write(store, record, reason)));
+    this.#track(this.#ready.then((store) => this.#write(store, record, reason, report)));
   }
 
   /** Counts `body` against `limits` while the store is not open; `false` when it does not fit. */
@@ -222,16 +278,21 @@ export class OfflineQueue<T> {
     void write.then(() => this.#writes.delete(write));
   }
 
-  async #write(store: OfflineStore | undefined, record: NewStoredBody, reason: UndeliveredReason): Promise<void> {
+  async #write(
+    store: OfflineStore | undefined,
+    record: NewStoredBody,
+    reason: UndeliveredReason,
+    report: (reason: OfflineDropReason) => void,
+  ): Promise<void> {
     if (store === undefined) {
-      this.#report(reason, record.count);
+      report(reason);
       return;
     }
     const outcome = await store.put(record).catch(failed);
     if (outcome === "full") {
-      this.#report("offline-full", record.count);
+      report("offline-full");
     } else if (outcome === "failed") {
-      this.#report(reason, record.count);
+      report(reason);
     }
   }
 
@@ -273,17 +334,44 @@ export class OfflineQueue<T> {
     }
   }
 
-  /** One replay request. A throw from the `headers` thunk or from `fetch`, or a rejection, keeps the body. */
+  /**
+   * One replay request. A throw from the `headers` thunk or from `fetch`, or a rejection, keeps the
+   * body. `close` abandons a headers read still pending and aborts the `fetch`; `requestTimeoutMs`
+   * abandons the whole attempt, headers read and `fetch` alike, when no response has arrived by then.
+   */
   async #send(body: string): Promise<ReplayVerdict> {
     const doFetch = this.#fetch;
+    const attempt = new AbortController();
+    const expired = new AbortController();
+    const abortAttempt = (): void => attempt.abort();
+    const timer = new AbortController();
+    this.#abort.signal.addEventListener("abort", abortAttempt, { once: true });
+    if (this.#closed) {
+      abortAttempt();
+    }
+    const limit = this.#options.requestTimeoutMs;
+    if (limit !== undefined) {
+      // A cancelled sleep rejects, so only an elapsed one reaches the abort.
+      void this.#scheduler.sleep(limit, timer.signal).then(() => {
+        expired.abort();
+        abortAttempt();
+      }, noop);
+    }
     let response: DeliveryResponse;
     try {
-      const request = { method: "POST", headers: requestHeaders(this.#options.headers), body, signal: this.#abort.signal } as const;
-      response = await doFetch(this.#options.url, request);
+      const headers = await Promise.race([whenAborted(attempt.signal), requestHeaders(this.#options.headers, this.#contentType)]);
+      response = await Promise.race([
+        doFetch(this.#options.url, { method: "POST", headers, body, signal: attempt.signal }),
+        whenAborted(expired.signal),
+      ]);
     } catch {
       return "stop";
+    } finally {
+      timer.abort();
+      this.#abort.signal.removeEventListener("abort", abortAttempt);
     }
     response.body?.cancel().catch(noop);
-    return verdictOf(response.status);
+    const verdict = this.#classify(response.status);
+    return verdict === "retryable" ? "stop" : verdict;
   }
 }

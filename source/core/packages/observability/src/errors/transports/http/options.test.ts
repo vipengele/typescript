@@ -127,6 +127,36 @@ describe("resolveOptions validation", () => {
     }
   });
 
+  it.each(["maxEntries", "maxBytes"])("rejects an invalid offline.%s", (name) => {
+    for (const value of [0, -1, 1.5, Number.NaN]) {
+      const error = reject({ url, offline: { [name]: value } });
+
+      expect(isHttpTransportConfigError(error)).toBe(true);
+      expect((error as Error).message).toContain(`offline.${name}`);
+    }
+  });
+
+  it.each([
+    ["a string", "yes"],
+    ["false", false],
+    ["null", null],
+    ["a number", 1],
+  ])("rejects an offline that is %s", (_name, value) => {
+    const error = reject({ url, offline: value });
+
+    expect(isHttpTransportConfigError(error)).toBe(true);
+    expect((error as Error).message).toContain("offline");
+  });
+
+  it("accepts offline as true or an object", () => {
+    const settings = { maxEntries: 2, maxBytes: 100 };
+
+    expect(resolveOptions({ url, offline: true }).offline).toBe(true);
+    expect(resolveOptions({ url, offline: settings }).offline).toBe(settings);
+    expect(resolveOptions({ url, offline: {} }).offline).toEqual({});
+    expect(resolveOptions({ url }).offline).toBeUndefined();
+  });
+
   it("accepts the largest lingerMs a timer honours", () => {
     expect(resolveOptions({ url, lingerMs: 2_147_483_647 }).lingerMs).toBe(2_147_483_647);
   });

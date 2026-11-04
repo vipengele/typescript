@@ -2,9 +2,10 @@ import type { Scheduler } from "@vipengele/ts-core-common";
 import type { Resource } from "@vipengele/ts-core-common/scope";
 import { createManualTime, type ManualTime } from "@vipengele/ts-core-common/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { failingIndexedDb, memoryIndexedDb } from "../../delivery/offline/fake-indexed-db.test-support";
 import type { ErrorEvent } from "../event";
 import type { Transport } from "../transport";
-import type { HttpTransportOptions } from "./http/options";
+import type { HttpTransportOfflineOptions, HttpTransportOptions } from "./http/options";
 import type { DropReason } from "./http/queue";
 import { createHttpTransport } from "./http-transport";
 import { isHttpTransportConfigError } from "./http-transport-config-error";
@@ -473,5 +474,430 @@ describe("createHttpTransport send never throws", () => {
     await expect(transport.flush()).resolves.toBe(true);
 
     expect(calls).toEqual([{ at: 0, messages: ["a"] }]);
+  });
+});
+
+/** The `offline` option. */
+function offline(settings: true | HttpTransportOfflineOptions): Partial<HttpTransportOptions> {
+  return { offline: settings };
+}
+
+/** A step of {@link bodyFetch}: a status, a rejection as a network error gives, or a request that never settles. */
+type BodyStep = number | "fail" | "hang";
+
+/** A fake `fetch` recording each request's exact body and headers, answering with the next step; the last step repeats. */
+function bodyFetch(...steps: BodyStep[]): { fetch: typeof fetch; requests: RequestInit[] } {
+  const requests: RequestInit[] = [];
+  const fake = (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    requests.push(init as RequestInit);
+    const step = steps[Math.min(requests.length, steps.length) - 1] as BodyStep;
+    if (step === "fail") {
+      return Promise.reject(new TypeError("Failed to fetch"));
+    }
+    if (step === "hang") {
+      return new Promise<Response>(() => {});
+    }
+    return Promise.resolve(new Response(null, { status: step }));
+  };
+  return { fetch: fake as typeof fetch, requests };
+}
+
+/** The `message` of every event a saved envelope body carries. */
+function savedMessages(body: string): string[] {
+  return (JSON.parse(body) as { events: ErrorEvent[] }).events.map((event) => event.message as string);
+}
+
+/** A hanging `memoryIndexedDb` whose transactions started so far complete on `complete()`. */
+function heldIndexedDb() {
+  const db = memoryIndexedDb([], true);
+  const started: IDBTransaction[] = [];
+  const factory = {
+    open: (name: string) => {
+      const request = db.factory.open(name);
+      const database = request.result;
+      const transaction = database.transaction.bind(database);
+      database.transaction = ((...args: Parameters<IDBDatabase["transaction"]>) => {
+        const begun = transaction(...args);
+        started.push(begun);
+        return begun;
+      }) as IDBDatabase["transaction"];
+      return request;
+    },
+  } as unknown as IDBFactory;
+  const complete = () => {
+    for (const begun of started.splice(0)) {
+      begun.oncomplete?.(new Event("complete"));
+    }
+  };
+  return { factory, rows: db.rows, closed: db.closed, complete };
+}
+
+describe("createHttpTransport offline", () => {
+  const key = `${url}|http-errors`;
+
+  it("opens no store and reports retries-exhausted to onDrop when offline is off", async () => {
+    const time = createManualTime();
+    const db = memoryIndexedDb();
+    const { fetch } = bodyFetch(503);
+    const { transport, drops } = setup(time, { fetch, maxAttempts: 1 });
+
+    transport.send(anEvent("a"), resource);
+
+    expect(await drive(time, transport.flush())).toBe(true);
+    expect(drops).toEqual([{ messages: ["a"], reason: "retries-exhausted" }]);
+    expect(db.opens).toEqual([]);
+  });
+
+  it("saves a batch whose retries run out as the exact body sent, and reports nothing", async () => {
+    const time = createManualTime();
+    const db = memoryIndexedDb();
+    const { fetch, requests } = bodyFetch(503);
+    const { transport, drops } = setup(time, { fetch, maxAttempts: 2, ...offline({ indexedDB: db.factory }) });
+
+    transport.send(anEvent("a"), resource);
+    transport.send(anEvent("b"), resource);
+
+    expect(await drive(time, transport.flush())).toBe(true);
+    expect(db.opens).toEqual(["vipengele-otlp-offline"]);
+    expect(db.rows.map(({ key: saved, count, body }) => ({ saved, count, body }))).toEqual([
+      { saved: key, count: 2, body: requests[0]?.body },
+    ]);
+    expect(requests[1]?.body).toBe(requests[0]?.body);
+    expect(drops).toEqual([]);
+  });
+
+  it("saves the batch in flight and every queued batch on close, each as its own body", async () => {
+    const time = createManualTime();
+    const db = memoryIndexedDb();
+    const { fetch, requests } = bodyFetch("hang");
+    const { transport, drops } = setup(time, { fetch, lingerMs: 0, maxBatchEvents: 1, ...offline({ indexedDB: db.factory }) });
+
+    for (const message of ["a", "b", "c"]) {
+      transport.send(anEvent(message), resource);
+    }
+    await time.advance(0);
+    await settleNow();
+    const closing = transport.close(10);
+    await settleNow();
+    await time.advance(10);
+    await closing;
+    await settleNow();
+
+    expect(db.rows.map(({ key: saved, count }) => [saved, count])).toEqual([
+      [key, 1],
+      [key, 1],
+      [key, 1],
+    ]);
+    expect(db.rows[0]?.body).toBe(requests[0]?.body);
+    expect(db.rows.map(({ body }) => savedMessages(body))).toEqual([["a"], ["b"], ["c"]]);
+    expect(drops).toEqual([]);
+  });
+
+  it("drops an event on close as closed when it has no body to save", async () => {
+    const time = createManualTime();
+    const db = memoryIndexedDb();
+    const { fetch } = bodyFetch("hang");
+    const serialize = (events: readonly ErrorEvent[]) => {
+      if (events.some((event) => event.message === "bad")) {
+        throw new Error("unserializable");
+      }
+      return JSON.stringify({ events });
+    };
+    const { transport, drops } = setup(time, { fetch, serialize, lingerMs: 0, maxBatchEvents: 1, ...offline({ indexedDB: db.factory }) });
+
+    transport.send(anEvent("good"), resource);
+    transport.send(anEvent("bad"), resource);
+    await time.advance(0);
+    await settleNow();
+    const closing = transport.close(10);
+    await settleNow();
+    await time.advance(10);
+    await closing;
+    await settleNow();
+
+    expect(db.rows.map(({ body }) => savedMessages(body))).toEqual([["good"]]);
+    expect(drops).toEqual([{ messages: ["bad"], reason: "closed" }]);
+  });
+
+  it.each([
+    ["queue-full", { maxQueueEvents: 1 }, 200, ["a", "b"], ["b"]],
+    ["too-large", { maxBatchBytes: 100 }, 200, ["x".repeat(200)], ["x".repeat(200)]],
+    ["rejected", {}, 400, ["a", "b"], ["a", "b"]],
+  ] as const)("never saves an event dropped as %s, and reports it to onDrop", async (reason, limits, status, sent, dropped) => {
+    const time = createManualTime();
+    const db = memoryIndexedDb();
+    const { fetch } = bodyFetch(status);
+    const { transport, drops } = setup(time, { fetch, ...limits, ...offline({ indexedDB: db.factory }) });
+
+    for (const message of sent) {
+      transport.send(anEvent(message), resource);
+    }
+
+    expect(await drive(time, transport.flush())).toBe(true);
+    expect(drops).toEqual([{ messages: [...dropped], reason }]);
+    expect(db.rows).toEqual([]);
+  });
+
+  it("never saves an unsendable event, and reports it to onDrop", async () => {
+    const time = createManualTime();
+    const db = memoryIndexedDb();
+    const { fetch } = bodyFetch(200);
+    const serialize = () => {
+      throw new Error("unserializable");
+    };
+    const { transport, drops } = setup(time, { fetch, serialize, ...offline({ indexedDB: db.factory }) });
+
+    transport.send(anEvent("a"), resource);
+    await time.advance(1000);
+
+    expect(await transport.flush()).toBe(true);
+    expect(drops).toEqual([{ messages: ["a"], reason: "unsendable" }]);
+    expect(db.rows).toEqual([]);
+  });
+
+  it("reports the events themselves as offline-full when the store refuses the body, after the save", async () => {
+    const time = createManualTime();
+    const db = memoryIndexedDb();
+    const { fetch } = bodyFetch(503);
+    const { transport, drops } = setup(time, {
+      fetch,
+      maxAttempts: 1,
+      maxBatchEvents: 1,
+      ...offline({ indexedDB: db.factory, maxEntries: 1 }),
+    });
+
+    transport.send(anEvent("a"), resource);
+    transport.send(anEvent("b"), resource);
+
+    expect(await drive(time, transport.flush())).toBe(true);
+    expect(db.rows.map(({ body }) => savedMessages(body))).toEqual([["a"]]);
+    expect(drops).toEqual([{ messages: ["b"], reason: "offline-full" }]);
+  });
+
+  it("reports a body held past the bounds before the store opens to onDrop after send returns", async () => {
+    const time = createManualTime();
+    const unopened = { open: () => ({}) } as unknown as IDBFactory;
+    const { fetch } = bodyFetch(503);
+    const { transport, drops } = setup(time, {
+      fetch,
+      maxAttempts: 1,
+      maxBatchEvents: 1,
+      ...offline({ indexedDB: unopened, maxEntries: 1 }),
+    });
+
+    transport.send(anEvent("a"), resource);
+    transport.send(anEvent("b"), resource);
+    expect(drops).toEqual([]);
+
+    await time.advance(1000);
+    await settleNow();
+
+    expect(drops).toEqual([{ messages: ["b"], reason: "offline-full" }]);
+  });
+
+  it("reports the events themselves with their own reason when the store cannot be opened", async () => {
+    const time = createManualTime();
+    const { fetch } = bodyFetch(503);
+    const { transport, drops } = setup(time, { fetch, maxAttempts: 1, ...offline({ indexedDB: failingIndexedDb() }) });
+
+    transport.send(anEvent("a"), resource);
+    expect(drops).toEqual([]);
+
+    expect(await drive(time, transport.flush())).toBe(true);
+    expect(drops).toEqual([{ messages: ["a"], reason: "retries-exhausted" }]);
+  });
+
+  it("warns once through the console for a failed save when no onDrop is given", async () => {
+    const time = createManualTime();
+    const warn = vi.fn();
+    const { fetch } = bodyFetch(503);
+    const { transport } = setup(time, {
+      fetch,
+      maxAttempts: 1,
+      onDrop: undefined,
+      console: { warn },
+      ...offline({ indexedDB: failingIndexedDb() }),
+    });
+
+    transport.send(anEvent("a"), resource);
+    await drive(time, transport.flush());
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]?.[0]).toContain("retries-exhausted");
+  });
+
+  it("replays a saved body as it is, with the configured headers and contentType, and deletes it", async () => {
+    const time = createManualTime();
+    const db = memoryIndexedDb([{ id: 1, key, body: "saved body", count: 2 }]);
+    const { fetch, requests } = bodyFetch(200);
+    setup(time, {
+      fetch,
+      headers: async () => ({ authorization: "Bearer x" }),
+      contentType: "text/plain",
+      ...offline({ indexedDB: db.factory }),
+    });
+
+    await vi.waitFor(() => expect(db.rows).toEqual([]));
+
+    expect(requests.map((request) => request.body)).toEqual(["saved body"]);
+    expect(requests[0]?.headers).toEqual({ authorization: "Bearer x", "content-type": "text/plain" });
+  });
+
+  it("gives up a replay whose async headers thunk hangs after requestTimeoutMs, so a later online replays", async () => {
+    const listeners = new Set<() => void>();
+    vi.stubGlobal("onpagehide", null);
+    vi.stubGlobal("addEventListener", (type: string, listener: () => void) => {
+      if (type === "online") {
+        listeners.add(listener);
+      }
+    });
+    vi.stubGlobal("removeEventListener", (_type: string, listener: () => void) => {
+      listeners.delete(listener);
+    });
+    const time = createManualTime();
+    const db = memoryIndexedDb([{ id: 1, key, body: "saved body", count: 2 }]);
+    const { fetch, requests } = bodyFetch(200);
+    let calls = 0;
+    setup(time, {
+      fetch,
+      requestTimeoutMs: 1000,
+      headers: () => (++calls === 1 ? new Promise<Record<string, string>>(() => {}) : Promise.resolve({ authorization: "Bearer x" })),
+      ...offline({ indexedDB: db.factory }),
+    });
+    await vi.waitFor(() => expect(calls).toBe(1));
+
+    await time.advance(1000);
+    await settleNow();
+    expect(requests).toEqual([]);
+    expect(db.rows).toHaveLength(1);
+
+    for (const listener of listeners) {
+      listener();
+    }
+
+    await vi.waitFor(() => expect(db.rows).toEqual([]));
+    expect(requests.map((request) => request.body)).toEqual(["saved body"]);
+  });
+
+  it("reports a saved body the endpoint rejects on replay as rejected, with no events", async () => {
+    const time = createManualTime();
+    const db = memoryIndexedDb([{ id: 1, key, body: "saved body", count: 2 }]);
+    const { fetch } = bodyFetch(400);
+    const { drops } = setup(time, { fetch, ...offline({ indexedDB: db.factory }) });
+
+    await vi.waitFor(() => expect(drops).toEqual([{ messages: [], reason: "rejected" }]));
+
+    expect(db.rows).toEqual([]);
+  });
+
+  it("warns for a replay rejection when no onDrop is given", async () => {
+    const time = createManualTime();
+    const warn = vi.fn();
+    const db = memoryIndexedDb([{ id: 1, key, body: "saved body", count: 2 }]);
+    const { fetch } = bodyFetch(400);
+    setup(time, { fetch, onDrop: undefined, console: { warn }, ...offline({ indexedDB: db.factory }) });
+
+    await vi.waitFor(() => expect(warn).toHaveBeenCalledTimes(1));
+
+    expect(warn.mock.calls[0]?.[0]).toContain("rejected");
+  });
+
+  it("keeps a saved body the endpoint answers with a status the transport retries", async () => {
+    const time = createManualTime();
+    const db = memoryIndexedDb([{ id: 1, key, body: "saved body", count: 2 }]);
+    const { fetch, requests } = bodyFetch(500);
+    const { drops } = setup(time, { fetch, ...offline({ indexedDB: db.factory }) });
+
+    await vi.waitFor(() => expect(requests).toHaveLength(1));
+    await settleNow();
+
+    expect(db.rows).toHaveLength(1);
+    expect(drops).toEqual([]);
+  });
+
+  it("ends the retries at once on a network error while the navigator is offline, and saves the batch", async () => {
+    vi.stubGlobal("navigator", { onLine: false });
+    const time = createManualTime();
+    const db = memoryIndexedDb();
+    const { fetch, requests } = bodyFetch("fail");
+    const { transport, drops } = setup(time, { fetch, maxAttempts: 5, ...offline({ indexedDB: db.factory }) });
+
+    transport.send(anEvent("a"), resource);
+
+    expect(await transport.flush()).toBe(true);
+    expect(requests).toHaveLength(1);
+    expect(time.clock()).toBe(0);
+    expect(db.rows.map(({ body }) => body)).toEqual([requests[0]?.body]);
+    expect(drops).toEqual([]);
+  });
+
+  it("waits for a pending save in an untimed flush", async () => {
+    const time = createManualTime();
+    const db = heldIndexedDb();
+    const { fetch } = bodyFetch(503);
+    const { transport } = setup(time, { fetch, maxAttempts: 1, lingerMs: 0, ...offline({ indexedDB: db.factory }) });
+    let flushed: boolean | undefined;
+
+    transport.send(anEvent("a"), resource);
+    void transport.flush().then((drained) => {
+      flushed = drained;
+    });
+    await settleNow();
+    expect(flushed).toBeUndefined();
+
+    db.complete();
+    await settleNow();
+
+    expect(flushed).toBe(true);
+    expect(db.rows).toHaveLength(1);
+  });
+
+  it("resolves false from a timed flush while a save is still pending", async () => {
+    const time = createManualTime();
+    const db = memoryIndexedDb([], true);
+    const { fetch } = bodyFetch(503);
+    const { transport } = setup(time, { fetch, maxAttempts: 1, lingerMs: 0, ...offline({ indexedDB: db.factory }) });
+
+    transport.send(anEvent("a"), resource);
+    const flushing = transport.flush(10);
+    await settleNow();
+    await time.advance(10);
+
+    expect(await flushing).toBe(false);
+  });
+
+  it("closes the store once close has settled the saves, and a later flush resolves true", async () => {
+    const time = createManualTime();
+    const db = memoryIndexedDb();
+    const { fetch } = bodyFetch(503);
+    const { transport } = setup(time, { fetch, maxAttempts: 1, ...offline({ indexedDB: db.factory }) });
+
+    transport.send(anEvent("a"), resource);
+
+    expect(await transport.close()).toBe(true);
+    expect(db.rows).toHaveLength(1);
+    expect(db.closed()).toBe(1);
+    expect(await transport.flush()).toBe(true);
+  });
+
+  it("resolves false from close while a save is pending and closes the store once the save completes", async () => {
+    const time = createManualTime();
+    const db = heldIndexedDb();
+    const { fetch } = bodyFetch(503);
+    const { transport } = setup(time, { fetch, maxAttempts: 1, lingerMs: 0, ...offline({ indexedDB: db.factory }) });
+
+    transport.send(anEvent("a"), resource);
+    await time.advance(0);
+    await settleNow();
+    const closing = transport.close(10);
+    await settleNow();
+    await time.advance(10);
+
+    expect(await closing).toBe(false);
+    expect(db.closed()).toBe(0);
+
+    db.complete();
+    await settleNow();
+    expect(db.closed()).toBe(1);
   });
 });

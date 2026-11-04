@@ -6,8 +6,8 @@ stand.
 
 The scope of this decision is the delivery core (`src/delivery/`) and the two transports built on
 it, `createOtlpLogSink` and `createOtlpTransport`. `createHttpTransport` keeps its own queue and wire
-format (`0023-http-json-transport-delivery.md`) and is not covered here: its offline queue and its
-unload drain are decided separately, and this ADR is extended when they are.
+format (`0023-http-json-transport-delivery.md`) and uses the same offline queue through its own seam,
+decided in "The HTTP transport" below.
 
 ## What persists
 
@@ -111,3 +111,31 @@ location the issue asked for.
 - **A cross-tab lease.** It needs a lock or a heartbeat that not every runtime has, to remove a
   duplicate the collector has to tolerate anyway, since an aborted in-flight fetch can duplicate a
   batch without a second tab.
+
+## The HTTP transport
+
+`createHttpTransport` takes the same `offline` option, with the same defaults, over the same
+database. Its record key is `${url}|http-errors`, so it replays only its own bodies.
+
+- **What persists.** The exact request body. A `retries-exhausted` batch is saved as the bytes the
+  transport sent. A `closed` batch has no sent bytes, so it is re-serialized with the same encoder
+  and size split a request uses. `retries-exhausted` and `closed` persist; `queue-full`,
+  `too-large`, `rejected` and `unsendable` never do, since each is a verdict that a retry cannot
+  change.
+- **Replay.** It uses the transport's own status classification, so 408 is retryable, and its
+  `contentType` and async `headers`.
+- **The `saveBody` seam.** `OfflineQueue` gains `saveBody(body, count, reason, listener)` for a
+  body that is already encoded, so the queue's `encode` is optional. The HTTP transport cannot use
+  the core's `undelivered` hook and the queue's `onDrop(reason, count)`: its `onDrop` takes the
+  events, and a count cannot name the events of a failed save. The listener of `saveBody` is told
+  the outcome of that one save, and the transport reports its own events.
+- **Replay rejection reports empty events.** A saved body the endpoint rejects reaches `onDrop` as
+  `"rejected"` with an empty events array. Rejected alternatives: decoding the body back into events,
+  which a custom `serialize` makes impossible; widening `onDrop` with a count, which changes the
+  public contract for every user; and not reporting, which hides a body that will never be delivered.
+- **Offline short-circuit.** A network error or timeout while `navigator.onLine === false` ends the
+  batch's retries at once, as for the OTLP wrappers.
+- **flush and close.** They wait for pending saves. An untimed `flush` waits with no timeout, so a
+  save that never settles holds it open; a timed one resolves `false`.
+- **`DropReason` widening.** The HTTP transport's `DropReason` includes `"offline-full"`, visible to
+  an exhaustive switch.

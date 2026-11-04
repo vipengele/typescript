@@ -819,6 +819,7 @@ await transport.close(2000);
 | `requestTimeoutMs` | How long one attempt (resolving `headers`, then `fetch`) may run before it is aborted and retried | `10_000` |
 | `serialize` | `(events, resource) => string`, builds the body | JSON envelope |
 | `contentType` | The `Content-Type` of the body | `application/json` |
+| `offline` | `true` or `{ maxEntries?, maxBytes?, indexedDB? }`, saves undelivered batches in IndexedDB; see the offline queue below | off |
 | `onDrop` | `(events, reason) => void`, called for events given up on | warn once per reason |
 | `console` | Where the default warning goes | `globalThis.console` |
 | `clock`, `scheduler`, `random` | Time source for `Retry-After` dates, timer for linger, backoff and `requestTimeoutMs`, jitter source | system clock, system scheduler, `Math.random` |
@@ -845,8 +846,9 @@ checked with `isHttpTransportConfigError`) when the transport is created. `send`
   rejects or never settles is a retryable failure; one that always fails pauses the queue for the
   whole of each batch's retries.
 - **Drops** — `onDrop(events, reason)` receives `"queue-full"`, `"too-large"`,
-  `"retries-exhausted"`, `"rejected"`, `"unsendable"` (no `fetch`, or a throwing `serialize`) or
-  `"closed"`. Without `onDrop`, the transport warns once per reason. A throwing `onDrop` is ignored.
+  `"retries-exhausted"`, `"rejected"`, `"unsendable"` (no `fetch`, or a throwing `serialize`),
+  `"closed"` or, with `offline`, `"offline-full"`. `DropReason` includes `"offline-full"`, so an
+  exhaustive `switch` over it stops compiling until it handles that case. Without `onDrop`, the transport warns once per reason. A throwing `onDrop` is ignored.
 - **`flush(timeoutMs?)`** — cuts a pending linger short but waits out a backoff. It resolves `true`
   once the events accepted before the call are delivered or dropped, `false` if `timeoutMs` elapses
   first; later sends are not waited on.
@@ -854,6 +856,27 @@ checked with `isHttpTransportConfigError`) when the transport is created. `send`
   request in flight and drops what is still queued or in flight as `"closed"`. Part of a batch split
   for size that was delivered or dropped before the abort keeps that outcome. It resolves to the
   flush result. A second call returns the same promise.
+- **Offline queue** — `offline: true`, or `offline: { maxEntries?, maxBytes?, indexedDB? }`, saves a
+  batch the transport gives up on as `"retries-exhausted"` or `"closed"` in IndexedDB as the exact
+  request body (the bytes sent, or, for a closed batch, the body the same `serialize` and size split
+  would send), and replays the saved bodies oldest first, one request at a time, when the transport is
+  created and whenever the window reports `online`. A replay uses the transport's own status rules
+  (2xx deletes the body, 408, 429 and 5xx keep it, any other status rejects it), `contentType` and
+  `headers`. A network error or timeout while `navigator.onLine` is `false` ends the batch at once,
+  with no further attempt. The queue holds at most `maxEntries` bodies (30) and `maxBytes` UTF-8 bytes
+  (1 MiB) across everything sharing the `vipengele-otlp-offline` database, under the key
+  `${url}|http-errors`, and keeps the oldest: a batch that would pass either bound is refused and
+  reported to `onDrop` as `"offline-full"`. `indexedDB` defaults to `globalThis.indexedDB`; with none,
+  or when the open fails, nothing is saved and the drop is reported as it is without the option.
+  Delivery is at least once: a body sent but not yet deleted is sent again by the next replay. A batch
+  that is saved is not reported; one whose save fails is reported with its events and its original
+  reason. With the option on, a drop is reported after the save's outcome rather than synchronously,
+  and `flush` and `close` also wait for pending saves, resolving `false` if they outlast the timeout;
+  `close` closes the database once they finish. A saved body the endpoint rejects on replay reaches
+  `onDrop` as `"rejected"` with an empty events array, since a custom `serialize` makes the body
+  impossible to decode back into events. `"queue-full"`, `"too-large"`, `"rejected"` and
+  `"unsendable"` are never saved. An invalid `maxEntries` or `maxBytes` throws
+  `HttpTransportConfigError`.
 - **Exit** — the transport registers no exit hook and does not `unref` its timers, which keep a Node
   process alive. A CLI or serverless handler awaits `close()` before it exits. After a 429 with a
   long `Retry-After`, `globalHandlers`' `flush(2000)` resolves `false`, since the wait is not cut

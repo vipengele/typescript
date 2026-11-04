@@ -148,6 +148,12 @@ Run commands from `source/core` (`pnpm build`, `pnpm type-check`, `pnpm test`, `
   the problem text. `fake-indexed-db.test-support.ts` is the in-memory `IDBFactory` their tests use; `*.test-support.ts` files are test-only, excluded from the build and from coverage.
   `OtlpDropReason` and `OtlpTransportDropReason` add `"offline-full"`; the core's `DropReason` does
   not.
+- `createHttpTransport` takes the same `offline` option (`HttpTransportOfflineOptions`, validated in
+  `http/options.ts` with `offlineProblem`) over its own queue, keyed `${url}|http-errors`. It saves
+  the exact request body of a `retries-exhausted` or `closed` batch through `OfflineQueue.saveBody`,
+  whose listener reports a failed save with the batch's own events, since `onDrop(reason, count)`
+  cannot name them; a body rejected on replay reports an empty events array. Replay uses the
+  transport's `classify`, `contentType` and headers. The HTTP `DropReason` includes `"offline-full"`.
 - `src/otlp/` is internal and unexported: the OTLP/HTTP JSON encoder. `encode-logs.ts` is the only
   file that knows `LogRecord` and `encode-error-events.ts` the only one that knows `ErrorEvent`;
   `resource.ts` (Resource grouping), `exception.ts` (`exception.*` attributes), `any-value.ts`,
