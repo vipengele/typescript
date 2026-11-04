@@ -6,8 +6,9 @@ AttributesInput`, exported as a type from `@vipengele/ts-core-observability/logg
 ## Per-call thunks
 
 `trace`, `debug` and `info` read their second argument, and `warn`, `error` and `fatal` their third,
-as a thunk when `typeof` says it is a function. It runs after the level check and the no-sink early
-return, once per record however many sinks receive it, before normalization and redaction. The merge
+as a thunk when `typeof` says it is a function. It runs after the level check, the no-sink early
+return and the sampling and rate-limit check (`0025-logger-sampling-and-rate-limits-drop-before-the-record-is-built.md`),
+once per record however many sinks receive it, before normalization and redaction. The merge
 order stays Scope, then bindings, then the call.
 
 In `warn`, `error` and `fatal` the `error` parameter stays `unknown`, so a function in that position
@@ -32,7 +33,7 @@ package is not caught.
 
 ## `with(thunk)` is lazy and evaluated at most once per bound logger
 
-A bound thunk runs at the first record that passes the level check and has a sink. The result is
+A bound thunk runs at the first record that passes the level check, has a sink and passes the sampling and rate-limit check. The result is
 normalized, deeply frozen and reused. A throw gives `{}` for that record and is not kept, so the next
 record retries. A bound thunk is a lazy layer in an ordered list; static layers are fixed. Layers
 merge in order, so `with(thunk).with({ x })` lets the static `x` win over the earlier thunk.
