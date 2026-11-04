@@ -7,8 +7,9 @@ import { emitRecord } from "./emit";
 import { parseEnvironmentSpec } from "./environment-source";
 import { type LevelEntry, resolveEntry, validateThreshold } from "./levels";
 import { createLogger, type Logger } from "./logger";
+import { EMPTY_POLICY_LAYER, LogPolicy } from "./policy";
 import type { EmitSettings, LogProcessor, Sink } from "./record";
-import { DEFAULT_LEVELS, EMPTY_LAYER, createSettings, freezeLayer, type LevelLayer, type LoggingSettings } from "./settings";
+import { createSettings, DEFAULT_LEVELS, EMPTY_LAYER, freezeLayer, type LevelLayer, type LoggingSettings } from "./settings";
 import { FALLBACK_ENTRY } from "./slots";
 
 /**
@@ -95,6 +96,10 @@ export interface LoggerProviderOptions {
  * `LoggingSettings`, and the sinks, clock and redaction of its build — and hands out Loggers that
  * read it on every call. The environment layer sits above every other, so a level in `VPG_LOG`
  * beats the same category's level from the builder or an override.
+ *
+ * The provider also holds the state of each rate-limit rule in force: its token bucket and its
+ * count of dropped records. Every commit keeps the state of a rule it leaves unchanged, by
+ * category key and value, and starts a changed or new rule afresh.
  */
 export interface LoggerProvider {
   /**
@@ -123,9 +128,9 @@ export interface LoggerProvider {
   /**
    * Drops every override and the builder layer and restores the defaults (`{ "*": "warn" }`), and
    * with them the output of a build that sets none: no sinks, `systemClock`, the `secretKeys`
-   * redaction and no browser sources. Storage is left as it is. The environment layer is kept,
-   * and restored when the build in force ignored it. Returns a snapshot of the new configuration,
-   * the environment layer included.
+   * redaction, `Math.random`, no sampling or rate-limit rule and no browser sources. Storage is
+   * left as it is. The environment layer is kept, and restored when the build in force ignored it.
+   * Returns a snapshot of the new configuration, the environment layer included.
    */
   reset(): LoggingSettings;
 
@@ -239,15 +244,20 @@ export function createLoggerProvider(configure?: ConfigureCallback, options: Log
     onSinkError = options.onSinkError.bind(options);
   }
 
-  let emitSettings = emitSettingsOf(settings);
+  let emitSettings = emitSettingsOf(settings, new LogPolicy(settings.policy));
 
-  /** What the provider's Loggers emit through under `current`; it cannot throw, so it never splits a commit. */
-  function emitSettingsOf(current: LoggingSettings): EmitSettings {
+  /**
+   * What the provider's Loggers emit through under `current`, with `policy` holding the state of its
+   * rate-limit rules; it cannot throw, so it never splits a commit.
+   */
+  function emitSettingsOf(current: LoggingSettings, policy: LogPolicy): EmitSettings {
     return Object.freeze({
       sinks: current.sinks,
       processors: current.processors,
       clock: current.clock,
       redaction: current.redaction,
+      random: current.random,
+      policy,
       resource,
       onSinkError,
     });
@@ -309,7 +319,9 @@ export function createLoggerProvider(configure?: ConfigureCallback, options: Log
 
   /** Commits `overrides` as the overrides layer over the rest of the configuration in force. */
   function setOverrides(overrides: Readonly<Record<string, Threshold>>): LoggingSettings {
-    const next = commit(createSettings({ ...settings.layers, overrides, environment: environmentFor(ignoring) }, settings));
+    const next = commit(
+      createSettings({ ...settings.layers, overrides, environment: environmentFor(ignoring) }, settings, settings.policyLayers),
+    );
     reportEnvironmentIssues();
     return next;
   }
@@ -329,9 +341,14 @@ export function createLoggerProvider(configure?: ConfigureCallback, options: Log
     }
   }
 
+  /**
+   * Puts `next` in force. Its policy is rebuilt over the policy in force, so a rate-limit rule
+   * `next` leaves unchanged keeps its bucket and dropped count, and a changed or new rule starts
+   * afresh.
+   */
   function apply(next: LoggingSettings): void {
     settings = next;
-    emitSettings = emitSettingsOf(next);
+    emitSettings = emitSettingsOf(next, new LogPolicy(next.policy, emitSettings.policy));
   }
 
   function commit(next: LoggingSettings): LoggingSettings {
@@ -352,7 +369,7 @@ export function createLoggerProvider(configure?: ConfigureCallback, options: Log
     const layer = environmentFor(ignoring);
     if (Object.keys(layer).length > 0) {
       try {
-        commit(createSettings({ ...settings.layers, environment: layer }, settings));
+        commit(createSettings({ ...settings.layers, environment: layer }, settings, settings.policyLayers));
       } catch {
         // `apply` has run; only `publish` can have thrown.
       }
@@ -378,7 +395,14 @@ export function createLoggerProvider(configure?: ConfigureCallback, options: Log
   // only past that point, as `configure` removes one only past its own commit.
   if (configure !== undefined) {
     const build = buildOf(configure);
-    apply(createSettings({ defaults: build.defaults, builder: build.builder, overrides: EMPTY_LAYER, environment: EMPTY_LAYER }, build));
+    apply(
+      createSettings({ defaults: build.defaults, builder: build.builder, overrides: EMPTY_LAYER, environment: EMPTY_LAYER }, build, {
+        defaults: EMPTY_POLICY_LAYER,
+        builder: build.policy,
+        overrides: EMPTY_POLICY_LAYER,
+        environment: EMPTY_POLICY_LAYER,
+      }),
+    );
     ignoring = build.ignoreEnvironment;
     clearUnreadableStoredSpecs(build);
     reportIssues(build.issues);
@@ -395,6 +419,12 @@ export function createLoggerProvider(configure?: ConfigureCallback, options: Log
           environment: environmentFor(build.ignoreEnvironment),
         },
         build,
+        {
+          defaults: EMPTY_POLICY_LAYER,
+          builder: build.policy,
+          overrides: settings.policyLayers.overrides,
+          environment: EMPTY_POLICY_LAYER,
+        },
       );
       ignoring = build.ignoreEnvironment;
       reported = new WeakSet();

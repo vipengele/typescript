@@ -1,6 +1,7 @@
 import type { Attributes, Clock, Level, SerializedError } from "@vipengele/ts-core-common";
 import type { Resource } from "@vipengele/ts-core-common/scope";
 import type { RedactionSetting } from "../redaction";
+import type { LogPolicy } from "./policy";
 import type { LogTrace } from "./trace";
 
 /**
@@ -69,13 +70,15 @@ export type { RedactionSetting };
  *
  * Where each part comes from:
  *
- * - `sinks`, `processors`, `clock` and `redaction` are builder state, carried by `LoggingBuild`
- *   alongside the level layers. A `configure` replaces the sinks; it never appends to those of an earlier one.
+ * - `sinks`, `processors`, `clock`, `redaction` and `random` are builder state, carried by
+ *   `LoggingBuild` alongside the level layers. A `configure` replaces the sinks; it never appends to those of an earlier one.
  *   A provider made by `createProvider` owns its sinks alone and shares none with the default
  *   provider.
  * - `resource` and `onSinkError` are provider settings, not builder state. They are wired in
  *   from `logging.ts`, because `logger.ts` cannot import `logging.ts` (logging, provider,
  *   logger and logging again would be an import cycle).
+ * - `policy` is the provider's: the sampling and rate-limit rules of every layer in force, with the
+ *   state of each rate-limit rule, which outlives a commit that leaves the rule unchanged.
  *
  * `createLogger` in `logger.ts` takes them as a third argument, after the category and the level
  * resolver:
@@ -105,6 +108,18 @@ export interface EmitSettings {
 
   /** Redaction applied to a record's attributes and error chain; `null` disables it. */
   readonly redaction: RedactionSetting;
+
+  /**
+   * The sampling and rate-limit rules in force and the state of each rate-limit rule, local to the
+   * provider. When absent, no call is sampled or rate-limited.
+   */
+  readonly policy?: LogPolicy;
+
+  /**
+   * The source of the number a sampling rule draws against, returning a value in `[0, 1)`. When
+   * absent, `Math.random`.
+   */
+  readonly random?: () => number;
 
   /**
    * The {@link Resource} handed to every sink. It is a function, `Scope.resource` or a stand-in

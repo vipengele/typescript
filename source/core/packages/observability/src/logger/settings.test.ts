@@ -10,6 +10,7 @@ import {
   defaultOutput,
   defaultRedaction,
   EMPTY_LAYER,
+  EMPTY_POLICY_LAYERS,
   flattenLayers,
   freezeLayer,
   freezeRegistration,
@@ -178,7 +179,19 @@ describe("createSettings output", () => {
     expect(Object.isFrozen(settings.processors)).toBe(true);
     expect(settings.clock).toBe(systemClock);
     expect(settings.redaction).toBe(secretKeys);
+    expect(settings.random).toBe(Math.random);
     expect(settings.browserSources).toBeNull();
+  });
+
+  test("holds the random source by reference, and falls back to Math.random when the output has none", () => {
+    const random = () => 0.5;
+    const { random: _omitted, ...withoutRandom } = defaultOutput();
+
+    const given = createSettings({ defaults: DEFAULT_LEVELS, builder: {}, overrides: {}, environment: {} }, { ...defaultOutput(), random });
+    const omitted = createSettings({ defaults: DEFAULT_LEVELS, builder: {}, overrides: {}, environment: {} }, withoutRandom);
+
+    expect(given.random).toBe(random);
+    expect(omitted.random).toBe(Math.random);
   });
 
   test("copies the browser sources into a frozen object", () => {
@@ -245,6 +258,67 @@ describe("createSettings output", () => {
   });
 });
 
+describe("createSettings policy", () => {
+  const levels = { defaults: DEFAULT_LEVELS, builder: {}, overrides: {}, environment: {} };
+
+  test("defaults to every policy layer empty and an empty policy table", () => {
+    const settings = createSettings(levels);
+
+    for (const name of LAYER_ORDER) {
+      expect(Object.keys(settings.policyLayers[name].sample)).toEqual([]);
+      expect(Object.keys(settings.policyLayers[name].rateLimit)).toEqual([]);
+    }
+    expect(Object.keys(settings.policy.sample)).toEqual([]);
+    expect(Object.keys(settings.policy.rateLimit)).toEqual([]);
+  });
+
+  test("flattens the policy layers in layer order, a later layer's rule for a key winning", () => {
+    const settings = createSettings(levels, defaultOutput(), {
+      defaults: { sample: { "*": 0.9 } },
+      builder: { sample: { a: 0.5, b: 0.5 }, rateLimit: { a: { burst: 1, perMinute: 1 } } },
+      overrides: { sample: { a: 0.2 } },
+      environment: { rateLimit: { a: false } },
+    });
+
+    expect({ ...settings.policy.sample }).toEqual({
+      "*": { rate: 0.9, upTo: "info" },
+      a: { rate: 0.2, upTo: "info" },
+      b: { rate: 0.5, upTo: "info" },
+    });
+    expect({ ...settings.policy.rateLimit }).toEqual({ a: false });
+  });
+
+  test("copies each policy layer into a frozen layer, independent of the objects passed in", () => {
+    const sample: Record<string, number> = { a: 0.5 };
+
+    const settings = createSettings(levels, defaultOutput(), { ...EMPTY_POLICY_LAYERS, builder: { sample } });
+    sample.a = 0.1;
+
+    expect(Object.isFrozen(settings.policyLayers)).toBe(true);
+    expect(Object.isFrozen(settings.policyLayers.builder)).toBe(true);
+    expect(Object.isFrozen(settings.policyLayers.builder.sample)).toBe(true);
+    expect({ ...settings.policyLayers.builder.sample }).toEqual({ a: { rate: 0.5, upTo: "info" } });
+    expect(Object.isFrozen(settings.policy)).toBe(true);
+  });
+
+  test("throws a LoggingConfigError on a layer holding an invalid rule", () => {
+    expect(() => createSettings(levels, defaultOutput(), { ...EMPTY_POLICY_LAYERS, overrides: { sample: { a: 2 } } })).toThrow(
+      expect.toSatisfy(isLoggingConfigError),
+    );
+  });
+});
+
+describe("EMPTY_POLICY_LAYERS", () => {
+  test("is frozen and holds every layer, each with no rule", () => {
+    expect(Object.isFrozen(EMPTY_POLICY_LAYERS)).toBe(true);
+    expect(Object.keys(EMPTY_POLICY_LAYERS)).toEqual([...LAYER_ORDER]);
+    for (const name of LAYER_ORDER) {
+      expect(Object.keys(EMPTY_POLICY_LAYERS[name].sample)).toEqual([]);
+      expect(Object.keys(EMPTY_POLICY_LAYERS[name].rateLimit)).toEqual([]);
+    }
+  });
+});
+
 describe("defaultOutput", () => {
   test("is frozen, with frozen empty sink and processor lists", () => {
     const output = defaultOutput();
@@ -254,6 +328,7 @@ describe("defaultOutput", () => {
     expect(output.sinks).toEqual([]);
     expect(Object.isFrozen(output.processors)).toBe(true);
     expect(output.processors).toEqual([]);
+    expect(output.random).toBe(Math.random);
   });
 });
 

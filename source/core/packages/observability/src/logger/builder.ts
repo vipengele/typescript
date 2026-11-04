@@ -3,6 +3,16 @@ import { type BrowserSourcesOptions, clearStoredSpec, readBrowserSources } from 
 import { validateCategoryKey } from "./categories";
 import { LoggingConfigError } from "./config-error";
 import { validateThreshold } from "./levels";
+import {
+  freezePolicyLayer,
+  freezeRateLimitRules,
+  freezeSampleRules,
+  type PolicyLayer,
+  type RateLimitRule,
+  type RateLimitSetting,
+  type SampleRule,
+  type SampleSetting,
+} from "./policy";
 import type { LogProcessor, RedactionSetting, Sink, SinkRegistration } from "./record";
 import {
   type BrowserSourcesSetting,
@@ -17,8 +27,9 @@ import { type ParsedSpec, parseSpec } from "./spec";
 
 /**
  * What {@link LoggingBuilder.build} produces: the `defaults` and `builder` layers of a
- * `LoggingSettings`; `ignoreEnvironment`, whether the environment layer is left out; `sinks`,
- * `processors`, `clock` and `redaction`, what its Loggers emit through; `browserSources`, where
+ * `LoggingSettings`; `policy`, the builder's policy layer; `ignoreEnvironment`, whether the
+ * environment layer is left out; `sinks`, `processors`, `clock`, `redaction` and `random`, what its
+ * Loggers emit through; `browserSources`, where
  * `addBrowserSources` read; and `issues`, one human-readable string per spec entry an `addSpec` or
  * `addBrowserSources` call skipped or overrode, in the order the specs were added. Issues never
  * fail a build; reporting them is the caller's job.
@@ -26,6 +37,11 @@ import { type ParsedSpec, parseSpec } from "./spec";
 export interface LoggingBuild {
   readonly defaults: LevelLayer;
   readonly builder: LevelLayer;
+  /**
+   * The sampling and rate-limit rules passed to `sample` and `rateLimit`, a later call's rule for a
+   * category key replacing an earlier one's; frozen and validated.
+   */
+  readonly policy: PolicyLayer;
   /** `true` once `ignoreEnvironment` was called: the configuration built leaves `VPG_LOG` out. */
   readonly ignoreEnvironment: boolean;
   /**
@@ -37,6 +53,8 @@ export interface LoggingBuild {
   readonly processors: readonly LogProcessor[];
   readonly clock: Clock;
   readonly redaction: RedactionSetting;
+  /** The source of the number a sampling rule draws against; `Math.random` unless set. */
+  readonly random: () => number;
   /**
    * The storage key of the last `addBrowserSources` call that ran in a browser, frozen; `null` when
    * there was none.
@@ -129,6 +147,35 @@ export interface LoggingBuilder {
    * `secretKeys` preset applies unless set. A later call replaces the setting an earlier one made.
    */
   redaction(policy: RedactionSetting): LoggingBuilder;
+
+  /**
+   * Adds sampling rules, category key (a Category or the root `*`) to {@link SampleRule}: a category
+   * keeps the share of records its governing rule sets, the rule of the longest key that equals it
+   * or is a dotted prefix of it. A rule applies to `trace`, `debug` and `info` unless its `upTo`
+   * names another highest level; a rate of 1 clears a rule a key would otherwise inherit. A later
+   * call's rule for a key replaces an earlier one's. The rules are validated and copied when this is
+   * called, which throws a `LoggingConfigError` on an argument that is not an object, or on the first
+   * invalid key or rule, leaving the builder unchanged.
+   */
+  sample(rules: Readonly<Record<string, SampleRule>>): LoggingBuilder;
+
+  /**
+   * Adds rate-limit rules, category key to {@link RateLimitRule}: a token bucket of `burst` tokens
+   * refilled at `perMinute` a minute, shared by every category the rule governs, by the same
+   * longest-prefix rule as `sample`. A rule applies to `trace`, `debug` and `info` unless its `upTo`
+   * names another highest level; `false` clears a rule a key would otherwise inherit. A later call's
+   * rule for a key replaces an earlier one's. The rules are validated and copied when this is
+   * called, which throws a `LoggingConfigError` on an argument that is not an object, or on the first
+   * invalid key or rule, leaving the builder unchanged.
+   */
+  rateLimit(rules: Readonly<Record<string, RateLimitRule>>): LoggingBuilder;
+
+  /**
+   * The source of the number a sampling rule draws against, returning a value in `[0, 1)`: a record
+   * is kept when it returns less than the rule's rate. `Math.random` unless set. A later call
+   * replaces the source an earlier one set.
+   */
+  random(source: () => number): LoggingBuilder;
 
   /**
    * Validates every source and sink and returns the resulting build. Throws a `LoggingConfigError`
@@ -233,6 +280,9 @@ export function createLoggingBuilder(): LoggingBuilder {
   const processors: unknown[] = [];
   let clock: Clock = systemClock;
   let redaction: RedactionSetting | undefined;
+  const sampleRules: Record<string, SampleSetting> = Object.create(null);
+  const rateLimitRules: Record<string, RateLimitSetting | false> = Object.create(null);
+  let random: () => number = Math.random;
   const issues: string[] = [];
   let browserSources: BrowserSourcesSetting | null = null;
   const clears: StoredSpecClear[] = [];
@@ -294,6 +344,18 @@ export function createLoggingBuilder(): LoggingBuilder {
       redaction = policy;
       return builder;
     },
+    sample(rules) {
+      Object.assign(sampleRules, freezeSampleRules(rules));
+      return builder;
+    },
+    rateLimit(rules) {
+      Object.assign(rateLimitRules, freezeRateLimitRules(rules));
+      return builder;
+    },
+    random(source) {
+      random = source;
+      return builder;
+    },
     build() {
       const merged: Record<string, Threshold> = Object.create(null);
       for (const source of sources) {
@@ -309,11 +371,13 @@ export function createLoggingBuilder(): LoggingBuilder {
       const build: LoggingBuild = Object.freeze({
         defaults,
         builder: freezeLayer(merged),
+        policy: freezePolicyLayer({ sample: sampleRules, rateLimit: rateLimitRules }),
         ignoreEnvironment,
         sinks: Object.freeze(registrations),
         processors: Object.freeze(global),
         clock,
         redaction: redaction === undefined ? defaultRedaction() : redaction,
+        random,
         browserSources,
         issues: Object.freeze([...issues]),
       });
