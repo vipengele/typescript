@@ -103,7 +103,7 @@ Run commands from `source/core` (`pnpm build`, `pnpm type-check`, `pnpm test`, `
   `find` and `clear`; it stores the shared frozen records by reference.
 - `ConsoleLike` has no `log`. The routing table in `formatter.ts` is a private copy that mirrors
   the errors console transport; ADR-0007 "Levels" is the authority. `logger/` must not import
-  `errors/`; `errors/` may import types only from `logger/`.
+  `errors/`; shipped `errors/` source may import types only from `logger/`.
 - `write` has no try/catch: a throwing formatter or console reaches `onSinkError`. `time` is the
   epoch-ms number in JSON lines and UTC ISO text in the ANSI and browser formatters (ADR-0018).
 
@@ -154,7 +154,7 @@ Run commands from `source/core` (`pnpm build`, `pnpm type-check`, `pnpm test`, `
   `severity.ts` and `time.ts` know neither.
 - `src/delivery/` and `src/otlp/` are entry-point-neutral: any entry point may import them, the OTLP
   Transport of `./errors` included (ADR-0010, ADR-0022), so `delivery/` stays free of `LogRecord`,
-  `ErrorEvent` and anything from `./logger`, and `logger/` never imports `errors/` (`errors/` takes only types from `logger/`).
+  `ErrorEvent` and anything from `./logger`, and `logger/` never imports `errors/` (shipped `errors/` source takes only types from `logger/`).
 
 ## Shared redaction helpers (`src/redaction.ts`)
 
@@ -221,7 +221,8 @@ Run commands from `source/core` (`pnpm build`, `pnpm type-check`, `pnpm test`, `
   bounded by the logger's serialization limits, not `limits(...)`, except frames cut to `maxBreadth`.
 - `src/trace.ts` holds `readActiveTrace`, `LogTrace` and the guards, shared by `./logger` and
   `./errors`. `logger/` never imports from `errors/`; `src/logger/no-errors-import.node.test.ts`
-  enforces it. `errors/` imports only types from `logger/` (`LogRecord`, `Sink`, via `import type`).
+  enforces it. Shipped `errors/` source imports only types from `logger/` (`LogRecord`, `Sink`, via `import type`);
+  its tests may value-import it.
 
 ## HTTP transport (`src/errors/transports/http-transport.ts`, `http/`)
 

@@ -24,9 +24,10 @@ The Logger gains nothing and does not depend on the Reporter. The bridge is an o
 application adds with `addSink`, so an application that only logs bundles no reporter code.
 
 Dependency direction: `src/logger/` never imports anything from `src/errors/`, and
-`src/logger/no-errors-import.node.test.ts` enforces it. `src/errors/` may import types only from
-`src/logger/` (`LogRecord` and `Sink`, through `import type`), which are erased at build, so
-`dist/errors/index.js` holds no logger runtime code and nothing in `errors/` value-imports `logger/`.
+`src/logger/no-errors-import.node.test.ts` enforces it. Shipped source in `src/errors/` imports only
+types from `src/logger/` (`LogRecord` and `Sink`, through `import type`), which are erased at build, so
+`dist/errors/index.js` holds no logger runtime code. Test files in `src/errors/` may value-import
+`logger/` to wire end-to-end tests, since tests are not shipped; no test checks this direction.
 
 This is a `feat`, not a breaking change: a `Reporter` is produced by `createReporter`, and nothing
 else implements it.
@@ -34,8 +35,8 @@ else implements it.
 ## Trace
 
 - The active-span reader (`readActiveTrace`, `LogTrace` and the guards) lives in `src/trace.ts`,
-  imported by both entry points. There is no shim re-exporting it from `logger/`, so `errors/` needs
-  no runtime import from `logger/`.
+  imported by both entry points. There is no shim re-exporting it from `logger/`, so shipped `errors/`
+  needs no runtime import from `logger/`.
 - `ErrorEvent.trace` is typed `LogTrace`. The `enrich` stage reads the active span for every capture,
   global handlers included; with no span the event has no `trace` key.
 - On the sink path the record's own `trace` wins over the live span: the record was written where the

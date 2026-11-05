@@ -1249,7 +1249,7 @@ Logging.logger("app.checkout").error("charge failed", new Error("card declined")
 - **After `close()`** — the sink behaves exactly as `captureException` does after the reporter is
   closed. The reporter keeps no closed flag; refusing events is the transport's concern.
 - **Direction** — the logger never depends on the reporter. `./logger` does not import `./errors`;
-  `./errors` takes only types from `./logger`, which are erased, so an application that only logs
+  shipped `./errors` source takes only types from `./logger`, which are erased, so an application that only logs
   bundles none of the reporter.
 
 ### Global handlers
