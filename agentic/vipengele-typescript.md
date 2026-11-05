@@ -95,7 +95,9 @@ Error Event, Scope, Breadcrumb, Transport) before naming things.
     `createConsoleTransport`, `createHttpTransport`, `createTestTransport` and `createOtlpTransport`
     (which exports Error Events as OTLP log records over the delivery core `createOtlpLogSink` uses,
     drained by its `flush`/`close`, ADR-0022; `createHttpTransport` and both OTLP wrappers take an
-    opt-in IndexedDB `offline` queue that persists undelivered bodies and replays them, ADR-0024) included — implements.
+    opt-in IndexedDB `offline` queue that persists undelivered bodies and replays them, ADR-0024; `createHttpTransport` also drains its queue on page hide as one `keepalive`
+    fetch within the 64 KiB budget, through `src/delivery/unload.ts`, with a `lifecycle` option to
+    turn it off and an `"unload-budget"` `DropReason` for what does not fit, ADR-0023) included — implements.
 - `source/ts/` — `@vipengele/ts`, the framework's batteries-included umbrella package
   (`packages/ts/`, nested so `release.yml`'s publish-order globbing sees it). Its name is a
   deliberate exception to the `@vipengele/ts-<project>-<package>` convention (ADR-0003). It
