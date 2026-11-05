@@ -26,7 +26,8 @@ import type { Transport } from "./transport";
 /**
  * What a caller hands the pipeline, plus its own level and attributes: a thrown value, a message, or
  * an error already serialized elsewhere, such as a Log Record's. A `serialized-exception` runs every
- * stage a thrown value does, its `trace`, when given, standing in for the span active at capture.
+ * stage a thrown value does, its `trace`, when given, standing in for the span active at capture and
+ * its `attributes` standing alone, with no Scope merged beneath them.
  */
 export type CaptureInput =
   | { readonly kind: "exception"; readonly error: unknown; readonly level?: Level; readonly attributes?: AttributesInput }
@@ -160,6 +161,21 @@ function traceOf(input: CaptureInput): LogTrace | undefined {
 }
 
 /**
+ * The attributes an event is enriched with. A serialized exception's are its Log Record's, which
+ * already hold the Scope as it was when the record was built, so the Scope is not read again: a
+ * sink that writes later runs under an unrelated Scope, and a key a processor stripped from the
+ * record stays out. Any other input has the current Scope's attributes beneath its own, its own
+ * winning on a shared key, each side normalized on its own so a large scope chain cannot push an
+ * input attribute past the breadth bound.
+ */
+function attributesOf(input: CaptureInput, pipeline: Pipeline): Attributes {
+  if (input.kind === "serialized-exception") {
+    return normalizeAttributes(input.attributes, pipeline.limits);
+  }
+  return mergeAttributes([scopeAttributes(pipeline), normalizeAttributes(input.attributes ?? {}, pipeline.limits)]);
+}
+
+/**
  * The current Scope's attributes, from the default scope inward, never the Resource. A throw while
  * reading or normalizing them yields an empty record, so the event still goes out with the call's
  * own attributes instead of being dropped.
@@ -205,8 +221,8 @@ function isIgnored(payload: NormalizedPayload, pipeline: Pipeline): boolean {
 
 /**
  * Stage 5: stamps what the pipeline knows about the event rather than what the caller handed over.
- * The scope's attributes lie beneath the call's own, the call's winning on a shared key, each side
- * normalized on its own so a large scope chain cannot push a call attribute past the breadth bound.
+ * The attributes come from `attributesOf`: the scope's beneath the call's own, except for a
+ * serialized exception, whose attributes are the record's alone and read no Scope.
  * The input's own trace, or else the span active at capture time, rides along as `trace`; neither
  * leaves the key out.
  */
@@ -218,7 +234,7 @@ function enrich(payload: NormalizedPayload, input: CaptureInput, mechanism: Mech
     level: toLevel(input.level),
     ...payload,
     mechanism,
-    attributes: mergeAttributes([scopeAttributes(pipeline), normalizeAttributes(input.attributes ?? {}, pipeline.limits)]),
+    attributes: attributesOf(input, pipeline),
   };
   if (trace !== undefined) {
     event.trace = trace;

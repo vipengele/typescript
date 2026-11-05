@@ -1234,7 +1234,8 @@ Logging.logger("app.checkout").error("charge failed", new Error("card declined")
 - **Mapping** — the event has the record's `level`, the record's attributes plus `logger.category`
   and `logger.message`, the record's serialized error chain (frames and `cause`/`errors` links
   included) and the mechanism `{ handled: true, source: "logger" }`. Its `time` comes from the
-  reporter's clock, not the record's.
+  reporter's clock, not the record's. The attributes come from the record alone, so the Scope is the
+  one in effect when the record was written, not when the sink runs.
 - **Pipeline** — every stage applies: sampling, `ignoreErrors`, processors, `beforeSend`, and, since
   the event is handled, deduplication and the rate limit. The record's attributes are already
   redacted by the logger; the reporter redacts them again, which changes nothing. The error was

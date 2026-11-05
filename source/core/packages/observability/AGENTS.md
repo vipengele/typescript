@@ -210,7 +210,8 @@ Run commands from `source/core` (`pnpm build`, `pnpm type-check`, `pnpm test`, `
   pipeline (`createLoggerSink`, wired in `reporter.ts`). It reports each record with an `error` at
   `minLevel` (default `"error"`) or above as a handled event, mechanism `{ handled: true, source:
   "logger" }`, the record's level, its attributes plus `logger.category` and `logger.message`, the
-  record's `trace` (else the active span) and the reporter's clock for `time`. An invalid `minLevel`
+  record's `trace` (else the active span) and the reporter's clock for `time`. `enrich` reads no
+  Scope for it: the record's attributes already carry the Scope from when it was written. An invalid `minLevel`
   throws `ReporterConfigError`. A write during the same sink's own capture is dropped (synchronous
   re-entrancy guard). After `close()` it behaves like `captureException` after close; there is no
   reporter closed flag. Every stage applies (ADR-0026).

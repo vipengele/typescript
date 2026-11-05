@@ -51,13 +51,16 @@ else implements it.
   value. It is bounded by the logger's serialization limits, not the Reporter's `limits(...)`, except
   that each link's frames are cut to `maxBreadth`.
 - **Level.** The record's level.
-- **Attributes.** The record's attributes plus `logger.category` and `logger.message`.
+- **Attributes.** The record's attributes, which already carry the Scope as it was when the record
+  was written, plus `logger.category` and `logger.message`. The Scope is not read again at capture: a
+  sink behind `createBatchingSink` writes later under an unrelated Scope, and a key a log processor
+  stripped from the record would otherwise come back from it.
 - **Mechanism.** `{ handled: true, source: "logger" }`.
 - **Time.** The Reporter's clock.
 - **Selection.** A record that carries an `error` at `minLevel` (default `"error"`) or above. A bare
   error message has nothing to report as an exception and is ignored. An invalid `minLevel` throws
   `ReporterConfigError`.
-- **Stages.** Every pipeline stage applies. The event is handled, so deduplication and the rate limit
+- **Stages.** Every pipeline stage applies; `enrich` skips only the Scope read. The event is handled, so deduplication and the rate limit
   bound it (`0020`). The logger's attributes are already redacted and the Reporter redacts again,
   which is idempotent.
 - **Re-entrancy.** A write that arrives while the same sink's own capture is on the stack is dropped,

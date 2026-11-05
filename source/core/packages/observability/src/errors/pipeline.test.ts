@@ -1207,6 +1207,30 @@ describe("a serialized exception", () => {
     return value;
   }
 
+  it("takes its attributes from the input alone, reading no Scope", () => {
+    const { transport, capture } = aCapture({ dedupe: false });
+    const current = vi.spyOn(Scope, "current");
+
+    Scope.isolated("request", { scopeOnly: "scope", shared: "scope" }, () => {
+      current.mockClear();
+      capture(serialized(serializeError(new Error("boom")), { attributes: { shared: "record", own: 1 } }), LOGGED);
+    });
+
+    expect(current).not.toHaveBeenCalled();
+    expect(onlyEvent(transport.events).attributes).toEqual({ shared: "record", own: 1 });
+    current.mockRestore();
+  });
+
+  it("leaves a thrown exception captured in the same Scope with the Scope's attributes", () => {
+    const { transport, capture } = aCapture({ dedupe: false });
+
+    Scope.isolated("request", { scopeOnly: "scope" }, () => {
+      capture({ kind: "exception", error: new Error("boom"), attributes: { own: 1 } }, LOGGED);
+    });
+
+    expect(onlyEvent(transport.events).attributes).toEqual({ scopeOnly: "scope", own: 1 });
+  });
+
   it("produces the same exception record, frames included, as the thrown error it was serialized from", () => {
     const error = aChain();
     const { transport, capture } = aCapture({ dedupe: false });
@@ -1288,13 +1312,11 @@ describe("a serialized exception", () => {
   it("honours the level and attributes it is given", () => {
     const { transport, capture } = aCapture();
 
-    Scope.isolated("request", { request: "r1", shared: "scope" }, () => {
-      capture(serialized(serializeError(new Error("boom")), { level: "fatal", attributes: { shared: "call", order: 7 } }), LOGGED);
-    });
+    capture(serialized(serializeError(new Error("boom")), { level: "fatal", attributes: { shared: "call", order: 7 } }), LOGGED);
 
     const event = onlyEvent(transport.events);
     expect(event.level).toBe("fatal");
-    expect(event.attributes).toEqual({ request: "r1", shared: "call", order: 7 });
+    expect(event.attributes).toEqual({ shared: "call", order: 7 });
     expect(event.mechanism).toEqual(LOGGED);
   });
 
