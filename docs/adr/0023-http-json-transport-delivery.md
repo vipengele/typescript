@@ -2,15 +2,17 @@
 
 `createHttpTransport` is the delivery half of the Transport contract
 (`0010-the-transport-contract-is-fire-and-forget.md`): it owns the delivery drops
-(`0020-the-reporter-owns-policy-drops-and-the-transport-owns-delivery-drops.md`). Four decisions shape
-how it drops, what it sends, when it waits and how many requests it makes.
+(`0020-the-reporter-owns-policy-drops-and-the-transport-owns-delivery-drops.md`). Five decisions shape
+how it drops, what it sends, when it waits, how many requests it makes and what it sends as the
+page goes away.
 
 ## Drops are reported, by reason
 
 An event the transport gives up on goes to `onDrop(events, reason)`. `DropReason` is `"queue-full"`,
 `"too-large"`, `"retries-exhausted"`, `"rejected"`, `"unsendable"` (no `fetch` at send time, or a
-throwing serializer) or `"closed"`. With no `onDrop`, the transport warns once per reason through an
-injectable `console`. A throwing `onDrop` is swallowed, because `send` never throws.
+throwing serializer), `"closed"` or `"unload-budget"`. With no `onDrop`, the transport warns once
+per reason through an injectable `console`. A throwing `onDrop` is swallowed, because `send` never
+throws.
 
 - **Silent drops.** An application could not tell a full queue from a dead endpoint, and the one
   component that knows why an event vanished would say nothing.
@@ -70,6 +72,32 @@ request in flight never holds the queue for longer than the attempts and waits `
 - **Retrying a 3xx.** A redirect `fetch` did not follow will not resolve by waiting.
 - **Unbounded attempts.** A `fetch` that never answers, or a `headers` promise that never settles,
   would hold the single in-flight slot until `close`, and every later batch with it.
+
+## Unload sends one keepalive request within the budget
+
+On `pagehide`, or `visibilitychange` to `"hidden"`, the request in flight is aborted and the oldest
+events, in flight then queued, go out as one `fetch` with `keepalive: true`, carrying the configured
+headers and `contentType`. Its outcome is not reported. A page that comes back keeps using the
+transport, and `close` removes the listeners once its flush is over.
+
+The request carries the leading run of events that share the oldest event's Resource, because the
+serializer takes one Resource per body. The run is cut to `maxBatchEvents` and to the largest prefix
+whose serialized body fits both `maxBatchBytes` and the 64 KiB a document may have in flight under
+`keepalive`, found by `largestFittingPrefix`. What the request leaves out is saved through the
+`offline` queue as `"unload-budget"` when `offline` is on, and otherwise reaches `onDrop` as
+`"unload-budget"`. A serializer that throws on the request's events, a missing `fetch` or a throwing
+`headers` function drops them as `"unsendable"`. An async `headers` function delays the request until
+it resolves. The `lifecycle` targets default to those detected on `globalThis`; `{}` watches none and
+also stops the offline `online` replay.
+
+- **`navigator.sendBeacon`.** A beacon cannot set headers, so an authenticated endpoint would refuse
+  it, and a cross-origin `application/json` beacon is blocked. `keepalive` `fetch` carries both.
+- **Several keepalive requests.** The budget is per document, so a second request would only be
+  refused for the bytes the first took.
+- **Sharing the budget with an OTLP sink or transport in the same document.** Each queue draws on the
+  budget by itself, as ADR-0022 records for the OTLP pair, so the browser may refuse whichever
+  request comes second. A coordinator across transports would add a shared registry and an ordering
+  policy for a case an application can avoid by sending its error events one way, so none is built.
 
 ## Consequences
 

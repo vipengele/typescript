@@ -1,15 +1,50 @@
 import type { Resource } from "@vipengele/ts-core-common/scope";
 import { drain, openOffline } from "../../delivery/offline/wrapper";
 import type { StatusClass } from "../../delivery/retry-policy";
+import { type FittingPrefix, largestFittingPrefix, UNLOAD_BUDGET_BYTES, watchUnload } from "../../delivery/unload";
 import type { ErrorEvent } from "../event";
 import type { Transport } from "../transport";
 import { classify } from "./http/classify";
 import { type HttpTransportOptions, resolveOptions } from "./http/options";
-import { createEventQueue, type DropReason } from "./http/queue";
-import { encodeBatch, type RequestDropReason, type RequestOptions, type Settlement, sendBatch } from "./http/request";
+import { type Batch, createEventQueue, type DropReason, resourceKey } from "./http/queue";
+import {
+  encodeBatch,
+  type RequestDropReason,
+  type RequestOptions,
+  type Settlement,
+  sendBatch,
+  sendKeepalive,
+  serializeEvents,
+} from "./http/request";
 
 /** The drop reasons whose events the offline queue saves instead of reporting. */
-type SavedReason = "retries-exhausted" | "closed";
+type SavedReason = "retries-exhausted" | "closed" | "unload-budget";
+
+/** What the unload request may carry, and the batches it leaves over, oldest first. */
+interface UnloadSplit {
+  readonly head: Batch;
+  readonly rest: Batch[];
+}
+
+/**
+ * Splits `batches`, oldest first, into the events one request may carry — the run of events sharing
+ * the oldest one's Resource, cut at `maxEvents` — and everything after them.
+ */
+function splitForUnload(batches: readonly Batch[], maxEvents: number): UnloadSplit {
+  const [first, ...others] = batches as [Batch, ...Batch[]];
+  const key = resourceKey(first.resource);
+  const run = [...first.events];
+  let index = 0;
+  while (index < others.length && resourceKey((others[index] as Batch).resource) === key) {
+    run.push(...(others[index] as Batch).events);
+    index += 1;
+  }
+  const rest = others.slice(index);
+  if (run.length > maxEvents) {
+    rest.unshift({ events: run.slice(maxEvents), resource: first.resource });
+  }
+  return { head: { events: run.slice(0, maxEvents), resource: first.resource }, rest };
+}
 
 /** How the offline queue reads a replay's status: the transport's own classification. */
 function replayClass(status: number): StatusClass {
@@ -57,6 +92,17 @@ interface FlushWaiter {
  * `"rejected"` with no events. `flush` and `close` also wait for pending saves, resolving `false`
  * if one outlasts the timeout, and `close` closes the store.
  *
+ * When the page is hidden or unloaded (`pagehide`, or `visibilitychange` to `"hidden"`, at
+ * `lifecycle`), the request in flight is aborted and the oldest events, in flight then queued, that
+ * share the oldest one's Resource, fit `maxBatchEvents` and encode within both `maxBatchBytes` and
+ * {@link UNLOAD_BUDGET_BYTES} go out as one `keepalive` request, whose outcome is not reported; the
+ * budget is the browser's for every keepalive request of the document, so splitting the events
+ * over several requests would only get the later ones refused. With `offline` the rest is saved as
+ * `"unload-budget"`, and otherwise dropped as `"unload-budget"`. A serializer that throws on the
+ * request's events, or a request that cannot be made (no `fetch`, a throwing headers function),
+ * drops them as `"unsendable"`. The transport keeps working afterwards, for a page that comes back;
+ * `close` stops watching once its flush is over.
+ *
  * Nothing is `unref`'d and no exit hook is registered: a process that must not lose events
  * awaits `close` before it exits.
  */
@@ -80,6 +126,7 @@ export function createHttpTransport(options: HttpTransportOptions): Transport {
     // Only a saved body the endpoint rejects on replay reaches the queue's own drop report.
     onDrop: () => report([], "rejected"),
     offline: resolved.offline,
+    lifecycle: resolved.lifecycle,
     keySuffix: "http-errors",
   });
   const requestOptions: RequestOptions = offline === undefined ? resolved : { ...resolved, isOffline: offline.queue.isOffline };
@@ -92,6 +139,8 @@ export function createHttpTransport(options: HttpTransportOptions): Transport {
   let inFlight: ErrorEvent[] = [];
   /** The Resource of the batch being sent. */
   let inFlightResource: Resource | undefined;
+  /** Aborts the attempt in flight for the unload drain, which takes its batch over. */
+  let attempt: AbortController | undefined;
   let closed = false;
   let closing: Promise<boolean> | undefined;
 
@@ -140,10 +189,10 @@ export function createHttpTransport(options: HttpTransportOptions): Transport {
     settle(events.length);
   }
 
-  /** Gives up on `events` as `"closed"`, encoded into the bodies a request would send them as. */
-  function giveUpClosed(events: ErrorEvent[], resource: Resource): void {
+  /** Gives up on `events` as `reason`, encoded into the bodies a request would send them as. */
+  function giveUpEncoded(events: ErrorEvent[], resource: Resource, reason: SavedReason): void {
     for (const group of encodeBatch({ events, resource }, resolved)) {
-      giveUp(group.events, "closed", group.body);
+      giveUp(group.events, reason, group.body);
     }
   }
 
@@ -157,10 +206,10 @@ export function createHttpTransport(options: HttpTransportOptions): Transport {
       return;
     }
     if (unsettled.length > 0) {
-      giveUpClosed(unsettled, inFlightResource as Resource);
+      giveUpEncoded(unsettled, inFlightResource as Resource, "closed");
     }
     for (let batch = queue.takeBatch(); batch !== undefined; batch = queue.takeBatch()) {
-      giveUpClosed(batch.events, batch.resource);
+      giveUpEncoded(batch.events, batch.resource, "closed");
     }
   }
 
@@ -173,11 +222,11 @@ export function createHttpTransport(options: HttpTransportOptions): Transport {
     return offline === undefined ? run(timeoutMs) : drain(run, offline, closing, resolved.clock, timeoutMs, undefined);
   }
 
-  /** Counts a settled group of the batch in flight as delivered or dropped. */
-  function onSettle({ events, outcome, body }: Settlement): void {
-    if (stop.signal.aborted) {
-      // `close` has dropped what was still in flight. An `"aborted"` group only settles after `stop`
-      // aborts, so it never gets past this check.
+  /** Counts a settled group of the batch in flight as delivered or dropped, unless `signal` has aborted. */
+  function onSettle({ events, outcome, body }: Settlement, signal: AbortSignal): void {
+    if (signal.aborted) {
+      // `close` or the unload drain has taken over what was still in flight. An `"aborted"` group
+      // only settles after `signal` aborts, so it never gets past this check.
       return;
     }
     // Groups settle in batch order, so a settled group is always the head of what is in flight.
@@ -195,7 +244,9 @@ export function createHttpTransport(options: HttpTransportOptions): Transport {
     for (let batch = queue.takeBatch(); batch !== undefined; batch = queue.takeBatch()) {
       inFlight = batch.events;
       inFlightResource = batch.resource;
-      await sendBatch(batch, requestOptions, stop.signal, onSettle);
+      attempt = new AbortController();
+      const signal = AbortSignal.any([stop.signal, attempt.signal]);
+      await sendBatch(batch, requestOptions, signal, (settlement) => onSettle(settlement, signal));
       if (stop.signal.aborted) {
         // `close` has dropped the unsettled events and drained the queue.
         break;
@@ -203,6 +254,78 @@ export function createHttpTransport(options: HttpTransportOptions): Transport {
     }
     sending = false;
   }
+
+  /**
+   * Takes the unsettled part of the batch in flight, aborting its attempt, and every queued batch out
+   * of the transport, oldest first.
+   */
+  function takePending(): Batch[] {
+    const pending: Batch[] = [];
+    if (inFlight.length > 0) {
+      pending.push({ events: inFlight, resource: inFlightResource as Resource });
+      inFlight = [];
+      (attempt as AbortController).abort();
+    }
+    for (let batch = queue.takeBatch(); batch !== undefined; batch = queue.takeBatch()) {
+      pending.push(batch);
+    }
+    return pending;
+  }
+
+  /** Gives up on `batches` as `"unload-budget"`: saved with offline on, dropped otherwise. */
+  function loseToUnload(batches: readonly Batch[]): void {
+    if (offline === undefined) {
+      drop(
+        batches.flatMap((batch) => batch.events),
+        "unload-budget",
+      );
+      return;
+    }
+    for (const batch of batches) {
+      giveUpEncoded(batch.events, batch.resource, "unload-budget");
+    }
+  }
+
+  /**
+   * The longest oldest prefix of `head` whose body fits both `maxBatchBytes` and the keepalive
+   * budget, or `undefined` when the serializer throws.
+   */
+  function fittingPrefix(head: Batch): FittingPrefix | undefined {
+    try {
+      const maxBytes = Math.min(UNLOAD_BUDGET_BYTES, resolved.maxBatchBytes);
+      return largestFittingPrefix(head.events, (events) => serializeEvents(resolved, events, head.resource), maxBytes);
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** Sends what is in flight and queued as one keepalive request, and gives up on what does not fit. */
+  function unloadDrain(): void {
+    cutLinger();
+    const pending = takePending();
+    if (pending.length === 0) {
+      return;
+    }
+    const { head, rest } = splitForUnload(pending, resolved.maxBatchEvents);
+    const prefix = fittingPrefix(head);
+    if (prefix === undefined) {
+      drop(head.events, "unsendable");
+      loseToUnload(rest);
+      return;
+    }
+    if (prefix.count < head.events.length) {
+      rest.unshift({ events: head.events.slice(prefix.count), resource: head.resource });
+    }
+    loseToUnload(rest);
+    const sent = head.events.slice(0, prefix.count);
+    if (sent.length > 0 && !sendKeepalive(resolved, prefix.body)) {
+      drop(sent, "unsendable");
+      return;
+    }
+    settle(sent.length);
+  }
+
+  const unwatch = watchUnload(resolved.lifecycle, unloadDrain);
 
   function startSending(): void {
     if (sending || queue.isEmpty) {
@@ -295,6 +418,7 @@ export function createHttpTransport(options: HttpTransportOptions): Transport {
           flushAccepted(budget).then((drained) => {
             stop.abort();
             abandonPending();
+            unwatch();
             return drained;
           });
         closing = settleSaves(run, true, timeoutMs);
