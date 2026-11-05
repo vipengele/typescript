@@ -311,10 +311,10 @@ function redactEvent(event: ErrorEvent, policy: RedactionPolicy): ErrorEvent {
  * malformed `trace` must never reach a transport, but the error it describes is still worth sending.
  */
 function validateTrace(event: ErrorEvent): ErrorEvent {
-  const { trace, ...rest } = event;
-  if (trace === undefined) {
+  if (event.trace === undefined) {
     return event;
   }
+  const { trace, ...rest } = event;
   if (typeof trace === "object" && trace !== null) {
     const { traceId, spanId, flags } = trace as Partial<LogTrace>;
     if (isTraceId(traceId) && isSpanId(spanId) && isTraceFlags(flags)) {
