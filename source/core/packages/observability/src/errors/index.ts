@@ -21,7 +21,7 @@ export { createReporter } from "./reporter";
 export { isReporterConfigError, ReporterConfigError } from "./reporter-config-error";
 export type { Transport } from "./transport";
 export { createConsoleTransport } from "./transports/console-transport";
-export type { HttpTransportOptions } from "./transports/http/options";
+export type { HttpTransportOfflineOptions, HttpTransportOptions } from "./transports/http/options";
 export type { DropReason } from "./transports/http/queue";
 export { createHttpTransport } from "./transports/http-transport";
 export { HttpTransportConfigError, isHttpTransportConfigError } from "./transports/http-transport-config-error";

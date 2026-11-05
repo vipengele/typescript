@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ErrorEvent } from "../../event";
 import { type HttpTransportOptions, resolveOptions } from "./options";
 import type { Batch } from "./queue";
-import { type RequestResult, type Settlement, sendBatch } from "./request";
+import { encodeBatch, type RequestResult, type Settlement, sendBatch, sendKeepalive, serializeEvents } from "./request";
 
 const url = "https://errors.example.com/ingest";
 
@@ -149,7 +149,7 @@ describe("sendBatch status classes", () => {
 
     const result = await drive(time, sendBatch(batch, settings(time, { fetch, maxAttempts: 3 })));
 
-    expect(result).toEqual([{ events: batch.events, outcome: "retries-exhausted" }]);
+    expect(result).toEqual([{ events: batch.events, outcome: "retries-exhausted", body: calls[0]?.init.body }]);
     expect(calls).toHaveLength(3);
   });
 
@@ -652,5 +652,191 @@ describe("sendBatch abort", () => {
       { events: events.slice(0, 1), outcome: "delivered" },
       { events: events.slice(1), outcome: "aborted" },
     ]);
+  });
+});
+
+describe("sendBatch offline", () => {
+  it("settles retries-exhausted after one network error while offline, with no backoff wait", async () => {
+    const time = createManualTime();
+    const { fetch, calls } = fakeFetch(time, { reject: new TypeError("Failed to fetch") });
+    const batch = aBatch();
+
+    const result = await sendBatch(batch, { ...settings(time, { fetch, maxAttempts: 5 }), isOffline: () => true });
+
+    expect(result).toEqual([{ events: batch.events, outcome: "retries-exhausted", body: calls[0]?.init.body }]);
+    expect(calls).toHaveLength(1);
+    expect(time.clock()).toBe(0);
+  });
+
+  it("still retries a retryable status while offline", async () => {
+    const time = createManualTime();
+    const { fetch, calls } = fakeFetch(time, 503, 200);
+
+    const result = await drive(time, sendBatch(aBatch(), { ...settings(time, { fetch }), isOffline: () => true }));
+
+    expect(result[0]?.outcome).toBe("delivered");
+    expect(calls).toHaveLength(2);
+  });
+
+  it("retries a network error while online", async () => {
+    const time = createManualTime();
+    const { fetch, calls } = fakeFetch(time, { reject: new TypeError("Failed to fetch") }, 200);
+
+    const result = await drive(time, sendBatch(aBatch(), { ...settings(time, { fetch }), isOffline: () => false }));
+
+    expect(result[0]?.outcome).toBe("delivered");
+    expect(calls).toHaveLength(2);
+  });
+
+  it("carries no body on an outcome other than retries-exhausted", async () => {
+    const time = createManualTime();
+    const { fetch } = fakeFetch(time, 400);
+
+    const result = await drive(time, sendBatch(aBatch(), settings(time, { fetch })));
+
+    expect(result[0]).not.toHaveProperty("body");
+  });
+});
+
+describe("encodeBatch", () => {
+  const serialize = (group: readonly ErrorEvent[]) => group.map((event) => event.message).join("");
+
+  it("encodes a batch within maxBatchBytes as the one body sendBatch sends", async () => {
+    const time = createManualTime();
+    const { fetch, calls } = fakeFetch(time, 200);
+    const batch = aBatch(anEvent("a"), anEvent("b"));
+
+    await drive(time, sendBatch(batch, settings(time, { fetch })));
+
+    expect(encodeBatch(batch, settings(time))).toEqual([{ events: batch.events, body: calls[0]?.init.body }]);
+  });
+
+  it("splits a body over maxBatchBytes into halves, recursively", () => {
+    const time = createManualTime();
+    const events = ["aaaaaaaaaa", "bbbbbbbbbb", "cccccccccc"].map(anEvent);
+
+    const groups = encodeBatch(aBatch(...events), settings(time, { serialize, maxBatchBytes: 15 }));
+
+    expect(groups).toEqual([
+      { events: events.slice(0, 1), body: "aaaaaaaaaa" },
+      { events: events.slice(1, 2), body: "bbbbbbbbbb" },
+      { events: events.slice(2), body: "cccccccccc" },
+    ]);
+  });
+
+  it("gives no body to a lone event over maxBatchBytes or a group the serializer throws on", () => {
+    const time = createManualTime();
+    const large = anEvent("x".repeat(20));
+    const throwing = () => {
+      throw new Error("unserializable");
+    };
+
+    expect(encodeBatch(aBatch(large), settings(time, { serialize, maxBatchBytes: 15 }))).toEqual([{ events: [large], body: undefined }]);
+    expect(encodeBatch(aBatch(large), settings(time, { serialize: throwing }))).toEqual([{ events: [large], body: undefined }]);
+  });
+});
+
+describe("serializeEvents", () => {
+  it("serializes with the default envelope, leaving out Resource keys with no value", () => {
+    const time = createManualTime();
+    const event = anEvent("a");
+
+    expect(JSON.parse(serializeEvents(settings(time), [event], aResource()))).toEqual({
+      resource: {
+        "service.name": "shop",
+        "service.version": "1.0.0",
+        "deployment.environment.name": "production",
+        "process.runtime.name": "nodejs",
+        "process.runtime.version": "24.0.0",
+        "os.type": "linux",
+        "os.version": "6.1",
+      },
+      events: [event],
+    });
+  });
+
+  it("serializes with the configured serializer", () => {
+    const time = createManualTime();
+    const serialize = (group: readonly ErrorEvent[]) => group.map((event) => event.message).join(",");
+
+    expect(serializeEvents(settings(time, { serialize }), [anEvent("a"), anEvent("b")], aResource())).toBe("a,b");
+  });
+});
+
+describe("sendKeepalive", () => {
+  it("POSTs the body once with keepalive, the configured headers and the contentType", () => {
+    const time = createManualTime();
+    const { fetch, calls } = fakeFetch(time, 200);
+
+    expect(sendKeepalive(settings(time, { fetch, headers: { authorization: "Bearer x" }, contentType: "text/plain" }), "body")).toBe(true);
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url).toBe(url);
+    expect(calls[0]?.init).toMatchObject({ method: "POST", body: "body", keepalive: true });
+    expect(Object.fromEntries(new Headers(calls[0]?.init.headers))).toEqual({ authorization: "Bearer x", "content-type": "text/plain" });
+  });
+
+  it("reads a headers function once and sends synchronously when it returns a record", () => {
+    const time = createManualTime();
+    const { fetch, calls } = fakeFetch(time, 200);
+    const headers = vi.fn(() => ({ a: "b" }));
+
+    sendKeepalive(settings(time, { fetch, headers }), "body");
+
+    expect(headers).toHaveBeenCalledOnce();
+    expect(new Headers(calls[0]?.init.headers).get("a")).toBe("b");
+  });
+
+  it("sends once a headers promise resolves", async () => {
+    const time = createManualTime();
+    const { fetch, calls } = fakeFetch(time, 200);
+
+    expect(sendKeepalive(settings(time, { fetch, headers: async () => ({ a: "b" }) }), "body")).toBe(true);
+    expect(calls).toEqual([]);
+
+    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    expect(new Headers(calls[0]?.init.headers).get("a")).toBe("b");
+    expect(calls[0]?.init.keepalive).toBe(true);
+  });
+
+  it("sends nothing when a headers promise rejects, and swallows the rejection", async () => {
+    const time = createManualTime();
+    const { fetch, calls } = fakeFetch(time, 200);
+
+    expect(sendKeepalive(settings(time, { fetch, headers: () => Promise.reject(new Error("no token")) }), "body")).toBe(true);
+    await hop();
+
+    expect(calls).toEqual([]);
+  });
+
+  it("returns false, sending nothing, when the headers function throws", () => {
+    const time = createManualTime();
+    const { fetch, calls } = fakeFetch(time, 200);
+    const headers = () => {
+      throw new Error("no token");
+    };
+
+    expect(sendKeepalive(settings(time, { fetch, headers }), "body")).toBe(false);
+    expect(calls).toEqual([]);
+  });
+
+  it("returns false when there is no fetch", () => {
+    const time = createManualTime();
+    vi.stubGlobal("fetch", undefined);
+
+    expect(sendKeepalive(settings(time), "body")).toBe(false);
+  });
+
+  it("swallows a fetch that throws synchronously or rejects", async () => {
+    const time = createManualTime();
+    const throwing = fakeFetch(time, { throw: new TypeError("bad") });
+    const rejecting = fakeFetch(time, { reject: new TypeError("Failed to fetch") });
+
+    expect(sendKeepalive(settings(time, { fetch: throwing.fetch }), "body")).toBe(true);
+    expect(sendKeepalive(settings(time, { fetch: rejecting.fetch }), "body")).toBe(true);
+    await hop();
+
+    expect(throwing.calls).toHaveLength(1);
+    expect(rejecting.calls).toHaveLength(1);
   });
 });

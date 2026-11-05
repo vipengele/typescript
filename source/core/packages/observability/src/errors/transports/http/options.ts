@@ -2,11 +2,23 @@ import { type Clock, type Scheduler, systemClock, systemScheduler } from "@vipen
 import type { Resource } from "@vipengele/ts-core-common/scope";
 import { MAX_TIMEOUT_DURATION_MS } from "@vipengele/ts-core-resilience/timeout";
 import type { ErrorEvent } from "../../event";
+import { offlineProblem } from "../../../delivery/offline/wrapper";
+import { detectLifecycleTargets, type LifecycleTargets } from "../../../delivery/unload";
 import { HttpTransportConfigError } from "../http-transport-config-error";
 import type { DropReason, QueueLimits } from "./queue";
 
 /** Request headers: a fixed record, or a function resolved before every request. */
 export type HttpHeaders = Record<string, string> | (() => Record<string, string> | Promise<Record<string, string>>);
+
+/** How the offline queue is bounded and where it saves; see {@link HttpTransportOptions.offline}. */
+export interface HttpTransportOfflineOptions {
+  /** How many request bodies the queue holds, across every sink and transport sharing the database. Defaults to 30. */
+  readonly maxEntries?: number;
+  /** How many UTF-8 bytes of request body the queue holds. Defaults to 1 MiB. */
+  readonly maxBytes?: number;
+  /** Defaults to `globalThis.indexedDB`. */
+  readonly indexedDB?: IDBFactory;
+}
 
 /** What `createHttpTransport` accepts. Only `url` is required. */
 export interface HttpTransportOptions {
@@ -40,6 +52,28 @@ export interface HttpTransportOptions {
   readonly serialize?: (events: readonly ErrorEvent[], resource: Resource) => string;
   /** The request's `Content-Type`. Default: `application/json`. */
   readonly contentType?: string;
+  /**
+   * Where `pagehide` and `visibilitychange` arrive; detected on `globalThis` when omitted, none
+   * watched for `{}`. On either, the request in flight is aborted and the oldest events, in flight
+   * then queued, that share the oldest one's Resource and fit `maxBatchEvents`, `maxBatchBytes` and
+   * the 64 KiB keepalive budget go out as one `keepalive` request; the rest are saved with
+   * `offline`, or dropped as `"unload-budget"`. `lifecycle: {}` also stops the `online` replay.
+   */
+  readonly lifecycle?: LifecycleTargets;
+  /**
+   * Saves the batches the transport gives up on as `"retries-exhausted"` or `"closed"` in IndexedDB,
+   * as the exact request body, and replays them when the transport is created and when the window
+   * reports `online`, with the transport's own status classification, `contentType` and `headers`.
+   * Delivery is at least once. The queue keeps the oldest bodies and refuses a new one over its
+   * bounds as `"offline-full"`. `onDrop` is told about a batch only after the save's outcome, never
+   * synchronously: with the save's failure reason or `"offline-full"`, and not at all for a batch
+   * that was saved. A body the endpoint rejects on replay reaches `onDrop` as `"rejected"` with an
+   * empty events array. A network error or a timeout while the navigator reports no network ends
+   * the batch's retries at once. `flush` and `close` also wait for pending saves, resolving `false`
+   * if one outlasts the timeout. Without IndexedDB, or when it cannot be opened, nothing is saved
+   * and the drop is reported as without this option.
+   */
+  readonly offline?: true | HttpTransportOfflineOptions;
   /** Called with the events the transport gives up on, and why. */
   readonly onDrop?: (events: readonly ErrorEvent[], reason: DropReason) => void;
   /** Where warnings go. Default: `globalThis.console`, read at construction. */
@@ -65,7 +99,9 @@ export interface ResolvedHttpTransportOptions extends QueueLimits {
   readonly requestTimeoutMs: number;
   readonly serialize: HttpTransportOptions["serialize"];
   readonly contentType: string;
+  readonly lifecycle: LifecycleTargets;
   readonly onDrop: HttpTransportOptions["onDrop"];
+  readonly offline: HttpTransportOptions["offline"];
   readonly console: Pick<Console, "warn"> | undefined;
   readonly clock: Clock;
   readonly scheduler: Scheduler;
@@ -127,6 +163,20 @@ function optionalFunction<T>(name: string, value: T | undefined): T | undefined 
   return value;
 }
 
+function resolveOffline(offline: unknown): HttpTransportOptions["offline"] {
+  if (offline === undefined || offline === true) {
+    return offline;
+  }
+  if (typeof offline !== "object" || offline === null) {
+    throw new HttpTransportConfigError(`Invalid HTTP transport option offline ${describe(offline)}: expected true or an object.`);
+  }
+  const problem = offlineProblem(offline);
+  if (problem !== undefined) {
+    throw new HttpTransportConfigError(`Invalid HTTP transport option ${problem}.`);
+  }
+  return offline;
+}
+
 function resolveUrl(url: unknown): string {
   if (url === undefined || url === null) {
     throw new HttpTransportConfigError("Invalid HTTP transport option url: it is required.");
@@ -167,7 +217,9 @@ export function resolveOptions(options: HttpTransportOptions): ResolvedHttpTrans
     requestTimeoutMs: timeout("requestTimeoutMs", options.requestTimeoutMs, 10_000),
     serialize: optionalFunction("serialize", options.serialize),
     contentType: options.contentType ?? "application/json",
+    lifecycle: options.lifecycle ?? detectLifecycleTargets(),
     onDrop: optionalFunction("onDrop", options.onDrop),
+    offline: resolveOffline(options.offline),
     console: options.console ?? globalThis.console,
     clock: options.clock ?? systemClock,
     scheduler: options.scheduler ?? systemScheduler,

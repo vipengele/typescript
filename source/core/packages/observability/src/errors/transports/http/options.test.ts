@@ -1,5 +1,6 @@
 import { systemClock, systemScheduler } from "@vipengele/ts-core-common";
 import { describe, expect, it } from "vitest";
+import { detectLifecycleTargets } from "../../../delivery/unload";
 import { isHttpTransportConfigError } from "../http-transport-config-error";
 import { type HttpTransportOptions, resolveOptions } from "./options";
 
@@ -32,6 +33,7 @@ describe("resolveOptions defaults", () => {
       requestTimeoutMs: 10_000,
       serialize: undefined,
       contentType: "application/json",
+      lifecycle: detectLifecycleTargets(),
       onDrop: undefined,
       console: globalThis.console,
       clock: systemClock,
@@ -47,6 +49,7 @@ describe("resolveOptions defaults", () => {
     const onDrop = () => {};
     const warn = { warn: () => {} };
     const random = () => 0.5;
+    const lifecycle = {};
     const resolved = resolveOptions({
       url: new URL("https://e.example.com/x"),
       headers,
@@ -61,6 +64,7 @@ describe("resolveOptions defaults", () => {
       requestTimeoutMs: 0.5,
       serialize,
       contentType: "text/plain",
+      lifecycle,
       onDrop,
       console: warn,
       random,
@@ -80,10 +84,12 @@ describe("resolveOptions defaults", () => {
       requestTimeoutMs: 0.5,
       serialize,
       contentType: "text/plain",
+      lifecycle,
       onDrop,
       console: warn,
       random,
     });
+    expect(resolved.lifecycle).toBe(lifecycle);
   });
 
   it("accepts a requestTimeoutMs of the largest delay a timer honours", () => {
@@ -125,6 +131,36 @@ describe("resolveOptions validation", () => {
       expect(isHttpTransportConfigError(error)).toBe(true);
       expect((error as Error).message).toContain(name);
     }
+  });
+
+  it.each(["maxEntries", "maxBytes"])("rejects an invalid offline.%s", (name) => {
+    for (const value of [0, -1, 1.5, Number.NaN]) {
+      const error = reject({ url, offline: { [name]: value } });
+
+      expect(isHttpTransportConfigError(error)).toBe(true);
+      expect((error as Error).message).toContain(`offline.${name}`);
+    }
+  });
+
+  it.each([
+    ["a string", "yes"],
+    ["false", false],
+    ["null", null],
+    ["a number", 1],
+  ])("rejects an offline that is %s", (_name, value) => {
+    const error = reject({ url, offline: value });
+
+    expect(isHttpTransportConfigError(error)).toBe(true);
+    expect((error as Error).message).toContain("offline");
+  });
+
+  it("accepts offline as true or an object", () => {
+    const settings = { maxEntries: 2, maxBytes: 100 };
+
+    expect(resolveOptions({ url, offline: true }).offline).toBe(true);
+    expect(resolveOptions({ url, offline: settings }).offline).toBe(settings);
+    expect(resolveOptions({ url, offline: {} }).offline).toEqual({});
+    expect(resolveOptions({ url }).offline).toBeUndefined();
   });
 
   it("accepts the largest lingerMs a timer honours", () => {

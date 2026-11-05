@@ -18,6 +18,7 @@ import type {
   GlobalHandlersOptions,
   GlobalProcess,
   GlobalRejectionEventLike,
+  HttpTransportOfflineOptions,
   HttpTransportOptions,
   Integration,
   IntegrationCaptureContext,
@@ -115,7 +116,15 @@ test("the entry point exports the HTTP transport's config error, guard and types
   expect(error.code).toBe("observability.errors.http-transport.config");
   expect(entry.isHttpTransportConfigError(error)).toBe(true);
   expectTypeOf(entry.createHttpTransport).parameter(0).toEqualTypeOf<HttpTransportOptions>();
-  expectTypeOf<DropReason>().toEqualTypeOf<"queue-full" | "too-large" | "retries-exhausted" | "rejected" | "unsendable" | "closed">();
+  expectTypeOf<DropReason>().toEqualTypeOf<
+    "queue-full" | "too-large" | "retries-exhausted" | "rejected" | "unsendable" | "closed" | "unload-budget" | "offline-full"
+  >();
+  expectTypeOf<NonNullable<HttpTransportOptions["offline"]>>().toEqualTypeOf<true | HttpTransportOfflineOptions>();
+  expectTypeOf<HttpTransportOfflineOptions>().toEqualTypeOf<{
+    readonly maxEntries?: number;
+    readonly maxBytes?: number;
+    readonly indexedDB?: IDBFactory;
+  }>();
 });
 
 test("the entry point exports the logger sink's options, the Reporter member that takes them", () => {
