@@ -112,15 +112,23 @@ function toLevel(level: unknown): Level {
   return isLevel(level) ? level : "error";
 }
 
-/** Lifts a serialized error to an {@link ExceptionRecord}, giving every link of its `cause`/`errors` chain its own `frames`. */
-function toExceptionRecord(serialized: SerializedError, pipeline: Pipeline): ExceptionRecord {
+/**
+ * Lifts a serialized error to an {@link ExceptionRecord}, giving every link of its `cause`/`errors`
+ * chain its own `frames`. Each link is a new object whose fields are copied shallowly, so a link's
+ * `data` is the one object the record shares with `serialized`; `detach` deep-copies it, for an
+ * error a caller owns and may hold frozen.
+ */
+function toExceptionRecord(serialized: SerializedError, pipeline: Pipeline, detach: boolean): ExceptionRecord {
   const { cause, errors, ...rest } = serialized;
   const record: ExceptionRecord = { ...rest, frames: markInApp(boundFrames(parseStack(serialized.stack), pipeline), pipeline.projectRoot) };
+  if (detach && rest.data !== undefined) {
+    record.data = structuredClone(rest.data);
+  }
   if (cause !== undefined) {
-    record.cause = toExceptionRecord(cause, pipeline);
+    record.cause = toExceptionRecord(cause, pipeline, detach);
   }
   if (errors !== undefined) {
-    record.errors = errors.map((link) => toExceptionRecord(link, pipeline));
+    record.errors = errors.map((link) => toExceptionRecord(link, pipeline, detach));
   }
   return record;
 }
@@ -137,16 +145,16 @@ function boundFrames(frames: StackFrame[], pipeline: Pipeline): StackFrame[] {
 /**
  * Stage 3: the caller's thrown value, serialized error or message, in the Error Event's shape. A
  * serialized error is not serialized again, only lifted to an {@link ExceptionRecord} like a thrown
- * value's; it is cloned first, so the event shares no object with the caller, which may hold it
- * frozen. A message longer than `maxStringLength` is cut and suffixed by the same engine, and with
+ * value's, each link's `data` deep-copied on the way so the event shares no object with the
+ * caller, which may hold the error frozen. A message longer than `maxStringLength` is cut and suffixed by the same engine, and with
  * the same `"…[truncated]"` marker, as every string inside the attributes and the exception chain.
  */
 function normalize(input: CaptureInput, pipeline: Pipeline): NormalizedPayload {
   switch (input.kind) {
     case "exception":
-      return { exception: toExceptionRecord(serializeError(input.error, pipeline.limits), pipeline) };
+      return { exception: toExceptionRecord(serializeError(input.error, pipeline.limits), pipeline, false) };
     case "serialized-exception":
-      return { exception: toExceptionRecord(structuredClone(input.error), pipeline) };
+      return { exception: toExceptionRecord(input.error, pipeline, true) };
     case "message":
       return { message: toJsonSafe(input.message, { maxStringLength: pipeline.limits?.maxStringLength }) as string };
   }

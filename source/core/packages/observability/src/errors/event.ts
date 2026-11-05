@@ -18,8 +18,10 @@ export interface ErrorEvent {
   exception?: ExceptionRecord;
   mechanism: Mechanism;
   /**
-   * The ambient Scope chain's attributes, from the default scope inward and never the Resource,
-   * beneath the call's own attributes, the call's winning on a shared key.
+   * For a captured exception or message, the ambient Scope chain's attributes, from the default
+   * scope inward and never the Resource, beneath the call's own attributes, the call's winning on
+   * a shared key. For an event from `reporter.loggerSink()`, the Log Record's attributes alone:
+   * they already hold the Scope as it was when the record was written, and none is merged at capture.
    */
   attributes: Attributes;
   fingerprint?: string[];

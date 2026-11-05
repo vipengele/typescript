@@ -1359,6 +1359,7 @@ describe("a serialized exception", () => {
         (event) => {
           (event.exception?.data as Record<string, unknown>).token = "changed";
           (event.exception?.cause as { message: string }).message = "changed";
+          (event.exception?.cause?.cause?.errors?.[1]?.data as Record<string, unknown>).password = "changed";
           (event.trace as { flags: number }).flags = 1;
           return event;
         },
