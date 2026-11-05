@@ -569,6 +569,12 @@ Logging.configure((b) =>
 {"time":1760000000123.456,"level":"info","category":"app.checkout","message":"order placed","attributes":{},"trace_id":"0af7651916cd43dd8448eb211c80319c","span_id":"b7ad6b7169203331","resource":{}}
 ```
 
+An Error Event carries the same active span as `trace`, typed `LogTrace`, for every capture,
+global handlers included; with no active span the event has no `trace` key. Redaction never touches
+it, and a `trace` that fails the same id and flag checks after processors and `beforeSend` is dropped
+while the event is kept. A record reported through the reporter's logger sink keeps its own `trace`
+(see [Logger integration](#logger-integration)).
+
 `LogTrace` is exported from `./logger`. See ADR-0021 for why the registry is read rather than imported.
 
 ### OTLP export
@@ -1245,6 +1251,47 @@ from `import.meta.url` is wrong under bundling: it resolves to the application's
 application frame would be marked not-in-app. Unbundled, the reporter's frames sit under
 `node_modules` and are already not in-app. Bundled into an application, its own frames are in-app;
 that is accepted.
+
+### Logger integration
+
+`reporter.loggerSink(options?)` returns a logger `Sink` that reports the errors a program logs, so a
+caught error written with `log.error(message, error)` reaches the same transport as one passed to
+`captureException`:
+
+```ts
+import { Logging } from "@vipengele/ts-core-observability/logger";
+import { createConsoleTransport, createReporter } from "@vipengele/ts-core-observability/errors";
+
+const reporter = createReporter((builder) => builder.transport(createConsoleTransport()));
+
+Logging.configure((b) => b.addLevels({ "*": "info" }).addSink(reporter.loggerSink({ minLevel: "error" })));
+
+Logging.logger("app.checkout").error("charge failed", new Error("card declined"), { orderId: 7 });
+```
+
+- **What is reported** — a record that carries an `error` at `minLevel` or above. `minLevel` is any
+  `Level` and defaults to `"error"`; anything else throws `ReporterConfigError`. A record without an
+  error, or below `minLevel`, is ignored, so a bare `log.error("message")` is not reported.
+- **Mapping** — the event has the record's `level`, the record's attributes plus `logger.category`
+  and `logger.message`, the record's serialized error chain (frames and `cause`/`errors` links
+  included) and the mechanism `{ handled: true, source: "logger" }`. Its `time` comes from the
+  reporter's clock, not the record's. The attributes come from the record alone, so the Scope is the
+  one in effect when the record was written, not when the sink runs.
+- **Pipeline** — every stage applies: sampling, `ignoreErrors`, processors, `beforeSend`, and, since
+  the event is handled, deduplication and the rate limit. The record's attributes are already
+  redacted by the logger; the reporter redacts them again, which changes nothing. The error was
+  already serialized under the logger's limits, so `limits(...)` only cuts each link's frames to
+  `maxBreadth`.
+- **Trace** — the event carries the record's `trace`; a record without one takes the span active at
+  capture. See [Trace correlation](#trace-correlation).
+- **Re-entrancy** — a `write` that arrives while the same sink's own capture is still on the stack is
+  dropped, so a transport or processor that logs back through the same logger cannot report itself
+  recursively.
+- **After `close()`** — the sink behaves exactly as `captureException` does after the reporter is
+  closed. The reporter keeps no closed flag; refusing events is the transport's concern.
+- **Direction** — the logger never depends on the reporter. `./logger` does not import `./errors`;
+  shipped `./errors` source takes only types from `./logger`, which are erased, so an application that only logs
+  bundles none of the reporter.
 
 ### Global handlers
 

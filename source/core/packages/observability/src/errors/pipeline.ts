@@ -14,6 +14,7 @@ import { type Resource, Scope, snapshot } from "@vipengele/ts-core-common/scope"
 import type { RedactionPolicy } from "@vipengele/ts-core-redaction";
 import { mergeAttributes } from "../merge-attributes";
 import { type RedactionSetting, redactAttributes, redactError } from "../redaction";
+import { isSpanId, isTraceFlags, isTraceId, type LogTrace, readActiveTrace } from "../trace";
 import { createDeduper, type Deduper } from "./dedupe";
 import type { ErrorEvent, ExceptionRecord, Mechanism, StackFrame } from "./event";
 import { createEventId } from "./event-id";
@@ -22,10 +23,22 @@ import { createRateLimiter, DEFAULT_RATE_LIMIT, type RateLimiter, type RateLimit
 import { parseStack } from "./stack/parse-stack";
 import type { Transport } from "./transport";
 
-/** What a caller hands the pipeline: a thrown value or a message, plus its own level and attributes. */
+/**
+ * What a caller hands the pipeline, plus its own level and attributes: a thrown value, a message, or
+ * an error already serialized elsewhere, such as a Log Record's. A `serialized-exception` runs every
+ * stage a thrown value does, its `trace`, when given, standing in for the span active at capture and
+ * its `attributes` standing alone, with no Scope merged beneath them.
+ */
 export type CaptureInput =
   | { readonly kind: "exception"; readonly error: unknown; readonly level?: Level; readonly attributes?: AttributesInput }
-  | { readonly kind: "message"; readonly message: string; readonly level?: Level; readonly attributes?: AttributesInput };
+  | { readonly kind: "message"; readonly message: string; readonly level?: Level; readonly attributes?: AttributesInput }
+  | {
+      readonly kind: "serialized-exception";
+      readonly error: SerializedError;
+      readonly level: Level;
+      readonly attributes: AttributesInput;
+      readonly trace?: LogTrace | undefined;
+    };
 
 /** Runs one event through the pipeline and returns its id, whether or not the event reached the transport. Never throws. */
 export type Capture = (input: CaptureInput, mechanism: Mechanism) => string;
@@ -99,15 +112,23 @@ function toLevel(level: unknown): Level {
   return isLevel(level) ? level : "error";
 }
 
-/** Lifts a serialized error to an {@link ExceptionRecord}, giving every link of its `cause`/`errors` chain its own `frames`. */
-function toExceptionRecord(serialized: SerializedError, pipeline: Pipeline): ExceptionRecord {
+/**
+ * Lifts a serialized error to an {@link ExceptionRecord}, giving every link of its `cause`/`errors`
+ * chain its own `frames`. Each link is a new object whose fields are copied shallowly, so a link's
+ * `data` is the one object the record shares with `serialized`; `detach` deep-copies it, for an
+ * error a caller owns and may hold frozen.
+ */
+function toExceptionRecord(serialized: SerializedError, pipeline: Pipeline, detach: boolean): ExceptionRecord {
   const { cause, errors, ...rest } = serialized;
   const record: ExceptionRecord = { ...rest, frames: markInApp(boundFrames(parseStack(serialized.stack), pipeline), pipeline.projectRoot) };
+  if (detach && rest.data !== undefined) {
+    record.data = structuredClone(rest.data);
+  }
   if (cause !== undefined) {
-    record.cause = toExceptionRecord(cause, pipeline);
+    record.cause = toExceptionRecord(cause, pipeline, detach);
   }
   if (errors !== undefined) {
-    record.errors = errors.map((link) => toExceptionRecord(link, pipeline));
+    record.errors = errors.map((link) => toExceptionRecord(link, pipeline, detach));
   }
   return record;
 }
@@ -122,14 +143,44 @@ function boundFrames(frames: StackFrame[], pipeline: Pipeline): StackFrame[] {
 }
 
 /**
- * Stage 3: the caller's thrown value or message, in the Error Event's shape. A message longer than
- * `maxStringLength` is cut and suffixed by the same engine, and with the same `"…[truncated]"`
- * marker, as every string inside the attributes and the exception chain.
+ * Stage 3: the caller's thrown value, serialized error or message, in the Error Event's shape. A
+ * serialized error is not serialized again, only lifted to an {@link ExceptionRecord} like a thrown
+ * value's, each link's `data` deep-copied on the way so the event shares no object with the
+ * caller, which may hold the error frozen. A message longer than `maxStringLength` is cut and suffixed by the same engine, and with
+ * the same `"…[truncated]"` marker, as every string inside the attributes and the exception chain.
  */
 function normalize(input: CaptureInput, pipeline: Pipeline): NormalizedPayload {
-  return input.kind === "exception"
-    ? { exception: toExceptionRecord(serializeError(input.error, pipeline.limits), pipeline) }
-    : { message: toJsonSafe(input.message, { maxStringLength: pipeline.limits?.maxStringLength }) as string };
+  switch (input.kind) {
+    case "exception":
+      return { exception: toExceptionRecord(serializeError(input.error, pipeline.limits), pipeline, false) };
+    case "serialized-exception":
+      return { exception: toExceptionRecord(input.error, pipeline, true) };
+    case "message":
+      return { message: toJsonSafe(input.message, { maxStringLength: pipeline.limits?.maxStringLength }) as string };
+  }
+}
+
+/** The trace an event is enriched with: a serialized exception's own `trace` when it has one, else the span active now. */
+function traceOf(input: CaptureInput): LogTrace | undefined {
+  if (input.kind === "serialized-exception" && input.trace !== undefined) {
+    return { ...input.trace };
+  }
+  return readActiveTrace();
+}
+
+/**
+ * The attributes an event is enriched with. A serialized exception's are its Log Record's, which
+ * already hold the Scope as it was when the record was built, so the Scope is not read again: a
+ * sink that writes later runs under an unrelated Scope, and a key a processor stripped from the
+ * record stays out. Any other input has the current Scope's attributes beneath its own, its own
+ * winning on a shared key, each side normalized on its own so a large scope chain cannot push an
+ * input attribute past the breadth bound.
+ */
+function attributesOf(input: CaptureInput, pipeline: Pipeline): Attributes {
+  if (input.kind === "serialized-exception") {
+    return normalizeAttributes(input.attributes, pipeline.limits);
+  }
+  return mergeAttributes([scopeAttributes(pipeline), normalizeAttributes(input.attributes ?? {}, pipeline.limits)]);
 }
 
 /**
@@ -178,18 +229,25 @@ function isIgnored(payload: NormalizedPayload, pipeline: Pipeline): boolean {
 
 /**
  * Stage 5: stamps what the pipeline knows about the event rather than what the caller handed over.
- * The scope's attributes lie beneath the call's own, the call's winning on a shared key, each side
- * normalized on its own so a large scope chain cannot push a call attribute past the breadth bound.
+ * The attributes come from `attributesOf`: the scope's beneath the call's own, except for a
+ * serialized exception, whose attributes are the record's alone and read no Scope.
+ * The input's own trace, or else the span active at capture time, rides along as `trace`; neither
+ * leaves the key out.
  */
 function enrich(payload: NormalizedPayload, input: CaptureInput, mechanism: Mechanism, id: string, pipeline: Pipeline): ErrorEvent {
-  return {
+  const trace = traceOf(input);
+  const event: ErrorEvent = {
     id,
     time: pipeline.clock(),
     level: toLevel(input.level),
     ...payload,
     mechanism,
-    attributes: mergeAttributes([scopeAttributes(pipeline), normalizeAttributes(input.attributes ?? {}, pipeline.limits)]),
+    attributes: attributesOf(input, pipeline),
   };
+  if (trace !== undefined) {
+    event.trace = trace;
+  }
+  return event;
 }
 
 /**
@@ -245,6 +303,25 @@ function redactEvent(event: ErrorEvent, policy: RedactionPolicy): ErrorEvent {
     redacted.mechanism = { ...event.mechanism, data: redactAttributes(event.mechanism.data, policy) };
   }
   return redacted;
+}
+
+/**
+ * `event` with a `trace` that is not an object with valid hex ids and integer flags removed, and a
+ * valid one rebuilt from the {@link LogTrace} fields alone. The event is kept either way: a
+ * malformed `trace` must never reach a transport, but the error it describes is still worth sending.
+ */
+function validateTrace(event: ErrorEvent): ErrorEvent {
+  if (event.trace === undefined) {
+    return event;
+  }
+  const { trace, ...rest } = event;
+  if (typeof trace === "object" && trace !== null) {
+    const { traceId, spanId, flags } = trace as Partial<LogTrace>;
+    if (isTraceId(traceId) && isSpanId(spanId) && isTraceFlags(flags)) {
+      return { ...rest, trace: { traceId, spanId, flags } };
+    }
+  }
+  return rest;
 }
 
 /** `processor`'s result for `event`, or `null` when it drops the event or returns anything but an object. */
@@ -312,10 +389,11 @@ function run(input: CaptureInput, mechanism: Mechanism, id: string, pipeline: Pi
   if (sent === null) {
     return;
   }
+  const checked = validateTrace(sent);
   const bypass = mechanism.handled === false;
   // Stage 9: deduplication. An event that passes here is the one the next event is compared with,
   // whether or not the rate limit then drops it.
-  if (!bypass && state.deduper?.isDuplicate(sent) === true) {
+  if (!bypass && state.deduper?.isDuplicate(checked) === true) {
     return;
   }
   // Stage 10: the rate limit.
@@ -323,7 +401,7 @@ function run(input: CaptureInput, mechanism: Mechanism, id: string, pipeline: Pi
     return;
   }
   // Stage 11: the transport.
-  pipeline.transport?.send(sent, resource);
+  pipeline.transport?.send(checked, resource);
 }
 
 /**

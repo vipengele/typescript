@@ -8,6 +8,10 @@ import { createReporter } from "../reporter";
 import { isReporterConfigError } from "../reporter-config-error";
 import { createOtlpTransport, type OtlpTransportDropReason, type OtlpTransportOptions } from "./otlp-transport";
 
+// biome-ignore lint/security/noSecrets: the W3C Trace Context example trace id, flagged only for its entropy
+const TRACE_ID = "4bf92f3577b34da6a3ce929d0e0e4736";
+const SPAN_ID = "00f067aa0ba902b7";
+
 const URL_OK = "https://collector.example/v1/logs";
 
 interface KeyValue {
@@ -62,6 +66,28 @@ describe("createOtlpTransport", () => {
     expect(attributes.get("exception.type")).toEqual({ stringValue: "TypeError" });
     expect(attributes.get("exception.message")).toEqual({ stringValue: "bad input" });
     expect(attributes.get("exception.stacktrace")?.stringValue).toMatch(/^TypeError: bad input/);
+  });
+
+  it("carries the active span as the record traceId and spanId", async () => {
+    const registry = globalThis as unknown as Record<symbol, unknown>;
+    const slot = Symbol.for("opentelemetry.js.api.1");
+    const span = { spanContext: () => ({ traceId: TRACE_ID, spanId: SPAN_ID, traceFlags: 1 }) };
+    registry[slot] = {
+      context: { active: () => ({ getValue: (key: symbol) => (key === Symbol.for("OpenTelemetry Context Key SPAN") ? span : undefined) }) },
+    };
+    try {
+      const { transport, calls } = setup();
+      const reporter = createReporter((b) => b.transport(transport));
+
+      reporter.captureException(new Error("boom"));
+      await reporter.flush();
+
+      const record = JSON.parse(calls[0]?.init.body ?? "").resourceLogs[0].scopeLogs[0].logRecords[0];
+      expect(record.traceId).toBe(TRACE_ID);
+      expect(record.spanId).toBe(SPAN_ID);
+    } finally {
+      delete registry[slot];
+    }
   });
 
   it("is drained by globalHandlers under the exit policy before the process exits", async () => {

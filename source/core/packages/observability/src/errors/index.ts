@@ -13,6 +13,7 @@ export type {
   GlobalRejectionEventLike,
 } from "./integrations/global-handlers";
 export { globalHandlers } from "./integrations/global-handlers";
+export type { LoggerSinkOptions } from "./logger-sink";
 export type { ErrorEventProcessor } from "./pipeline";
 export type { RateLimitOptions } from "./rate-limit";
 export type { CaptureContext, Reporter } from "./reporter";

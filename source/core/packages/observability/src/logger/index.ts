@@ -43,4 +43,4 @@ export type {
 } from "./settings";
 export { type ParsedSpec, parseSpec } from "./spec";
 export { createTestSink, type FindCriteria, type TestSink } from "./test-sink";
-export type { LogTrace } from "./trace";
+export type { LogTrace } from "../trace";

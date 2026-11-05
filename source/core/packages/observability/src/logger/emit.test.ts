@@ -7,7 +7,7 @@ import { isNormalized, markNormalized } from "./normalized";
 import type { Admission } from "./policy";
 import type { EmitSettings, LogProcessor, LogRecord, Sink, SinkRegistration } from "./record";
 import { redactionProcessor } from "./redaction-processor";
-import type { LogTrace } from "./trace";
+import type { LogTrace } from "../trace";
 
 const RESOURCE: Resource = Object.freeze({
   "service.name": "checkout",

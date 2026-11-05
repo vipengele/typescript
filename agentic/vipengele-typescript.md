@@ -89,7 +89,8 @@ Error Event, Scope, Breadcrumb, Transport) before naming things.
     Resource once, drop the event when `enabledEnvironments` is set and excludes its environment, then run it
     through an eleven-stage pipeline (gate, sampling, normalize, `ignoreErrors`, enrich, redaction, processors,
     `beforeSend`, dedupe, rate limit, transport; dedupe and the rate limit are on by default and skip an
-    unhandled event, ADR-0020) and hand
+    unhandled event, ADR-0020; `enrich` sets `trace` from the active OpenTelemetry span, and `reporter.loggerSink()`
+    reports each logged record that carries an error as a handled event, ADR-0026) and hand
     the survivor, with that Resource, to a `Transport`, the fire-and-forget delivery contract (ADR-0010;
     `agentic/rules/transport-send-is-fire-and-forget.md`) every transport — the built-in
     `createConsoleTransport`, `createHttpTransport`, `createTestTransport` and `createOtlpTransport`

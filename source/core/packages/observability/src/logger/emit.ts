@@ -14,7 +14,7 @@ import type { AttributesThunk } from "./logger";
 import { isNormalized, markNormalized } from "./normalized";
 import type { Admission } from "./policy";
 import type { EmitSettings, LogProcessor, LogRecord, Sink } from "./record";
-import { isSpanId, isTraceFlags, isTraceId, type LogTrace, readActiveTrace } from "./trace";
+import { isSpanId, isTraceFlags, isTraceId, type LogTrace, readActiveTrace } from "../trace";
 
 /**
  * One layer of a Logger's bindings, read once for each record the Logger builds. `read` returns
