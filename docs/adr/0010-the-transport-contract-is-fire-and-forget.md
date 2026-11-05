@@ -4,6 +4,9 @@ This is amended by `0022-otlp-export-shares-one-delivery-core.md`: the HTTP Tran
 OTLP/HTTP JSON, `navigator.sendBeacon` is not used on unload (a `keepalive` fetch is sent instead),
 and the offline IndexedDB queue is deferred.
 
+The HTTP transport's delivery on page unload is recorded in
+`0023-http-json-transport-delivery.md`, which supersedes the "or `navigator.sendBeacon`" below.
+
 Its offline IndexedDB queue decision is amended by `0024-offline-queue-persists-encoded-bodies.md`.
 
 A Transport is three methods:

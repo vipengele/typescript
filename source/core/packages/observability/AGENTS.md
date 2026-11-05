@@ -153,7 +153,7 @@ Run commands from `source/core` (`pnpm build`, `pnpm type-check`, `pnpm test`, `
   the exact request body of a `retries-exhausted` or `closed` batch through `OfflineQueue.saveBody`,
   whose listener reports a failed save with the batch's own events, since `onDrop(reason, count)`
   cannot name them; a body rejected on replay reports an empty events array. Replay uses the
-  transport's `classify`, `contentType` and headers. The HTTP `DropReason` includes `"offline-full"`.
+  transport's `classify`, `contentType` and headers. The HTTP `DropReason` includes `"offline-full"` and `"unload-budget"`.
 - `src/otlp/` is internal and unexported: the OTLP/HTTP JSON encoder. `encode-logs.ts` is the only
   file that knows `LogRecord` and `encode-error-events.ts` the only one that knows `ErrorEvent`;
   `resource.ts` (Resource grouping), `exception.ts` (`exception.*` attributes), `any-value.ts`,
@@ -215,6 +215,11 @@ Run commands from `source/core` (`pnpm build`, `pnpm type-check`, `pnpm test`, `
   reject by status) and `retry-after.ts`.
 - One request is in flight at a time; every wait runs on the injected `Scheduler`. Nothing is `unref`'d and
   no exit hook is registered, so a process that must not lose events awaits `close()` (ADR-0023).
+- On `pagehide` or a hidden `visibilitychange` (the `lifecycle` option, `{}` watches none and also stops the
+  offline `online` replay) it aborts the request in flight and sends the oldest events sharing the oldest
+  event's Resource as one `keepalive` `fetch`, cut to `maxBatchEvents` and, by `largestFittingPrefix`, to
+  `maxBatchBytes` and the 64 KiB budget. The tail is saved through `offline` or reaches `onDrop` as
+  `"unload-budget"`. No `sendBeacon`, and the budget is not shared with an OTLP queue (ADR-0023).
 - Every undeliverable event goes to `onDrop(events, reason)`; with no `onDrop` it warns once per reason.
   `send` never throws, a throwing `onDrop` is swallowed.
 - `@vipengele/ts-core-resilience` is a `workspace:*` dependency of this package.
