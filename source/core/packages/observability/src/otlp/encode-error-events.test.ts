@@ -152,6 +152,30 @@ describe("encodeErrorEvents", () => {
     ]);
   });
 
+  test("names an exception event and puts eventName after the trace fields", () => {
+    const logRecord = encodeOne(
+      event({
+        message: undefined,
+        exception: exception(),
+        trace: { traceId: TRACE_ID, spanId: SPAN_ID, flags: 1 },
+      }),
+    );
+
+    expect(logRecord.eventName).toBe("exception");
+    expect(Object.keys(logRecord)).toEqual([
+      "timeUnixNano",
+      "observedTimeUnixNano",
+      "severityNumber",
+      "severityText",
+      "body",
+      "attributes",
+      "traceId",
+      "spanId",
+      "flags",
+      "eventName",
+    ]);
+  });
+
   test("encodes an exception with a cause chain as the outermost error's message and the whole chain's stacktrace", () => {
     const logRecord = encodeOne(
       event({
