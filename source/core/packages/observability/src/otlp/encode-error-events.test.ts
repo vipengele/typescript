@@ -106,7 +106,7 @@ describe("encodeErrorEvents", () => {
                   timeUnixNano: "1700000000123456000",
                   observedTimeUnixNano: "1700000000200500000",
                   severityNumber: 13,
-                  severityText: "warn",
+                  severityText: "WARN",
                   body: { stringValue: "hello" },
                   attributes: [
                     { key: "user", value: { stringValue: "ada" } },

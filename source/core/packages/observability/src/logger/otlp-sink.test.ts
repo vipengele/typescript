@@ -36,7 +36,7 @@ describe("createOtlpLogSink", () => {
     const scope = body.resourceLogs[0].scopeLogs[0];
     expect(scope.scope.name).toBe("app.db");
     expect(scope.logRecords).toHaveLength(1);
-    expect(scope.logRecords[0]).toMatchObject({ severityText: "warn", body: { stringValue: "slow query" } });
+    expect(scope.logRecords[0]).toMatchObject({ severityText: "WARN", body: { stringValue: "slow query" } });
   });
 
   it("passes static and thunk headers through", async () => {

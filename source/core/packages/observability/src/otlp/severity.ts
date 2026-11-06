@@ -13,13 +13,13 @@ const SEVERITY_NUMBERS: Readonly<Record<Level, number>> = Object.freeze({
   fatal: 21,
 });
 
-/** An OTLP log record's severity: its `severityNumber`, and its `severityText`, the Level's own name. */
+/** An OTLP log record's severity: its `severityNumber`, and its `severityText`, the Level's name in upper case. */
 export interface Severity {
   readonly severityNumber: number;
-  readonly severityText: Level;
+  readonly severityText: Uppercase<Level>;
 }
 
 /** The OTLP severity of `level` (ADR-0007). */
 export function severityOf(level: Level): Severity {
-  return { severityNumber: SEVERITY_NUMBERS[level], severityText: level };
+  return { severityNumber: SEVERITY_NUMBERS[level], severityText: level.toUpperCase() as Uppercase<Level> };
 }
