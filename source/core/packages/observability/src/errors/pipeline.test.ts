@@ -1,9 +1,10 @@
-import type { SerializeErrorOptions } from "@vipengele/ts-core-common";
+import { type SerializedError, type SerializeErrorOptions, serializeError } from "@vipengele/ts-core-common";
 import { type Resource, Scope } from "@vipengele/ts-core-common/scope";
+import { secretKeys } from "@vipengele/ts-core-redaction";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ErrorEvent } from "./event";
 import type { IntegrationHost } from "./integration";
-import { createCapture } from "./pipeline";
+import { type CaptureInput, createCapture, type Pipeline } from "./pipeline";
 import { createReporter } from "./reporter";
 import { createTestTransport } from "./transports/test-transport";
 
@@ -51,7 +52,23 @@ function aReporter() {
   return { transport, reporter: createReporter((b) => b.transport(transport)) };
 }
 
+const REGISTRY_SLOT = Symbol.for("opentelemetry.js.api.1");
+const SPAN_KEY = Symbol.for("OpenTelemetry Context Key SPAN");
+// biome-ignore lint/security/noSecrets: the W3C Trace Context example trace id, flagged only for its entropy
+const TRACE_ID = "4bf92f3577b34da6a3ce929d0e0e4736";
+const SPAN_ID = "00f067aa0ba902b7";
+const otelRegistry = globalThis as unknown as Record<symbol, unknown>;
+
+/** Registers a fake OpenTelemetry API whose active context holds a span with these ids. */
+function activateSpan(): void {
+  const span = { spanContext: () => ({ traceId: TRACE_ID, spanId: SPAN_ID, traceFlags: 1 }) };
+  otelRegistry[REGISTRY_SLOT] = {
+    context: { active: () => ({ getValue: (key: symbol) => (key === SPAN_KEY ? span : undefined) }) },
+  };
+}
+
 afterEach(() => {
+  delete otelRegistry[REGISTRY_SLOT];
   realmRoot[ATTRIBUTES] = originalAttributes;
   vi.restoreAllMocks();
 });
@@ -1081,5 +1098,279 @@ describe("the rate limit", () => {
     reporter.captureMessage("second");
 
     expect(clock).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("the active trace in an event", () => {
+  const TRACE = { traceId: TRACE_ID, spanId: SPAN_ID, flags: 1 };
+
+  it("carries the span active at capture as trace", () => {
+    activateSpan();
+    const { transport, reporter } = aReporter();
+
+    reporter.captureException(new Error("boom"));
+    reporter.captureMessage("hello");
+
+    expect(transport.events.map((event) => event.trace)).toEqual([TRACE, TRACE]);
+  });
+
+  it("has no trace key outside a span", () => {
+    const { transport, reporter } = aReporter();
+
+    reporter.captureMessage("hello");
+
+    expect("trace" in onlyEvent(transport.events)).toBe(false);
+  });
+
+  it("hands processors the trace and keeps a valid one a processor returns", () => {
+    activateSpan();
+    const seen: unknown[] = [];
+    const transport = createTestTransport();
+    const reporter = createReporter((b) =>
+      b.transport(transport).addProcessor((event) => {
+        seen.push(event.trace);
+        return { ...event, trace: { traceId: TRACE_ID.toUpperCase(), spanId: SPAN_ID, flags: 0 } };
+      }),
+    );
+
+    reporter.captureMessage("hello");
+
+    expect(seen).toEqual([TRACE]);
+    expect(onlyEvent(transport.events).trace).toEqual({ traceId: TRACE_ID.toUpperCase(), spanId: SPAN_ID, flags: 0 });
+  });
+
+  const mangled: [string, unknown][] = [
+    ["a non-hex traceId", { traceId: "z".repeat(32), spanId: SPAN_ID, flags: 1 }],
+    ["an all-zero traceId", { traceId: "0".repeat(32), spanId: SPAN_ID, flags: 1 }],
+    ["a spanId of the wrong length", { traceId: TRACE_ID, spanId: "00f067aa", flags: 1 }],
+    ["a non-integer flags", { traceId: TRACE_ID, spanId: SPAN_ID, flags: 1.5 }],
+    ["a string", "trace"],
+    ["null", null],
+  ];
+
+  it.each(mangled)("drops %s a processor sets, and keeps the event", (_name, trace) => {
+    const transport = createTestTransport();
+    const reporter = createReporter((b) => b.transport(transport).addProcessor((event) => ({ ...event, trace }) as unknown as ErrorEvent));
+
+    reporter.captureMessage("hello");
+
+    const event = onlyEvent(transport.events);
+    expect(event.message).toBe("hello");
+    expect("trace" in event).toBe(false);
+  });
+
+  it("drops a mangled trace beforeSend sets, and keeps the event", () => {
+    activateSpan();
+    const transport = createTestTransport();
+    const reporter = createReporter((b) =>
+      b.transport(transport).beforeSend((event) => ({ ...event, trace: { ...TRACE, traceId: "short" } })),
+    );
+
+    reporter.captureException(new Error("boom"));
+
+    expect("trace" in onlyEvent(transport.events)).toBe(false);
+  });
+});
+
+describe("a serialized exception", () => {
+  const LOGGED = { handled: true, source: "logger" } as const;
+  const OTHER_TRACE = { traceId: "a".repeat(32), spanId: "b".repeat(16), flags: 0 };
+
+  /** A capture function over a test transport, with `options` laid over a fixed clock and no processors. */
+  function aCapture(options: Partial<Pipeline> = {}) {
+    const transport = createTestTransport();
+    return { transport, capture: createCapture({ clock: () => 1, processors: [], transport, ...options }) };
+  }
+
+  function serialized(error: SerializedError, extra: Partial<CaptureInput> = {}): CaptureInput {
+    return { kind: "serialized-exception", error, level: "error", attributes: {}, ...extra } as CaptureInput;
+  }
+
+  /** An error with a `cause` whose own cause is an `AggregateError`, each link carrying data and a stack. */
+  function aChain(): Error {
+    const inner = new AggregateError(
+      [new TypeError("first"), Object.assign(new RangeError("second"), { password: "hunter2" })],
+      "both failed",
+    );
+    const cause = new Error("socket hang up", { cause: inner });
+    return Object.assign(new Error("fetch failed", { cause }), { token: "abc", status: 503 });
+  }
+
+  /** `value` with every nested object frozen. */
+  function deepFreeze<T>(value: T): T {
+    if (typeof value === "object" && value !== null) {
+      for (const nested of Object.values(value)) {
+        deepFreeze(nested);
+      }
+      Object.freeze(value);
+    }
+    return value;
+  }
+
+  it("takes its attributes from the input alone, reading no Scope", () => {
+    const { transport, capture } = aCapture({ dedupe: false });
+    const current = vi.spyOn(Scope, "current");
+
+    Scope.isolated("request", { scopeOnly: "scope", shared: "scope" }, () => {
+      current.mockClear();
+      capture(serialized(serializeError(new Error("boom")), { attributes: { shared: "record", own: 1 } }), LOGGED);
+    });
+
+    expect(current).not.toHaveBeenCalled();
+    expect(onlyEvent(transport.events).attributes).toEqual({ shared: "record", own: 1 });
+    current.mockRestore();
+  });
+
+  it("leaves a thrown exception captured in the same Scope with the Scope's attributes", () => {
+    const { transport, capture } = aCapture({ dedupe: false });
+
+    Scope.isolated("request", { scopeOnly: "scope" }, () => {
+      capture({ kind: "exception", error: new Error("boom"), attributes: { own: 1 } }, LOGGED);
+    });
+
+    expect(onlyEvent(transport.events).attributes).toEqual({ scopeOnly: "scope", own: 1 });
+  });
+
+  it("produces the same exception record, frames included, as the thrown error it was serialized from", () => {
+    const error = aChain();
+    const { transport, capture } = aCapture({ dedupe: false });
+
+    capture({ kind: "exception", error }, LOGGED);
+    capture(serialized(serializeError(error)), LOGGED);
+
+    const [thrown, logged] = transport.events as [ErrorEvent, ErrorEvent];
+    expect(logged.exception).toEqual(thrown.exception);
+    expect(logged.exception?.frames.length).toBeGreaterThan(0);
+    expect(logged.exception?.cause?.cause?.errors?.map((link) => link.message)).toEqual(["first", "second"]);
+    expect(logged.exception?.cause?.cause?.errors?.[0]?.frames.length).toBeGreaterThan(0);
+    expect("message" in logged).toBe(false);
+  });
+
+  it("cuts each link's frames at maxBreadth, as for a thrown error", () => {
+    const error = aChain();
+    const { transport, capture } = aCapture({ limits: { maxBreadth: 1 } });
+
+    capture(serialized(serializeError(error)), LOGGED);
+
+    const exception = onlyEvent(transport.events).exception;
+    expect(exception?.frames).toHaveLength(1);
+    expect(exception?.cause?.frames).toHaveLength(1);
+  });
+
+  it("is matched by ignoreErrors as the thrown error it was serialized from is", () => {
+    class TimeoutError extends Error {
+      override name = "TimeoutError";
+    }
+    const { transport, capture } = aCapture({ ignoreErrors: [/^TimeoutError: request/, /^socket/], dedupe: false });
+
+    capture(serialized(serializeError(new TimeoutError("request took too long"))), LOGGED);
+    capture(serialized(serializeError(new Error("socket hang up"))), LOGGED);
+    capture(serialized(serializeError(new Error("fetch failed", { cause: new Error("socket hang up") }))), LOGGED);
+
+    expect(onlyEvent(transport.events).exception?.message).toBe("fetch failed");
+  });
+
+  it("is a duplicate of the thrown error it was serialized from, and of an identical serialized capture", () => {
+    const error = aChain();
+    const { transport, capture } = aCapture();
+
+    capture({ kind: "exception", error }, LOGGED);
+    capture(serialized(serializeError(error)), LOGGED);
+    capture(serialized(serializeError(error)), LOGGED);
+
+    expect(onlyEvent(transport.events).exception?.message).toBe("fetch failed");
+  });
+
+  it("is redacted as the thrown error it was serialized from is, its attributes included", () => {
+    const error = aChain();
+    const attributes = { apiKey: "sk-live", user: "ada" };
+    const { transport, capture } = aCapture({ redaction: secretKeys, dedupe: false });
+
+    capture({ kind: "exception", error, attributes }, LOGGED);
+    capture(serialized(serializeError(error), { attributes }), LOGGED);
+
+    const [thrown, logged] = transport.events as [ErrorEvent, ErrorEvent];
+    expect(logged).toEqual({ ...thrown, id: logged.id });
+    expect(logged.attributes.apiKey).not.toBe("sk-live");
+    expect(logged.attributes.user).toBe("ada");
+    expect(logged.exception?.data?.token).not.toBe("abc");
+    expect(logged.exception?.cause?.cause?.errors?.[1]?.data?.password).not.toBe("hunter2");
+  });
+
+  it("redacts a synthetic link's JSON message as for the thrown value it was serialized from", () => {
+    const thrownValue = { password: "hunter2", reason: "nope" };
+    const { transport, capture } = aCapture({ redaction: secretKeys, dedupe: false });
+
+    capture({ kind: "exception", error: thrownValue }, LOGGED);
+    capture(serialized(serializeError(thrownValue)), LOGGED);
+
+    const [thrown, logged] = transport.events as [ErrorEvent, ErrorEvent];
+    expect(logged.exception).toEqual(thrown.exception);
+    expect(logged.exception?.message).not.toContain("hunter2");
+  });
+
+  it("honours the level and attributes it is given", () => {
+    const { transport, capture } = aCapture();
+
+    capture(serialized(serializeError(new Error("boom")), { level: "fatal", attributes: { shared: "call", order: 7 } }), LOGGED);
+
+    const event = onlyEvent(transport.events);
+    expect(event.level).toBe("fatal");
+    expect(event.attributes).toEqual({ shared: "call", order: 7 });
+    expect(event.mechanism).toEqual(LOGGED);
+  });
+
+  it("carries its own trace over the span active at capture", () => {
+    activateSpan();
+    const { transport, capture } = aCapture();
+
+    capture(serialized(serializeError(new Error("boom")), { trace: OTHER_TRACE }), LOGGED);
+
+    expect(onlyEvent(transport.events).trace).toEqual(OTHER_TRACE);
+  });
+
+  it("carries the span active at capture when it has no trace of its own", () => {
+    activateSpan();
+    const { transport, capture } = aCapture();
+
+    capture(serialized(serializeError(new Error("boom"))), LOGGED);
+
+    expect(onlyEvent(transport.events).trace).toEqual({ traceId: TRACE_ID, spanId: SPAN_ID, flags: 1 });
+  });
+
+  it("drops a malformed trace of its own, and keeps the event", () => {
+    activateSpan();
+    const { transport, capture } = aCapture();
+
+    capture(serialized(serializeError(new Error("boom")), { trace: { ...OTHER_TRACE, traceId: "short" } }), LOGGED);
+
+    const event = onlyEvent(transport.events);
+    expect(event.exception?.message).toBe("boom");
+    expect("trace" in event).toBe(false);
+  });
+
+  it("leaves a frozen input untouched, and hands processors an event that shares no object with it", () => {
+    const error = deepFreeze(serializeError(aChain()));
+    const snapshot = structuredClone(error);
+    const input = deepFreeze(serialized(error, { attributes: { token: "abc" }, trace: OTHER_TRACE }));
+    const { transport, capture } = aCapture({
+      redaction: null,
+      processors: [
+        (event) => {
+          (event.exception?.data as Record<string, unknown>).token = "changed";
+          (event.exception?.cause as { message: string }).message = "changed";
+          (event.exception?.cause?.cause?.errors?.[1]?.data as Record<string, unknown>).password = "changed";
+          (event.trace as { flags: number }).flags = 1;
+          return event;
+        },
+      ],
+    });
+
+    capture(input, LOGGED);
+
+    const event = onlyEvent(transport.events);
+    expect(event.exception?.data?.token).toBe("changed");
+    expect(error).toEqual(snapshot);
+    expect(input).toEqual(serialized(snapshot, { attributes: { token: "abc" }, trace: OTHER_TRACE }));
   });
 });

@@ -6,6 +6,10 @@ import { createCapture } from "./pipeline";
 import { createReporter } from "./reporter";
 import { createTestTransport, type TestTransport } from "./transports/test-transport";
 
+// biome-ignore lint/security/noSecrets: the W3C Trace Context example trace id, flagged only for its entropy
+const TRACE_ID = "4bf92f3577b34da6a3ce929d0e0e4736";
+const SPAN_ID = "00f067aa0ba902b7";
+
 const SECRET = "s3cret-value";
 const REDACTED = "[REDACTED]";
 const EVENT_ID = /^[0-9a-f]{32}$/;
@@ -18,6 +22,29 @@ function onlyEvent(transport: TestTransport): ErrorEvent {
 function withSecretFields<T extends Error>(error: T): T {
   return Object.assign(error, { password: SECRET, reason: "quota" });
 }
+
+describe("Reporter redaction of the trace", () => {
+  it("leaves trace intact under a policy that matches its field names", () => {
+    const registry = globalThis as unknown as Record<symbol, unknown>;
+    const slot = Symbol.for("opentelemetry.js.api.1");
+    const traceId = TRACE_ID;
+    const spanId = SPAN_ID;
+    const span = { spanContext: () => ({ traceId, spanId, traceFlags: 1 }) };
+    registry[slot] = {
+      context: { active: () => ({ getValue: (key: symbol) => (key === Symbol.for("OpenTelemetry Context Key SPAN") ? span : undefined) }) },
+    };
+    try {
+      const transport = createTestTransport();
+      const reporter = createReporter((b) => b.transport(transport).redaction({ keys: ["trace", "traceId", "spanId", "flags"] }));
+
+      reporter.captureMessage("hello");
+
+      expect(onlyEvent(transport).trace).toEqual({ traceId, spanId, flags: 1 });
+    } finally {
+      delete registry[slot];
+    }
+  });
+});
 
 describe("Reporter redaction", () => {
   describe("by default, under the secretKeys preset", () => {

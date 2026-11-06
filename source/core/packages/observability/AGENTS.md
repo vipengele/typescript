@@ -102,8 +102,8 @@ Run commands from `source/core` (`pnpm build`, `pnpm type-check`, `pnpm test`, `
 - `createTestSink` (`test-sink.ts`) is the in-memory sink: live `records`/`resources` arrays plus
   `find` and `clear`; it stores the shared frozen records by reference.
 - `ConsoleLike` has no `log`. The routing table in `formatter.ts` is a private copy that mirrors
-  the errors console transport; ADR-0007 "Levels" is the authority. `./logger` and `./errors` must
-  not import each other.
+  the errors console transport; ADR-0007 "Levels" is the authority. `logger/` must not import
+  `errors/`; shipped `errors/` source may import types only from `logger/`.
 - `write` has no try/catch: a throwing formatter or console reaches `onSinkError`. `time` is the
   epoch-ms number in JSON lines and UTC ISO text in the ANSI and browser formatters (ADR-0018).
 
@@ -153,14 +153,16 @@ Run commands from `source/core` (`pnpm build`, `pnpm type-check`, `pnpm test`, `
   the exact request body of a `retries-exhausted` or `closed` batch through `OfflineQueue.saveBody`,
   whose listener reports a failed save with the batch's own events, since `onDrop(reason, count)`
   cannot name them; a body rejected on replay reports an empty events array. Replay uses the
-  transport's `classify`, `contentType` and headers. The HTTP `DropReason` includes `"offline-full"`.
+  transport's `classify`, `contentType` and headers. The HTTP `DropReason` includes `"offline-full"` and `"unload-budget"`.
 - `src/otlp/` is internal and unexported: the OTLP/HTTP JSON encoder. `encode-logs.ts` is the only
   file that knows `LogRecord` and `encode-error-events.ts` the only one that knows `ErrorEvent`;
   `resource.ts` (Resource grouping), `exception.ts` (`exception.*` attributes), `any-value.ts`,
-  `severity.ts` and `time.ts` know neither.
+  `severity.ts` and `time.ts` know neither. `severity.ts` gives `severityText` as the upper-case
+  level name (`Uppercase<Level>`) for both wrappers. `encode-error-events.ts` sets `eventName:
+  "exception"` on a record for an event carrying an `exception`; a captured message has none.
 - `src/delivery/` and `src/otlp/` are entry-point-neutral: any entry point may import them, the OTLP
   Transport of `./errors` included (ADR-0010, ADR-0022), so `delivery/` stays free of `LogRecord`,
-  `ErrorEvent` and anything from `./logger`, and `./logger` and `./errors` never import each other.
+  `ErrorEvent` and anything from `./logger`, and `logger/` never imports `errors/` (shipped `errors/` source takes only types from `logger/`).
 
 ## Shared redaction helpers (`src/redaction.ts`)
 
@@ -174,6 +176,10 @@ Run commands from `source/core` (`pnpm build`, `pnpm type-check`, `pnpm test`, `
 - `enrich` merges `snapshot(Scope.current())` beneath the call's own attributes (the call wins on a
   shared key). Each side is normalized separately, and a throw while reading the scope yields no scope
   attributes rather than dropping the event. The Resource is never copied into events.
+- `enrich` also sets `trace` (`LogTrace`) from `readActiveTrace`, for every capture including global
+  handlers; no active span gives no `trace` key. Redaction never touches it. After processors and
+  `beforeSend`, a `trace` failing the `src/trace.ts` guards is dropped and the event kept, so a
+  transport never sees a malformed id.
 - Stages: gate, `sampleRate`, normalize, `ignoreErrors`, enrich, redaction, processors, `beforeSend`,
   dedupe, rate limit, transport (ADR-0020). The Reporter owns policy drops and the Transport delivery
   drops; every drop still returns the id. `sampleRate` 1, `ignoreErrors` `[]`, `dedupe` on and
@@ -206,6 +212,26 @@ Run commands from `source/core` (`pnpm build`, `pnpm type-check`, `pnpm test`, `
   no `tags`, `user` or `contexts` field. `secretKeys` splits keys on every non-alphanumeric
   character, so `session.id` from `Scope.setContext("session", { id })` is masked by default.
 
+## Logger sink (`src/errors/logger-sink.ts`)
+
+- `reporter.loggerSink(options?: LoggerSinkOptions)` returns a `Sink` closing over the private
+  pipeline (`createLoggerSink`, wired in `reporter.ts`). It reports each record with an `error` at
+  `minLevel` (default `"error"`) or above as a handled event, mechanism `{ handled: true, source:
+  "logger" }`, the record's level, its attributes plus `logger.category` and `logger.message`, the
+  record's `trace` (else the active span) and the reporter's clock for `time`. `enrich` reads no
+  Scope for it: the record's attributes already carry the Scope from when it was written. An invalid `minLevel`
+  throws `ReporterConfigError`. A write during the same sink's own capture is dropped (synchronous
+  re-entrancy guard). After `close()` it behaves like `captureException` after close; there is no
+  reporter closed flag. Every stage applies (ADR-0026).
+- It captures through an internal `serialized-exception` kind, not public: the error is already a
+  `SerializedError`, so `serializeError` is skipped, but it is lifted to an `ExceptionRecord` (frames,
+  `cause`/`errors` chain) like a thrown value, and its own `trace` wins over the live span. It is
+  bounded by the logger's serialization limits, not `limits(...)`, except frames cut to `maxBreadth`.
+- `src/trace.ts` holds `readActiveTrace`, `LogTrace` and the guards, shared by `./logger` and
+  `./errors`. `logger/` never imports from `errors/`; `src/logger/no-errors-import.node.test.ts`
+  enforces it. Shipped `errors/` source imports only types from `logger/` (`LogRecord`, `Sink`, via `import type`);
+  its tests may value-import it.
+
 ## HTTP transport (`src/errors/transports/http-transport.ts`, `http/`)
 
 - `createHttpTransport` POSTs batched Error Events as JSON. Its steps live in `http/`: `options.ts`
@@ -215,6 +241,11 @@ Run commands from `source/core` (`pnpm build`, `pnpm type-check`, `pnpm test`, `
   reject by status) and `retry-after.ts`.
 - One request is in flight at a time; every wait runs on the injected `Scheduler`. Nothing is `unref`'d and
   no exit hook is registered, so a process that must not lose events awaits `close()` (ADR-0023).
+- On `pagehide` or a hidden `visibilitychange` (the `lifecycle` option, `{}` watches none and also stops the
+  offline `online` replay) it aborts the request in flight and sends the oldest events sharing the oldest
+  event's Resource as one `keepalive` `fetch`, cut to `maxBatchEvents` and, by `largestFittingPrefix`, to
+  `maxBatchBytes` and the 64 KiB budget. The tail is saved through `offline` or reaches `onDrop` as
+  `"unload-budget"`. No `sendBeacon`, and the budget is not shared with an OTLP queue (ADR-0023).
 - Every undeliverable event goes to `onDrop(events, reason)`; with no `onDrop` it warns once per reason.
   `send` never throws, a throwing `onDrop` is swallowed.
 - `@vipengele/ts-core-resilience` is a `workspace:*` dependency of this package.

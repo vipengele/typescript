@@ -1,3 +1,4 @@
+import type { Level } from "@vipengele/ts-core-common";
 import {
   type Resource as CommonResource,
   type ScopeAttributes as CommonScopeAttributes,
@@ -6,6 +7,7 @@ import {
 } from "@vipengele/ts-core-common/scope";
 import { expect, expectTypeOf, test } from "vitest";
 import type { DropReason as DeliveryDropReason } from "../delivery/delivery";
+import type { Sink } from "../logger/record";
 import type {
   DropReason,
   ErrorEvent,
@@ -21,6 +23,7 @@ import type {
   Integration,
   IntegrationCaptureContext,
   IntegrationHost,
+  LoggerSinkOptions,
   OtlpTransport,
   OtlpTransportDropReason,
   OtlpTransportOfflineOptions,
@@ -114,7 +117,7 @@ test("the entry point exports the HTTP transport's config error, guard and types
   expect(entry.isHttpTransportConfigError(error)).toBe(true);
   expectTypeOf(entry.createHttpTransport).parameter(0).toEqualTypeOf<HttpTransportOptions>();
   expectTypeOf<DropReason>().toEqualTypeOf<
-    "queue-full" | "too-large" | "retries-exhausted" | "rejected" | "unsendable" | "closed" | "offline-full"
+    "queue-full" | "too-large" | "retries-exhausted" | "rejected" | "unsendable" | "closed" | "unload-budget" | "offline-full"
   >();
   expectTypeOf<NonNullable<HttpTransportOptions["offline"]>>().toEqualTypeOf<true | HttpTransportOfflineOptions>();
   expectTypeOf<HttpTransportOfflineOptions>().toEqualTypeOf<{
@@ -122,4 +125,11 @@ test("the entry point exports the HTTP transport's config error, guard and types
     readonly maxBytes?: number;
     readonly indexedDB?: IDBFactory;
   }>();
+});
+
+test("the entry point exports the logger sink's options, the Reporter member that takes them", () => {
+  expectTypeOf<entry.Reporter["loggerSink"]>().parameter(0).toEqualTypeOf<LoggerSinkOptions | undefined>();
+  expectTypeOf<entry.Reporter["loggerSink"]>().returns.toEqualTypeOf<Sink>();
+  expectTypeOf<LoggerSinkOptions>().toEqualTypeOf<{ readonly minLevel?: Level }>();
+  expect(entry.createReporter().loggerSink().write).toBeTypeOf("function");
 });

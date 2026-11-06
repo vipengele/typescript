@@ -1,8 +1,10 @@
 import type { AttributesInput, Level } from "@vipengele/ts-core-common";
+import type { Sink } from "../logger/record";
 import { type Resource, Scope } from "@vipengele/ts-core-common/scope";
 import { ReporterBuilder } from "./builder";
 import type { Mechanism } from "./event";
 import { setupIntegrations } from "./integration";
+import { createLoggerSink, type LoggerSinkOptions } from "./logger-sink";
 import { createCapture } from "./pipeline";
 import { detectRuntimeContext } from "./runtime-context";
 
@@ -23,6 +25,16 @@ export interface Reporter {
   captureException(error: unknown, context?: CaptureContext): string;
   /** Captures `message` at `level`, `"error"` by default. */
   captureMessage(message: string, level?: Level): string;
+  /**
+   * A logger Sink that reports each record carrying an `error` at `minLevel` (`"error"` by default)
+   * or above through this reporter's pipeline, as a handled event with mechanism source `"logger"`,
+   * the record's level and trace, and its attributes plus `logger.category` and `logger.message`. A
+   * record without an error is ignored, and so is a write made while the same sink's capture is
+   * still running. Each call returns a new sink.
+   *
+   * @throws {ReporterConfigError} When `minLevel` is given and is not a level.
+   */
+  loggerSink(options?: LoggerSinkOptions): Sink;
   /** Delegates to the transport's `flush`; resolves `true` when there is no transport. */
   flush(timeoutMs?: number): Promise<boolean>;
   /**
@@ -118,6 +130,9 @@ export function createReporter(configure?: (builder: ReporterBuilder) => Reporte
     },
     captureMessage(message, level) {
       return capture({ kind: "message", message, level }, { ...CAPTURED });
+    },
+    loggerSink(options) {
+      return createLoggerSink(capture, options);
     },
     flush,
     async close(timeoutMs) {

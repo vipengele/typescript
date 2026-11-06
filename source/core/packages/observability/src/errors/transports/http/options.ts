@@ -3,6 +3,7 @@ import type { Resource } from "@vipengele/ts-core-common/scope";
 import { MAX_TIMEOUT_DURATION_MS } from "@vipengele/ts-core-resilience/timeout";
 import type { ErrorEvent } from "../../event";
 import { offlineProblem } from "../../../delivery/offline/wrapper";
+import { detectLifecycleTargets, type LifecycleTargets } from "../../../delivery/unload";
 import { HttpTransportConfigError } from "../http-transport-config-error";
 import type { DropReason, QueueLimits } from "./queue";
 
@@ -52,6 +53,14 @@ export interface HttpTransportOptions {
   /** The request's `Content-Type`. Default: `application/json`. */
   readonly contentType?: string;
   /**
+   * Where `pagehide` and `visibilitychange` arrive; detected on `globalThis` when omitted, none
+   * watched for `{}`. On either, the request in flight is aborted and the oldest events, in flight
+   * then queued, that share the oldest one's Resource and fit `maxBatchEvents`, `maxBatchBytes` and
+   * the 64 KiB keepalive budget go out as one `keepalive` request; the rest are saved with
+   * `offline`, or dropped as `"unload-budget"`. `lifecycle: {}` also stops the `online` replay.
+   */
+  readonly lifecycle?: LifecycleTargets;
+  /**
    * Saves the batches the transport gives up on as `"retries-exhausted"` or `"closed"` in IndexedDB,
    * as the exact request body, and replays them when the transport is created and when the window
    * reports `online`, with the transport's own status classification, `contentType` and `headers`.
@@ -90,6 +99,7 @@ export interface ResolvedHttpTransportOptions extends QueueLimits {
   readonly requestTimeoutMs: number;
   readonly serialize: HttpTransportOptions["serialize"];
   readonly contentType: string;
+  readonly lifecycle: LifecycleTargets;
   readonly onDrop: HttpTransportOptions["onDrop"];
   readonly offline: HttpTransportOptions["offline"];
   readonly console: Pick<Console, "warn"> | undefined;
@@ -207,6 +217,7 @@ export function resolveOptions(options: HttpTransportOptions): ResolvedHttpTrans
     requestTimeoutMs: timeout("requestTimeoutMs", options.requestTimeoutMs, 10_000),
     serialize: optionalFunction("serialize", options.serialize),
     contentType: options.contentType ?? "application/json",
+    lifecycle: options.lifecycle ?? detectLifecycleTargets(),
     onDrop: optionalFunction("onDrop", options.onDrop),
     offline: resolveOffline(options.offline),
     console: options.console ?? globalThis.console,

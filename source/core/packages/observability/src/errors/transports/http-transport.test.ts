@@ -88,6 +88,36 @@ function setup(time: ManualTime, options: Partial<HttpTransportOptions> = {}): {
   return { transport, drops };
 }
 
+/** A fake `Window` and `Document` that record their listeners; `visibilityState` starts `"visible"`. */
+function fakeLifecycle() {
+  const listeners = new Map<string, Set<() => void>>();
+  const target = {
+    addEventListener(type: string, listener: () => void): void {
+      listeners.set(type, (listeners.get(type) ?? new Set()).add(listener));
+    },
+    removeEventListener(type: string, listener: () => void): void {
+      listeners.get(type)?.delete(listener);
+    },
+  };
+  const document = { ...target, visibilityState: "visible" };
+  const fire = (type: string): void => {
+    for (const listener of [...(listeners.get(type) ?? [])]) {
+      listener();
+    }
+  };
+  return {
+    lifecycle: { window: target, document },
+    fire,
+    /** Sets `visibilityState` to `"hidden"` and fires `visibilitychange`. */
+    hide(): void {
+      document.visibilityState = "hidden";
+      fire("visibilitychange");
+    },
+    /** How many listeners are registered for `type`. */
+    watching: (type: string): number => listeners.get(type)?.size ?? 0,
+  };
+}
+
 function hop(): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, 0);
@@ -744,16 +774,7 @@ describe("createHttpTransport offline", () => {
   });
 
   it("gives up a replay whose async headers thunk hangs after requestTimeoutMs, so a later online replays", async () => {
-    const listeners = new Set<() => void>();
-    vi.stubGlobal("onpagehide", null);
-    vi.stubGlobal("addEventListener", (type: string, listener: () => void) => {
-      if (type === "online") {
-        listeners.add(listener);
-      }
-    });
-    vi.stubGlobal("removeEventListener", (_type: string, listener: () => void) => {
-      listeners.delete(listener);
-    });
+    const page = fakeLifecycle();
     const time = createManualTime();
     const db = memoryIndexedDb([{ id: 1, key, body: "saved body", count: 2 }]);
     const { fetch, requests } = bodyFetch(200);
@@ -761,6 +782,7 @@ describe("createHttpTransport offline", () => {
     setup(time, {
       fetch,
       requestTimeoutMs: 1000,
+      lifecycle: page.lifecycle,
       headers: () => (++calls === 1 ? new Promise<Record<string, string>>(() => {}) : Promise.resolve({ authorization: "Bearer x" })),
       ...offline({ indexedDB: db.factory }),
     });
@@ -771,9 +793,7 @@ describe("createHttpTransport offline", () => {
     expect(requests).toEqual([]);
     expect(db.rows).toHaveLength(1);
 
-    for (const listener of listeners) {
-      listener();
-    }
+    page.fire("online");
 
     await vi.waitFor(() => expect(db.rows).toEqual([]));
     expect(requests.map((request) => request.body)).toEqual(["saved body"]);
@@ -899,5 +919,267 @@ describe("createHttpTransport offline", () => {
     db.complete();
     await settleNow();
     expect(db.closed()).toBe(1);
+  });
+});
+
+describe("createHttpTransport unload", () => {
+  const key = `${url}|http-errors`;
+  const otherResource: Resource = Object.freeze({ ...resource, "service.name": "billing" });
+  /** An event whose default envelope measures a little over 30 KB, so two fit the keepalive budget and three do not. */
+  const big = (name: string): ErrorEvent => anEvent(name + "x".repeat(30_000));
+  const short = (message: string): string => message.slice(0, 1);
+
+  /** The events each keepalive request carried, by the first letter of their messages. */
+  function keepalives(requests: RequestInit[]): string[][] {
+    return requests.filter((request) => request.keepalive === true).map((request) => savedMessages(String(request.body)).map(short));
+  }
+
+  it("sends what is queued as one keepalive request with the configured headers and contentType on pagehide", async () => {
+    const time = createManualTime();
+    const page = fakeLifecycle();
+    const { fetch, requests } = bodyFetch(200);
+    const { transport, drops } = setup(time, {
+      fetch,
+      lifecycle: page.lifecycle,
+      headers: { authorization: "Bearer x" },
+      contentType: "text/plain",
+    });
+
+    transport.send(anEvent("a"), resource);
+    transport.send(anEvent("b"), resource);
+    page.fire("pagehide");
+
+    expect(keepalives(requests)).toEqual([["a", "b"]]);
+    expect(requests).toHaveLength(1);
+    expect(Object.fromEntries(new Headers(requests[0]?.headers))).toEqual({ authorization: "Bearer x", "content-type": "text/plain" });
+    expect(drops).toEqual([]);
+    expect(await transport.flush(0)).toBe(true);
+
+    await time.advance(1000);
+    await settleNow();
+    expect(requests).toHaveLength(1);
+  });
+
+  it("finds nothing left to send on the pagehide that follows a visibilitychange to hidden", () => {
+    const time = createManualTime();
+    const page = fakeLifecycle();
+    const { fetch, requests } = bodyFetch(200);
+    const { transport } = setup(time, { fetch, lifecycle: page.lifecycle });
+
+    transport.send(anEvent("a"), resource);
+    page.fire("visibilitychange");
+    expect(requests).toEqual([]);
+
+    page.hide();
+    page.fire("pagehide");
+
+    expect(keepalives(requests)).toEqual([["a"]]);
+    expect(requests).toHaveLength(1);
+  });
+
+  it("sends nothing when nothing is pending", () => {
+    const time = createManualTime();
+    const page = fakeLifecycle();
+    const { fetch, requests } = bodyFetch(200);
+    setup(time, { fetch, lifecycle: page.lifecycle });
+
+    page.fire("pagehide");
+
+    expect(requests).toEqual([]);
+  });
+
+  it("aborts the attempt in flight and sends its events ahead of the queued ones, then keeps working", async () => {
+    const time = createManualTime();
+    const page = fakeLifecycle();
+    const { fetch, requests } = bodyFetch("hang", 200);
+    const { transport, drops } = setup(time, { fetch, lingerMs: 0, lifecycle: page.lifecycle });
+
+    transport.send(anEvent("a"), resource);
+    await time.advance(0);
+    await settleNow();
+    expect(requests).toHaveLength(1);
+    transport.send(anEvent("b"), resource);
+    transport.send(anEvent("c"), resource);
+
+    page.fire("pagehide");
+    await settleNow();
+
+    expect(requests[0]?.signal?.aborted).toBe(true);
+    expect(keepalives(requests)).toEqual([["a", "b", "c"]]);
+    expect(drops).toEqual([]);
+
+    transport.send(anEvent("d"), resource);
+    expect(await drive(time, transport.flush())).toBe(true);
+    expect(requests.map((request) => savedMessages(String(request.body)))).toEqual([["a"], ["a", "b", "c"], ["d"]]);
+    expect(drops).toEqual([]);
+  });
+
+  it("sends the largest oldest prefix within the keepalive budget and drops the rest as unload-budget", () => {
+    const time = createManualTime();
+    const page = fakeLifecycle();
+    const { fetch, requests } = bodyFetch(200);
+    const { transport, drops } = setup(time, { fetch, lifecycle: page.lifecycle });
+
+    for (const name of ["a", "b", "c"]) {
+      transport.send(big(name), resource);
+    }
+    page.fire("pagehide");
+
+    expect(keepalives(requests)).toEqual([["a", "b"]]);
+    expect(drops.map(({ messages, reason }) => ({ messages: messages.map(short), reason }))).toEqual([
+      { messages: ["c"], reason: "unload-budget" },
+    ]);
+  });
+
+  it("saves the rest through the offline queue, and reports nothing", async () => {
+    const time = createManualTime();
+    const page = fakeLifecycle();
+    const db = memoryIndexedDb();
+    const { fetch, requests } = bodyFetch(200);
+    const { transport, drops } = setup(time, { fetch, lifecycle: page.lifecycle, ...offline({ indexedDB: db.factory }) });
+
+    for (const name of ["a", "b", "c"]) {
+      transport.send(big(name), resource);
+    }
+    page.fire("pagehide");
+
+    expect(keepalives(requests)).toEqual([["a", "b"]]);
+    await vi.waitFor(() => expect(db.rows).toHaveLength(1));
+    expect(db.rows.map((row) => ({ key: row.key, messages: savedMessages(row.body).map(short) }))).toEqual([{ key, messages: ["c"] }]);
+    expect(drops).toEqual([]);
+  });
+
+  it("sends only the events sharing the oldest one's Resource, and gives up on the others", () => {
+    const time = createManualTime();
+    const page = fakeLifecycle();
+    const { fetch, requests } = bodyFetch(200);
+    const { transport, drops } = setup(time, { fetch, lifecycle: page.lifecycle });
+
+    transport.send(anEvent("a"), resource);
+    transport.send(anEvent("b"), otherResource);
+    transport.send(anEvent("c"), resource);
+    page.fire("pagehide");
+
+    expect(keepalives(requests)).toEqual([["a"]]);
+    expect(drops).toEqual([{ messages: ["b", "c"], reason: "unload-budget" }]);
+  });
+
+  it("carries at most maxBatchEvents events", () => {
+    const time = createManualTime();
+    const page = fakeLifecycle();
+    const { fetch, requests } = bodyFetch(200);
+    const { transport, drops } = setup(time, { fetch, maxBatchEvents: 2, lifecycle: page.lifecycle });
+
+    for (const name of ["a", "b", "c"]) {
+      transport.send(anEvent(name), resource);
+    }
+    page.fire("pagehide");
+
+    expect(keepalives(requests)).toEqual([["a", "b"]]);
+    expect(drops).toEqual([{ messages: ["c"], reason: "unload-budget" }]);
+  });
+
+  it("keeps the body within maxBatchBytes when that is below the keepalive budget", () => {
+    const time = createManualTime();
+    const page = fakeLifecycle();
+    const { fetch, requests } = bodyFetch(200);
+    const { transport, drops } = setup(time, { fetch, maxBatchBytes: 600, lifecycle: page.lifecycle });
+
+    for (const name of ["a", "b", "c"]) {
+      transport.send(anEvent(name.repeat(100)), resource);
+    }
+    page.fire("pagehide");
+
+    expect(keepalives(requests)).toEqual([["a"]]);
+    expect(drops.map(({ messages, reason }) => ({ messages: messages.map(short), reason }))).toEqual([
+      { messages: ["b", "c"], reason: "unload-budget" },
+    ]);
+  });
+
+  it("sends no request when the oldest event alone is over the budget, and gives up on every event", () => {
+    const time = createManualTime();
+    const page = fakeLifecycle();
+    const { fetch, requests } = bodyFetch(200);
+    const { transport, drops } = setup(time, { fetch, maxBatchBytes: 200_000, lifecycle: page.lifecycle });
+
+    transport.send(anEvent("a".repeat(70_000)), resource);
+    transport.send(anEvent("b"), resource);
+    page.fire("pagehide");
+
+    expect(requests).toEqual([]);
+    expect(drops.map(({ messages, reason }) => ({ messages: messages.map(short), reason }))).toEqual([
+      { messages: ["a", "b"], reason: "unload-budget" },
+    ]);
+  });
+
+  it("drops the request's events as unsendable when the serializer throws on them", () => {
+    const time = createManualTime();
+    const page = fakeLifecycle();
+    const { fetch, requests } = bodyFetch(200);
+    const serialize = (events: readonly ErrorEvent[]) => {
+      if (events.some((event) => event.message === "bad")) {
+        throw new Error("unserializable");
+      }
+      return JSON.stringify({ events });
+    };
+    const { transport, drops } = setup(time, { fetch, serialize, lifecycle: page.lifecycle });
+
+    transport.send(anEvent("bad"), resource);
+    transport.send(anEvent("b"), otherResource);
+    page.fire("pagehide");
+
+    expect(requests).toEqual([]);
+    expect(drops).toEqual([
+      { messages: ["bad"], reason: "unsendable" },
+      { messages: ["b"], reason: "unload-budget" },
+    ]);
+  });
+
+  it("drops the request's events as unsendable when the headers function throws", () => {
+    const time = createManualTime();
+    const page = fakeLifecycle();
+    const { fetch, requests } = bodyFetch(200);
+    const headers = () => {
+      throw new Error("no token");
+    };
+    const { transport, drops } = setup(time, { fetch, headers, lifecycle: page.lifecycle });
+
+    transport.send(anEvent("a"), resource);
+    page.fire("pagehide");
+
+    expect(requests).toEqual([]);
+    expect(drops).toEqual([{ messages: ["a"], reason: "unsendable" }]);
+  });
+
+  it("removes both listeners once close has flushed", async () => {
+    const time = createManualTime();
+    const page = fakeLifecycle();
+    const { fetch } = bodyFetch(200);
+    const { transport } = setup(time, { fetch, lifecycle: page.lifecycle });
+    expect(page.watching("pagehide")).toBe(1);
+    expect(page.watching("visibilitychange")).toBe(1);
+
+    expect(await transport.close()).toBe(true);
+
+    expect(page.watching("pagehide")).toBe(0);
+    expect(page.watching("visibilitychange")).toBe(0);
+  });
+
+  it("watches nothing for lifecycle {}, neither the unload nor the online replay, even on a window-like global", () => {
+    const added: string[] = [];
+    vi.stubGlobal("onpagehide", null);
+    vi.stubGlobal("addEventListener", (type: string) => {
+      added.push(type);
+    });
+    vi.stubGlobal("removeEventListener", () => {});
+    const time = createManualTime();
+    const db = memoryIndexedDb();
+    const { fetch } = bodyFetch(200);
+
+    setup(time, { fetch, lifecycle: {}, ...offline({ indexedDB: db.factory }) });
+    expect(added).toEqual([]);
+
+    setup(time, { fetch, ...offline({ indexedDB: db.factory }) });
+    expect(added.sort()).toEqual(["online", "pagehide"]);
   });
 });

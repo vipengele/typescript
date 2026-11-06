@@ -1,4 +1,5 @@
 import type { Attributes, Level, SerializedError } from "@vipengele/ts-core-common";
+import type { LogTrace } from "../trace";
 
 /**
  * A captured exception or message, ready for a Reporter transport (ADR-0007). Shares its error
@@ -17,12 +18,14 @@ export interface ErrorEvent {
   exception?: ExceptionRecord;
   mechanism: Mechanism;
   /**
-   * The ambient Scope chain's attributes, from the default scope inward and never the Resource,
-   * beneath the call's own attributes, the call's winning on a shared key.
+   * For a captured exception or message, the ambient Scope chain's attributes, from the default
+   * scope inward and never the Resource, beneath the call's own attributes, the call's winning on
+   * a shared key. For an event from `reporter.loggerSink()`, the Log Record's attributes alone:
+   * they already hold the Scope as it was when the record was written, and none is merged at capture.
    */
   attributes: Attributes;
   fingerprint?: string[];
-  trace?: { traceId: string; spanId: string; flags: number };
+  trace?: LogTrace;
 }
 
 /**

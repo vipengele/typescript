@@ -53,8 +53,13 @@ Transport's wire format in the same decision keeps the core from being fitted to
   `vipengele.fingerprint`, a string array.
 - The event's own attributes come first, and any key the encoder writes wins over a clashing event
   attribute, since OTLP attribute keys are unique.
-- `eventName` is not set: semantic conventions 1.37 record an exception on a log record through its
-  `exception.*` attributes, and a captured message is not a named event.
+- An Error Event carrying an `exception` has `eventName` `"exception"`, the semantic conventions'
+  exception event name, alongside its `exception.*` attributes. A captured message is not a named
+  event and has no `eventName`. Leaving `eventName` unset for exceptions is rejected: a backend
+  would then have to infer the event from the attributes.
+- `severityText` is the upper-case level name (`"ERROR"`, `"WARN"`) for log records and Error
+  Events alike, matching the short names the OpenTelemetry Logs data model gives the severity ranges
+  (`TRACE` through `FATAL`). The Level's own lower-case name is rejected for that reason.
 
 Not mapped: the parsed `frames`, `inApp` included, as structure, because the stacktrace text carries
 them; and the per-link fields of the chain beyond type, message and stack, such as `code`. Error

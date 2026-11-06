@@ -1,5 +1,6 @@
 import { systemClock, systemScheduler } from "@vipengele/ts-core-common";
 import { describe, expect, it } from "vitest";
+import { detectLifecycleTargets } from "../../../delivery/unload";
 import { isHttpTransportConfigError } from "../http-transport-config-error";
 import { type HttpTransportOptions, resolveOptions } from "./options";
 
@@ -32,6 +33,7 @@ describe("resolveOptions defaults", () => {
       requestTimeoutMs: 10_000,
       serialize: undefined,
       contentType: "application/json",
+      lifecycle: detectLifecycleTargets(),
       onDrop: undefined,
       console: globalThis.console,
       clock: systemClock,
@@ -47,6 +49,7 @@ describe("resolveOptions defaults", () => {
     const onDrop = () => {};
     const warn = { warn: () => {} };
     const random = () => 0.5;
+    const lifecycle = {};
     const resolved = resolveOptions({
       url: new URL("https://e.example.com/x"),
       headers,
@@ -61,6 +64,7 @@ describe("resolveOptions defaults", () => {
       requestTimeoutMs: 0.5,
       serialize,
       contentType: "text/plain",
+      lifecycle,
       onDrop,
       console: warn,
       random,
@@ -80,10 +84,12 @@ describe("resolveOptions defaults", () => {
       requestTimeoutMs: 0.5,
       serialize,
       contentType: "text/plain",
+      lifecycle,
       onDrop,
       console: warn,
       random,
     });
+    expect(resolved.lifecycle).toBe(lifecycle);
   });
 
   it("accepts a requestTimeoutMs of the largest delay a timer honours", () => {

@@ -569,6 +569,12 @@ Logging.configure((b) =>
 {"time":1760000000123.456,"level":"info","category":"app.checkout","message":"order placed","attributes":{},"trace_id":"0af7651916cd43dd8448eb211c80319c","span_id":"b7ad6b7169203331","resource":{}}
 ```
 
+An Error Event carries the same active span as `trace`, typed `LogTrace`, for every capture,
+global handlers included; with no active span the event has no `trace` key. Redaction never touches
+it, and a `trace` that fails the same id and flag checks after processors and `beforeSend` is dropped
+while the event is kept. A record reported through the reporter's logger sink keeps its own `trace`
+(see [Logger integration](#logger-integration)).
+
 `LogTrace` is exported from `./logger`. See ADR-0021 for why the registry is read rather than imported.
 
 ### OTLP export
@@ -638,8 +644,8 @@ await otlp.close();
 - **No `sendBeacon`** — a beacon cannot set request headers, so an authenticated collector would
   refuse it, and a cross-origin beacon with an `application/json` body is blocked by the browser.
   A `keepalive` fetch carries headers and the same budget.
-- **Mapping** — a record becomes an OTLP log record by the mapping of ADR-0007: severity, the
-  attributes, the error chain, and `trace` as the trace and span ids. Records group by Resource, then
+- **Mapping** — a record becomes an OTLP log record by the mapping of ADR-0007: severity (the
+  `severityText` is the upper-case level name, such as `"ERROR"`), the attributes, the error chain, and `trace` as the trace and span ids. Records group by Resource, then
   by category, which becomes the instrumentation scope.
 
 ### Batching
@@ -819,6 +825,7 @@ await transport.close(2000);
 | `requestTimeoutMs` | How long one attempt (resolving `headers`, then `fetch`) may run before it is aborted and retried | `10_000` |
 | `serialize` | `(events, resource) => string`, builds the body | JSON envelope |
 | `contentType` | The `Content-Type` of the body | `application/json` |
+| `lifecycle` | `{ window?, document? }`, the targets the unload drain listens on (`window` fires `pagehide`, `document` fires `visibilitychange`); `{}` watches none | detected on `globalThis` |
 | `offline` | `true` or `{ maxEntries?, maxBytes?, indexedDB? }`, saves undelivered batches in IndexedDB; see the offline queue below | off |
 | `onDrop` | `(events, reason) => void`, called for events given up on | warn once per reason |
 | `console` | Where the default warning goes | `globalThis.console` |
@@ -847,8 +854,9 @@ checked with `isHttpTransportConfigError`) when the transport is created. `send`
   whole of each batch's retries.
 - **Drops** — `onDrop(events, reason)` receives `"queue-full"`, `"too-large"`,
   `"retries-exhausted"`, `"rejected"`, `"unsendable"` (no `fetch`, or a throwing `serialize`),
-  `"closed"` or, with `offline`, `"offline-full"`. `DropReason` includes `"offline-full"`, so an
-  exhaustive `switch` over it stops compiling until it handles that case. Without `onDrop`, the transport warns once per reason. A throwing `onDrop` is ignored.
+  `"closed"`, `"unload-budget"` or, with `offline`, `"offline-full"`. `DropReason` includes
+  `"offline-full"` and `"unload-budget"`, so an exhaustive `switch` over it stops compiling until it
+  handles those cases. Without `onDrop`, the transport warns once per reason. A throwing `onDrop` is ignored.
 - **`flush(timeoutMs?)`** — cuts a pending linger short but waits out a backoff. It resolves `true`
   once the events accepted before the call are delivered or dropped, `false` if `timeoutMs` elapses
   first; later sends are not waited on.
@@ -877,6 +885,22 @@ checked with `isHttpTransportConfigError`) when the transport is created. `send`
   impossible to decode back into events. `"queue-full"`, `"too-large"`, `"rejected"` and
   `"unsendable"` are never saved. An invalid `maxEntries` or `maxBytes` throws
   `HttpTransportConfigError`.
+- **Unload delivery** — on `pagehide`, or `visibilitychange` to `"hidden"`, at the `lifecycle`
+  targets (detected on `globalThis` by default), the request in flight is aborted and the oldest
+  events, in flight then queued, go out as one `fetch` with `keepalive: true`, carrying the
+  configured `headers` and `contentType`. Its outcome is not reported. There is no `sendBeacon`: a
+  beacon cannot set headers, and a cross-origin `application/json` beacon is blocked. The request
+  carries the leading run of events that share the oldest event's Resource, since the serializer
+  takes one Resource per body, cut to `maxBatchEvents` and to the largest prefix whose body fits
+  both `maxBatchBytes` and the 64 KiB `keepalive` budget. The rest is saved through the `offline`
+  queue as `"unload-budget"` when `offline` is on, and otherwise reaches `onDrop` as
+  `"unload-budget"`. Events the request cannot be built for, because `serialize` throws on them,
+  there is no `fetch` or `headers` throws, are dropped as `"unsendable"`; an async `headers`
+  function delays the request until its promise resolves. The 64 KiB budget belongs to this
+  transport alone: an OTLP sink or transport in the same document draws on the browser's budget by
+  itself, so the browser may refuse whichever request comes second. The transport keeps working for
+  a page that comes back, and `close` removes both listeners once its flush is over. `lifecycle: {}`
+  watches nothing and also stops the offline `online` replay.
 - **Exit** — the transport registers no exit hook and does not `unref` its timers, which keep a Node
   process alive. A CLI or serverless handler awaits `close()` before it exits. After a 429 with a
   long `Retry-After`, `globalHandlers`' `flush(2000)` resolves `false`, since the wait is not cut
@@ -923,12 +947,14 @@ drains it, and so does `globalHandlers` under an `"exit"` policy, which waits up
 - **Mapping** — an Error Event becomes one OTLP log record under the instrumentation scope
   `@vipengele/ts-core-observability/errors`, grouped by Resource:
   - `time` is `timeUnixNano`, the moment the transport received the event is
-    `observedTimeUnixNano`, `level` is the severity, and `trace` is `traceId`, `spanId` and `flags`.
+    `observedTimeUnixNano`, `level` is the severity (`severityText` is the upper-case level name, such as `"ERROR"`),
+    and `trace` is `traceId`, `spanId` and `flags`.
   - The body is the captured message; otherwise the outermost exception's message, or its type when
     the message is empty.
   - `id` is `log.record.uid`. The outermost exception is `exception.type` and `exception.message`,
     and the whole `cause`/`errors` chain is `exception.stacktrace`, its links marked `Caused by:` and
     `Suppressed:`.
+  - An event carrying an `exception` has `eventName` `"exception"`; a captured message has none.
   - `mechanism` is `vipengele.mechanism.handled`, `vipengele.mechanism.source` and, when present,
     `vipengele.mechanism.data`; `fingerprint`, when present, is `vipengele.fingerprint`, a string
     array.
@@ -1227,6 +1253,47 @@ from `import.meta.url` is wrong under bundling: it resolves to the application's
 application frame would be marked not-in-app. Unbundled, the reporter's frames sit under
 `node_modules` and are already not in-app. Bundled into an application, its own frames are in-app;
 that is accepted.
+
+### Logger integration
+
+`reporter.loggerSink(options?)` returns a logger `Sink` that reports the errors a program logs, so a
+caught error written with `log.error(message, error)` reaches the same transport as one passed to
+`captureException`:
+
+```ts
+import { Logging } from "@vipengele/ts-core-observability/logger";
+import { createConsoleTransport, createReporter } from "@vipengele/ts-core-observability/errors";
+
+const reporter = createReporter((builder) => builder.transport(createConsoleTransport()));
+
+Logging.configure((b) => b.addLevels({ "*": "info" }).addSink(reporter.loggerSink({ minLevel: "error" })));
+
+Logging.logger("app.checkout").error("charge failed", new Error("card declined"), { orderId: 7 });
+```
+
+- **What is reported** — a record that carries an `error` at `minLevel` or above. `minLevel` is any
+  `Level` and defaults to `"error"`; anything else throws `ReporterConfigError`. A record without an
+  error, or below `minLevel`, is ignored, so a bare `log.error("message")` is not reported.
+- **Mapping** — the event has the record's `level`, the record's attributes plus `logger.category`
+  and `logger.message`, the record's serialized error chain (frames and `cause`/`errors` links
+  included) and the mechanism `{ handled: true, source: "logger" }`. Its `time` comes from the
+  reporter's clock, not the record's. The attributes come from the record alone, so the Scope is the
+  one in effect when the record was written, not when the sink runs.
+- **Pipeline** — every stage applies: sampling, `ignoreErrors`, processors, `beforeSend`, and, since
+  the event is handled, deduplication and the rate limit. The record's attributes are already
+  redacted by the logger; the reporter redacts them again, which changes nothing. The error was
+  already serialized under the logger's limits, so `limits(...)` only cuts each link's frames to
+  `maxBreadth`.
+- **Trace** — the event carries the record's `trace`; a record without one takes the span active at
+  capture. See [Trace correlation](#trace-correlation).
+- **Re-entrancy** — a `write` that arrives while the same sink's own capture is still on the stack is
+  dropped, so a transport or processor that logs back through the same logger cannot report itself
+  recursively.
+- **After `close()`** — the sink behaves exactly as `captureException` does after the reporter is
+  closed. The reporter keeps no closed flag; refusing events is the transport's concern.
+- **Direction** — the logger never depends on the reporter. `./logger` does not import `./errors`;
+  shipped `./errors` source takes only types from `./logger`, which are erased, so an application that only logs
+  bundles none of the reporter.
 
 ### Global handlers
 

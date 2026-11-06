@@ -78,7 +78,7 @@ interface Breadcrumb {
 | Framework | OTLP log record |
 |---|---|
 | `time` | `timeUnixNano` (× 10⁶ at the Transport); `observedTimeUnixNano` set by the Transport |
-| `level` | `severityText`; `severityNumber` trace 1, debug 5, info 9, warn 13, error 17, fatal 21 |
+| `level` | `severityText`, the upper-case level name; `severityNumber` trace 1, debug 5, info 9, warn 13, error 17, fatal 21 |
 | `category` | `InstrumentationScope.name` |
 | `message` | `body` |
 | `attributes` | `attributes` (nested maps and arrays are valid `AnyValue`s) |

@@ -17,6 +17,7 @@ export interface ErrorEventEntry {
 /** The instrumentation scope name of every Error Event: the entry point that reports it. */
 export const ERROR_EVENT_SCOPE = "@vipengele/ts-core-observability/errors";
 
+const EXCEPTION_EVENT_NAME = "exception";
 const RECORD_UID = "log.record.uid";
 const MECHANISM_HANDLED = "vipengele.mechanism.handled";
 const MECHANISM_SOURCE = "vipengele.mechanism.source";
@@ -29,9 +30,9 @@ const FINGERPRINT = "vipengele.fingerprint";
  *
  * Entries are grouped into one `ResourceLogs` per distinct Resource *value*, compared key by key,
  * never by identity, each holding one `ScopeLogs` named {@link ERROR_EVENT_SCOPE}. Groups appear in
- * the order their first entry does, and entries keep their order within a group. `eventName` is
- * left unset: semantic conventions 1.37 record an exception on a log record through its
- * `exception.*` attributes alone, and a captured message is no named event.
+ * the order their first entry does, and entries keep their order within a group. A record for an event
+ * carrying an exception has `eventName` `"exception"`, the semantic conventions' name for an
+ * exception event; a captured message is no named event and leaves `eventName` unset.
  */
 export function encodeErrorEvents(entries: ReadonlyArray<ErrorEventEntry>): string {
   const resourceLogs = groupByResource(
@@ -59,6 +60,9 @@ function encodeEvent(event: ErrorEvent, observedMs: number): Record<string, unkn
     encoded.traceId = event.trace.traceId.toLowerCase();
     encoded.spanId = event.trace.spanId.toLowerCase();
     encoded.flags = event.trace.flags;
+  }
+  if (event.exception !== undefined) {
+    encoded.eventName = EXCEPTION_EVENT_NAME;
   }
   return encoded;
 }
