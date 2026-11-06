@@ -644,8 +644,8 @@ await otlp.close();
 - **No `sendBeacon`** — a beacon cannot set request headers, so an authenticated collector would
   refuse it, and a cross-origin beacon with an `application/json` body is blocked by the browser.
   A `keepalive` fetch carries headers and the same budget.
-- **Mapping** — a record becomes an OTLP log record by the mapping of ADR-0007: severity, the
-  attributes, the error chain, and `trace` as the trace and span ids. Records group by Resource, then
+- **Mapping** — a record becomes an OTLP log record by the mapping of ADR-0007: severity (the
+  `severityText` is the upper-case level name, such as `"ERROR"`), the attributes, the error chain, and `trace` as the trace and span ids. Records group by Resource, then
   by category, which becomes the instrumentation scope.
 
 ### Batching
@@ -947,12 +947,14 @@ drains it, and so does `globalHandlers` under an `"exit"` policy, which waits up
 - **Mapping** — an Error Event becomes one OTLP log record under the instrumentation scope
   `@vipengele/ts-core-observability/errors`, grouped by Resource:
   - `time` is `timeUnixNano`, the moment the transport received the event is
-    `observedTimeUnixNano`, `level` is the severity, and `trace` is `traceId`, `spanId` and `flags`.
+    `observedTimeUnixNano`, `level` is the severity (`severityText` is the upper-case level name, such as `"ERROR"`),
+    and `trace` is `traceId`, `spanId` and `flags`.
   - The body is the captured message; otherwise the outermost exception's message, or its type when
     the message is empty.
   - `id` is `log.record.uid`. The outermost exception is `exception.type` and `exception.message`,
     and the whole `cause`/`errors` chain is `exception.stacktrace`, its links marked `Caused by:` and
     `Suppressed:`.
+  - An event carrying an `exception` has `eventName` `"exception"`; a captured message has none.
   - `mechanism` is `vipengele.mechanism.handled`, `vipengele.mechanism.source` and, when present,
     `vipengele.mechanism.data`; `fingerprint`, when present, is `vipengele.fingerprint`, a string
     array.

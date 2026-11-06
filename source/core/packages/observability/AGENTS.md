@@ -157,7 +157,9 @@ Run commands from `source/core` (`pnpm build`, `pnpm type-check`, `pnpm test`, `
 - `src/otlp/` is internal and unexported: the OTLP/HTTP JSON encoder. `encode-logs.ts` is the only
   file that knows `LogRecord` and `encode-error-events.ts` the only one that knows `ErrorEvent`;
   `resource.ts` (Resource grouping), `exception.ts` (`exception.*` attributes), `any-value.ts`,
-  `severity.ts` and `time.ts` know neither.
+  `severity.ts` and `time.ts` know neither. `severity.ts` gives `severityText` as the upper-case
+  level name (`Uppercase<Level>`) for both wrappers. `encode-error-events.ts` sets `eventName:
+  "exception"` on a record for an event carrying an `exception`; a captured message has none.
 - `src/delivery/` and `src/otlp/` are entry-point-neutral: any entry point may import them, the OTLP
   Transport of `./errors` included (ADR-0010, ADR-0022), so `delivery/` stays free of `LogRecord`,
   `ErrorEvent` and anything from `./logger`, and `logger/` never imports `errors/` (shipped `errors/` source takes only types from `logger/`).
