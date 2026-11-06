@@ -106,7 +106,7 @@ describe("encodeErrorEvents", () => {
                   timeUnixNano: "1700000000123456000",
                   observedTimeUnixNano: "1700000000200500000",
                   severityNumber: 13,
-                  severityText: "warn",
+                  severityText: "WARN",
                   body: { stringValue: "hello" },
                   attributes: [
                     { key: "user", value: { stringValue: "ada" } },
@@ -149,6 +149,30 @@ describe("encodeErrorEvents", () => {
       "log.record.uid",
       "vipengele.mechanism.handled",
       "vipengele.mechanism.source",
+    ]);
+  });
+
+  test("names an exception event and puts eventName after the trace fields", () => {
+    const logRecord = encodeOne(
+      event({
+        message: undefined,
+        exception: exception(),
+        trace: { traceId: TRACE_ID, spanId: SPAN_ID, flags: 1 },
+      }),
+    );
+
+    expect(logRecord.eventName).toBe("exception");
+    expect(Object.keys(logRecord)).toEqual([
+      "timeUnixNano",
+      "observedTimeUnixNano",
+      "severityNumber",
+      "severityText",
+      "body",
+      "attributes",
+      "traceId",
+      "spanId",
+      "flags",
+      "eventName",
     ]);
   });
 
