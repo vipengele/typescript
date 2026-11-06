@@ -35,6 +35,25 @@ function attributesOf(body: string): Map<string, Record<string, unknown>> {
   return new Map((record.attributes as KeyValue[]).map(({ key, value }) => [key, value]));
 }
 
+function firstRecord(body: string): Record<string, unknown> {
+  return JSON.parse(body).resourceLogs[0].scopeLogs[0].logRecords[0];
+}
+
+/** Runs `fn` with a fake OpenTelemetry registry whose active span is TRACE_ID/SPAN_ID, removed even when `fn` throws. */
+async function withActiveSpan(fn: () => Promise<void>): Promise<void> {
+  const registry = globalThis as unknown as Record<symbol, unknown>;
+  const slot = Symbol.for("opentelemetry.js.api.1");
+  const span = { spanContext: () => ({ traceId: TRACE_ID, spanId: SPAN_ID, traceFlags: 1 }) };
+  registry[slot] = {
+    context: { active: () => ({ getValue: (key: symbol) => (key === Symbol.for("OpenTelemetry Context Key SPAN") ? span : undefined) }) },
+  };
+  try {
+    await fn();
+  } finally {
+    delete registry[slot];
+  }
+}
+
 function thrownBy(create: () => unknown): unknown {
   try {
     create();
@@ -68,26 +87,38 @@ describe("createOtlpTransport", () => {
     expect(attributes.get("exception.stacktrace")?.stringValue).toMatch(/^TypeError: bad input/);
   });
 
-  it("carries the active span as the record traceId and spanId", async () => {
-    const registry = globalThis as unknown as Record<symbol, unknown>;
-    const slot = Symbol.for("opentelemetry.js.api.1");
-    const span = { spanContext: () => ({ traceId: TRACE_ID, spanId: SPAN_ID, traceFlags: 1 }) };
-    registry[slot] = {
-      context: { active: () => ({ getValue: (key: symbol) => (key === Symbol.for("OpenTelemetry Context Key SPAN") ? span : undefined) }) },
-    };
-    try {
+  it("exports an exception inside an active span as an exception record carrying the span", async () => {
+    await withActiveSpan(async () => {
       const { transport, calls } = setup();
       const reporter = createReporter((b) => b.transport(transport));
 
       reporter.captureException(new Error("boom"));
       await reporter.flush();
 
-      const record = JSON.parse(calls[0]?.init.body ?? "").resourceLogs[0].scopeLogs[0].logRecords[0];
+      const record = firstRecord(calls[0]?.init.body ?? "");
+      expect(record.eventName).toBe("exception");
+      expect(record.severityNumber).toBe(17);
+      expect(record.severityText).toBe("ERROR");
+      const keys = (record.attributes as KeyValue[]).map(({ key }) => key);
+      expect(keys).toEqual(expect.arrayContaining(["exception.type", "exception.message", "exception.stacktrace"]));
       expect(record.traceId).toBe(TRACE_ID);
       expect(record.spanId).toBe(SPAN_ID);
-    } finally {
-      delete registry[slot];
-    }
+      expect(record.flags).toBe(1);
+    });
+  });
+
+  it("exports a fatal message with no active span without an eventName or trace", async () => {
+    const { transport, calls } = setup();
+    const reporter = createReporter((b) => b.transport(transport));
+
+    reporter.captureMessage("out of memory", "fatal");
+    await reporter.flush();
+
+    const record = firstRecord(calls[0]?.init.body ?? "");
+    expect(record.severityNumber).toBe(21);
+    expect(record.severityText).toBe("FATAL");
+    expect(record).not.toHaveProperty("eventName");
+    expect(record).not.toHaveProperty("traceId");
   });
 
   it("is drained by globalHandlers under the exit policy before the process exits", async () => {
