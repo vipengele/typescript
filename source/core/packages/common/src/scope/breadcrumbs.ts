@@ -89,8 +89,8 @@ export function addBreadcrumb(scope: Scope, input: BreadcrumbInput): void {
       return;
     }
     buffer.push(breadcrumb);
-    if (buffer.length > CAPACITY) {
-      buffer.splice(0, buffer.length - CAPACITY);
+    while (buffer.length > CAPACITY) {
+      buffer.shift();
     }
   } catch {
     // A field or slot that throws on read drops the entry; the buffer is only ever appended to whole.
