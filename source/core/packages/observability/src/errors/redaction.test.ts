@@ -1,5 +1,5 @@
 import { Scope } from "@vipengele/ts-core-common/scope";
-import type { RedactionPolicy } from "@vipengele/ts-core-redaction";
+import { email, type RedactionPolicy } from "@vipengele/ts-core-redaction";
 import { describe, expect, it } from "vitest";
 import type { ErrorEvent } from "./event";
 import { createCapture } from "./pipeline";
@@ -24,7 +24,35 @@ function withSecretFields<T extends Error>(error: T): T {
 }
 
 describe("Reporter redaction of the breadcrumb trail", () => {
-  it("masks a secret key in each crumb's data and keeps every crumb's message", () => {
+  it("masks a value a detector matches in a crumb's message and keeps its category and level", () => {
+    const transport = createTestTransport();
+    const reporter = createReporter((b) => b.transport(transport).redaction({ keys: [], detectors: [email] }));
+
+    Scope.isolated("request", {}, () => {
+      Scope.addBreadcrumb({ message: "mail ada@example.com sent", category: "mail", level: "info", time: 1 });
+      Scope.addBreadcrumb({ message: "nothing secret", time: 2 });
+      reporter.captureMessage("hello");
+    });
+
+    expect(onlyEvent(transport).breadcrumbs).toEqual([
+      { time: 1, message: `mail ${REDACTED} sent`, category: "mail", level: "info" },
+      { time: 2, message: "nothing secret" },
+    ]);
+  });
+
+  it("leaves a crumb's message as it is when redaction is off", () => {
+    const transport = createTestTransport();
+    const reporter = createReporter((b) => b.transport(transport).redaction(null));
+
+    Scope.isolated("request", {}, () => {
+      Scope.addBreadcrumb({ message: "mail ada@example.com sent", time: 1 });
+      reporter.captureMessage("hello");
+    });
+
+    expect(onlyEvent(transport).breadcrumbs).toEqual([{ time: 1, message: "mail ada@example.com sent" }]);
+  });
+
+  it("masks a secret key in each crumb's data and keeps a crumb's message the key policy does not match", () => {
     const transport = createTestTransport();
     const reporter = createReporter((b) => b.transport(transport));
 

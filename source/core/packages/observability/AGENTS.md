@@ -188,7 +188,7 @@ Run commands from `source/core` (`pnpm build`, `pnpm type-check`, `pnpm test`, `
   `beforeBreadcrumb` on a `structuredClone` of each crumb oldest first (a throw, `null` or non-object
   drops that crumb), then keeps the newest `maxBreadcrumbs` (0..100, default 100, `ReporterConfigError`
   otherwise) with `data` cut to `limits`; an empty trail leaves the key out. The buffer is never cleared.
-  Redaction covers each crumb's `data` only (not `message`/`category`/`level`); processors and
+  Redaction covers each crumb's `data` and `message` (the message as an attribute value, so detectors scan it), not `category`/`level`; processors and
   `beforeSend` see the trail; dedupe ignores it. A Scope's tag is an attribute, not a breadcrumb.
 - Stages: gate, `sampleRate`, normalize, `ignoreErrors`, enrich, redaction, processors, `beforeSend`,
   dedupe, rate limit, transport (ADR-0020). The Reporter owns policy drops and the Transport delivery

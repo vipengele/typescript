@@ -1096,7 +1096,7 @@ Scope.isolated("http-request", { requestId: "abc" }, () => {
   crumb of the trail, oldest first, on a copy, before the newest `maxBreadcrumbs` are sliced. It
   returns the crumb to keep, possibly changed, or `null` to drop it. A hook that throws, or returns
   anything that is not an object or `null`, drops that crumb. A later call replaces the hook.
-- **Redaction** — the redaction stage applies the policy to each crumb's `data`. Its `message`,
+- **Redaction** — the redaction stage applies the policy to each crumb's `data` and `message`, so value detectors scan the message. Its
   `category` and `level` are not scanned. Processors and `beforeSend` see the redacted trail, and
   deduplication ignores it. A crumb's `data` is cut to the reporter's `limits` as the event's
   attributes are.

@@ -351,9 +351,8 @@ function isEnvironmentEnabled(resource: Resource, pipeline: Pipeline): boolean {
 
 /**
  * Stage 6, between enrichment and the processors: a copy of `event` whose `attributes`, `mechanism.data`,
- * each breadcrumb's `data`, and every link of its exception chain are redacted by `policy`, the links
- * as the logger redacts a record's error. The event's `message`, each breadcrumb's `message`, and
- * every link's `stack` and `frames`, are kept as they are. A throwing policy throws out of here, and the event is dropped like any stage's.
+ * each breadcrumb's `data` and `message`, and every link of its exception chain are redacted by `policy`,
+ * the links as the logger redacts a record's error. The event's `message` and every link's `stack` and `frames`, are kept as they are. A throwing policy throws out of here, and the event is dropped like any stage's.
  */
 function redactEvent(event: ErrorEvent, policy: RedactionPolicy): ErrorEvent {
   const redacted: ErrorEvent = { ...event, attributes: redactAttributes(event.attributes, policy) };
@@ -364,11 +363,19 @@ function redactEvent(event: ErrorEvent, policy: RedactionPolicy): ErrorEvent {
     redacted.mechanism = { ...event.mechanism, data: redactAttributes(event.mechanism.data, policy) };
   }
   if (event.breadcrumbs !== undefined) {
-    redacted.breadcrumbs = event.breadcrumbs.map((crumb) =>
-      crumb.data === undefined ? crumb : { ...crumb, data: redactAttributes(crumb.data, policy) },
-    );
+    redacted.breadcrumbs = event.breadcrumbs.map((crumb) => redactBreadcrumb(crumb, policy));
   }
   return redacted;
+}
+
+/**
+ * `crumb` with its `message` redacted as an attribute value under the key `message`, so the policy's
+ * value detectors scan it, and its `data` redacted as attributes. `category` and `level` are kept.
+ * A replacement that is not a string is read as its text, so `message` stays a string.
+ */
+function redactBreadcrumb(crumb: Breadcrumb, policy: RedactionPolicy): Breadcrumb {
+  const message = String(redactAttributes({ message: crumb.message }, policy).message);
+  return crumb.data === undefined ? { ...crumb, message } : { ...crumb, message, data: redactAttributes(crumb.data, policy) };
 }
 
 /**

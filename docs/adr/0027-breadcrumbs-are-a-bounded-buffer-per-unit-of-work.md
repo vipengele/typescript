@@ -49,8 +49,10 @@ cannot be recorded without creating one.
 7. **Attaching never clears.** Each event gets a snapshot, because every Reporter shares the buffer.
 8. **Wire.** `ErrorEvent.breadcrumbs?: Breadcrumb[]` is omitted when empty. It is attached in the
    `enrich` stage for every input kind, with each crumb's `data` re-cut to the Reporter's `limits`.
-   The redaction stage redacts each crumb's `data` with the attribute policy and leaves `message`
-   untouched, like the event's own. Processors and `beforeSend` see the field; dedupe ignores it. The
+   The redaction stage redacts each crumb's `data` and `message` with the attribute policy, since a
+   logger-sink crumb's message is the text an error event carries as the scanned `logger.message`
+   attribute. Leaving the crumb message unscanned was rejected: the trail would be a weaker path for
+   the same text, on every later event in the Unit of Work. Processors and `beforeSend` see the field; dedupe ignores it. The
    HTTP, console and test transports pass it through. OTLP exports it as the attribute
    `vipengele.breadcrumbs`, an `arrayValue` of `kvlistValue` built by `toAnyValue`, and the encoder
    owns that key like its other written keys.
