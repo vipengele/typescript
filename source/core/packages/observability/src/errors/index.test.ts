@@ -137,6 +137,6 @@ test("the entry point exports the HTTP transport's config error, guard and types
 test("the entry point exports the logger sink's options, the Reporter member that takes them", () => {
   expectTypeOf<entry.Reporter["loggerSink"]>().parameter(0).toEqualTypeOf<LoggerSinkOptions | undefined>();
   expectTypeOf<entry.Reporter["loggerSink"]>().returns.toEqualTypeOf<Sink>();
-  expectTypeOf<LoggerSinkOptions>().toEqualTypeOf<{ readonly minLevel?: Level }>();
+  expectTypeOf<LoggerSinkOptions>().toEqualTypeOf<{ readonly minLevel?: Level; readonly breadcrumbs?: boolean }>();
   expect(entry.createReporter().loggerSink().write).toBeTypeOf("function");
 });
