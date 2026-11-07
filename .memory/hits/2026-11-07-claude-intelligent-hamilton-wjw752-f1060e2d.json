@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "notes": {
+    "integrations-replace-by-name-and-tear-down-newest-first": {
+      "count": 1,
+      "first": "2026-11-07T08:03:42.030595327Z",
+      "last": "2026-11-07T08:03:42.030595327Z"
+    },
+    "scope-root-defaults-to-unknown-resource": {
+      "count": 1,
+      "first": "2026-11-07T08:08:06.258839778Z",
+      "last": "2026-11-07T08:08:06.258839778Z"
+    }
+  }
+}
