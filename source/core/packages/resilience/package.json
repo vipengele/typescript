@@ -1,7 +1,7 @@
 {
   "name": "@vipengele/ts-core-resilience",
   "version": "0.2.1",
-  "description": "Resilience primitives for the browser and Node — timeouts, retries and the typed errors they raise.",
+  "description": "Resilience primitives for the browser and Node — timeouts, retries, circuit breaking and the typed errors they raise.",
   "keywords": [
     "vipengele",
     "typescript",
@@ -33,6 +33,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./circuit-breaker": {
+      "types": "./dist/circuit-breaker/index.d.ts",
+      "default": "./dist/circuit-breaker/index.js"
     },
     "./errors": {
       "types": "./dist/errors/index.d.ts",

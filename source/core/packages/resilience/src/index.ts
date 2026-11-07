@@ -1,3 +1,4 @@
+export * from "./circuit-breaker";
 export * from "./errors";
 export * from "./retry";
 export * from "./timeout";
