@@ -18,7 +18,11 @@ export interface CircuitBreakerConfig {
   readonly permittedCallsInHalfOpen: number;
   /** How long a half-open circuit waits for its probes before it opens again; unset waits indefinitely. */
   readonly maxWaitInHalfOpenMs?: number;
-  /** Decides whether an outcome counts as a failure; defaults to `!outcome.ok`. */
+  /**
+   * Decides whether an outcome counts as a failure; defaults to `!outcome.ok`. It sees `ok: true`
+   * outcomes too. A throw counts the outcome as a failure, and the caller still gets the
+   * operation's own value or error.
+   */
   isFailure?(outcome: Outcome<unknown>): boolean;
 }
 
