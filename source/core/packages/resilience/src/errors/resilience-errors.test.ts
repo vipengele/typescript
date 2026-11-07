@@ -44,14 +44,14 @@ const cases = [
     name: "RateLimitExceededError",
     code: RATE_LIMIT_EXCEEDED_ERROR_CODE,
     literal: "resilience.rate-limit-exceeded",
-    make: () => new RateLimitExceededError("limited"),
+    make: () => new RateLimitExceededError("limited", { limiter: "api", permits: 1, retryAfterMs: 250 }),
     guard: isRateLimitExceededError,
   },
   {
     name: "BulkheadFullError",
     code: BULKHEAD_FULL_ERROR_CODE,
     literal: "resilience.bulkhead-full",
-    make: () => new BulkheadFullError("full"),
+    make: () => new BulkheadFullError("full", { bulkhead: "db", reason: "full" }),
     guard: isBulkheadFullError,
   },
   {
@@ -117,8 +117,8 @@ test("every error keeps its message and cause", () => {
   const cause = new Error("root");
   const raised = [
     new CircuitOpenError("kept", { circuit: "payments", state: "open" }, { cause }),
-    new RateLimitExceededError("kept", { cause }),
-    new BulkheadFullError("kept", { cause }),
+    new RateLimitExceededError("kept", { limiter: "api", permits: 1, retryAfterMs: 250 }, { cause }),
+    new BulkheadFullError("kept", { bulkhead: "db", reason: "full" }, { cause }),
     new OperationTimeoutError("kept", 1, { cause }),
     new ResilienceConfigError("kept", { cause }),
   ];
@@ -146,6 +146,45 @@ describe("CircuitOpenError", () => {
     const error = new CircuitOpenError("refused", { circuit: "c", state: "forced-open" });
 
     expect(error.remainingMs).toBeUndefined();
+  });
+});
+
+describe("RateLimitExceededError", () => {
+  test("carries the limiter, the permits asked for and the wait until they are available", () => {
+    const error = new RateLimitExceededError("limited", { limiter: "api", permits: 3, retryAfterMs: 1200 });
+
+    expect(error.limiter).toBe("api");
+    expect(error.permits).toBe(3);
+    expect(error.retryAfterMs).toBe(1200);
+    expect(error.code).toBe(RATE_LIMIT_EXCEEDED_ERROR_CODE);
+    expect(isRateLimitExceededError(error)).toBe(true);
+  });
+
+  test("keeps the cause and leaves name to Error", () => {
+    const cause = new Error("root");
+    const error = new RateLimitExceededError("limited", { limiter: "api", permits: 1, retryAfterMs: 0 }, { cause });
+
+    expect(error.cause).toBe(cause);
+    expect(error.name).toBe("Error");
+  });
+});
+
+describe("BulkheadFullError", () => {
+  test.each(["full", "wait-timeout"] as const)("carries the bulkhead and the %s reason", (reason) => {
+    const error = new BulkheadFullError("refused", { bulkhead: "db", reason });
+
+    expect(error.bulkhead).toBe("db");
+    expect(error.reason).toBe(reason);
+    expect(error.code).toBe(BULKHEAD_FULL_ERROR_CODE);
+    expect(isBulkheadFullError(error)).toBe(true);
+  });
+
+  test("keeps the cause and leaves name to Error", () => {
+    const cause = new Error("root");
+    const error = new BulkheadFullError("refused", { bulkhead: "db", reason: "full" }, { cause });
+
+    expect(error.cause).toBe(cause);
+    expect(error.name).toBe("Error");
   });
 });
 

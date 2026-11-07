@@ -1,12 +1,14 @@
 # @vipengele/ts-core-resilience
 
-Resilience primitives for the browser and Node: timeouts, retries, circuit breaking and the typed errors they raise.
+Resilience primitives for the browser and Node: timeouts, retries, circuit breaking, rate limiting, bulkheads and the typed errors they raise.
 
 | Entry point | What it holds |
 |-------------|---------------|
 | `@vipengele/ts-core-resilience/circuit-breaker` | `createCircuitBreaker`, the `CircuitBreakerPolicy`, its metrics and events |
 | `@vipengele/ts-core-resilience/timeout` | `createTimeout`, the `TimeoutPolicy` and its events |
 | `@vipengele/ts-core-resilience/retry` | `createRetry`, the backoff strategies and the `RetryPolicy` and its events |
+| `@vipengele/ts-core-resilience/rate-limiter` | `createRateLimiter`, the `RateLimiterPolicy`, its config, deps and events |
+| `@vipengele/ts-core-resilience/bulkhead` | `createBulkhead`, the `BulkheadPolicy`, its config, deps and events |
 | `@vipengele/ts-core-resilience/errors` | The errors the package raises, with their guards |
 | `@vipengele/ts-core-resilience` | All of the above |
 
@@ -228,6 +230,114 @@ const profile = await retry.execute((ctx) =>
 );
 ```
 
+## `./rate-limiter`
+
+```ts
+import { createRateLimiter } from "@vipengele/ts-core-resilience/rate-limiter";
+
+const limiter = createRateLimiter("profile.api", {
+  limitForPeriod: 10,
+  refreshPeriodMs: 1_000,
+  maxWaitMs: 500,
+  burst: 20,
+});
+
+const response = await limiter.execute(({ signal }) => fetch("https://example.com/profile", { signal }));
+```
+
+The limiter starts with `limitForPeriod` permits. `execute` takes one, runs `op` once (`attempt` is
+always 1) and returns its value or rethrows its error unchanged.
+
+Config, validated at creation (a bad value throws `ResilienceConfigError`):
+
+- **`limitForPeriod`** — an integer of at least 1: the permits each refresh period adds.
+- **`refreshPeriodMs`** — finite, above 0, at most `MAX_TIMEOUT_DURATION_MS`: the length of a period.
+- **`burst`** — optional, an integer of at least `limitForPeriod`, which is also the default: the most
+  permits unused periods may save up. At the default each period resets the free permits to
+  `limitForPeriod`.
+- **`maxWaitMs`** — required, finite, at least 0, at most `MAX_TIMEOUT_DURATION_MS`: how long `execute`
+  may wait for a permit. `0` fails fast.
+
+`deps` takes a `clock` (default `systemClock`) and a `scheduler` (default `systemScheduler`).
+
+The config is a `RateLimiterConfig` and `deps` a `RateLimiterDeps`. `createRateLimiter` returns a
+`RateLimiterPolicy`: a policy plus `events` and `tryAcquire`. `events` reports `RateLimiterEvent`s, the
+union of `RateLimitExceededEvent` and `RateLimitWaitedEvent`.
+
+Periods are counted in whole periods from creation on the clock, and a passed period adds
+`limitForPeriod` permits up to `burst`. A clock stepping back adds nothing, and the forward step that
+follows does not refill twice.
+
+When no permit is free, the limiter works out how long until one is. Within `maxWaitMs` it reserves the
+permit and sleeps, using the caller's `signal`; calls are served in arrival order. Beyond `maxWaitMs`
+it rejects at once with a `RateLimitExceededError` whose `retryAfterMs` is that wait, reserving nothing.
+Aborting a waiting call rejects with the signal's reason and returns its permit. A call waiting behind
+it keeps its due time, so the refund benefits later arrivals only, and a period can briefly see more
+calls than `burst`.
+
+`tryAcquire(permits = 1)` takes permits at once if that many are free and returns whether it did. It
+never waits, never takes permits a waiting call has reserved and emits nothing. It returns `false` for
+more permits than `burst` and throws a `RangeError` when `permits` is not an integer of at least 1.
+
+```ts
+limiter.events.on((event) => {
+  if (event.kind === "rate-limit-exceeded") {
+    console.warn(`${event.name}: refused, retry in ${event.retryAfterMs} ms`);
+  } else {
+    console.warn(`${event.name}: waited ${event.waitMs} ms`); // "rate-limit-waited"
+  }
+});
+```
+
+A `RateLimitExceededEvent` (`rate-limit-exceeded`) carries `permits` and `retryAfterMs`; a
+`RateLimitWaitedEvent` (`rate-limit-waited`) carries `permits` and
+`waitMs`, the wait planned when the permits were reserved. Both carry `name` and `at`.
+
+## `./bulkhead`
+
+```ts
+import { createBulkhead } from "@vipengele/ts-core-resilience/bulkhead";
+
+const bulkhead = createBulkhead("profile.db", { maxConcurrent: 5, maxQueue: 10, maxWaitMs: 1_000 });
+
+const rows = await bulkhead.execute(({ signal }) => query({ signal }));
+```
+
+The bulkhead runs at most `maxConcurrent` calls at once. `execute` runs `op` once (`attempt` is always
+1) and returns its value or rethrows its error unchanged. `bulkhead.available` is `maxConcurrent` minus
+the calls running now.
+
+Config, validated at creation (a bad value throws `ResilienceConfigError`):
+
+- **`maxConcurrent`** — an integer of at least 1.
+- **`maxQueue`** — optional, an integer of at least 0, default 0: the calls that may wait for a permit.
+  `maxQueue: 0` fails fast.
+- **`maxWaitMs`** — optional, finite, above 0, at most `MAX_TIMEOUT_DURATION_MS`: how long a queued call
+  waits. Unset, it waits until it gets a permit or its signal aborts. Setting it while `maxQueue` is 0
+  is rejected.
+
+`deps` takes a `clock` (default `systemClock`) and a `scheduler` (default `systemScheduler`).
+
+The config is a `BulkheadConfig` and `deps` a `BulkheadDeps`. `createBulkhead` returns a
+`BulkheadPolicy`: a policy plus `events` and `available`. `events` reports `BulkheadEvent`s, which are
+`BulkheadRejectedEvent`s.
+
+A running call holds its permit until `op` settles, whether it resolves, rejects or throws
+synchronously. Aborting the caller's signal does not release it, so `maxConcurrent` is a true limit;
+the bulkhead never aborts a signal itself. A released permit goes to the oldest queued call.
+
+A call that finds every permit taken and the queue full rejects with a `BulkheadFullError` with reason
+`"full"`. A queued call whose `maxWaitMs` elapses rejects with reason `"wait-timeout"`. A queued call
+whose signal aborts leaves the queue and rejects with the signal's reason, emitting no event.
+
+```ts
+bulkhead.events.on((event) => {
+  console.warn(`${event.name}: refused a call (${event.reason})`); // event.kind === "bulkhead-rejected"
+});
+```
+
+A `BulkheadRejectedEvent` carries `name`, `at` and the `reason`, `"full"` or `"wait-timeout"`.
+
 ## Timeout and retry together
 
 Policies compose by nesting calls. A timeout inside the retry's operation bounds each attempt, and the
@@ -275,6 +385,18 @@ try {
 `CircuitOpenError` carries `circuit` (the breaker's name), `state` (`"open"`, `"half-open"` or
 `"forced-open"`) and `remainingMs` (milliseconds until half-open, set only for `"open"`).
 
-`OperationTimeoutError` takes `(message, durationMs, options?)` and `CircuitOpenError` takes
-`(message, details, options?)` with `details` `{ circuit, state, remainingMs? }`; every other error
-takes `(message, options?)`, where `options` is the standard `ErrorOptions` (`cause`).
+`RateLimitExceededError` carries `limiter` (the limiter's name), `permits` (what the refused call asked
+for) and `retryAfterMs` (milliseconds until the permits are available), which maps to an HTTP
+`Retry-After`. Its message reads `Rate limiter "<name>" refused the call: its permit is free in
+<retryAfterMs>ms, beyond the <maxWaitMs>ms it may wait`.
+
+`BulkheadFullError` carries `bulkhead` (the bulkhead's name) and `reason`: `"full"` or
+`"wait-timeout"`. Its message reads `Bulkhead "<name>" refused the call: all <maxConcurrent> permits are
+taken and its queue of <maxQueue> is full` for `"full"` and `Bulkhead "<name>" refused the call: no
+permit came free within the <maxWaitMs>ms it may wait` for `"wait-timeout"`.
+
+`OperationTimeoutError` takes `(message, durationMs, options?)`. `CircuitOpenError`,
+`RateLimitExceededError` and `BulkheadFullError` take `(message, details, options?)` with `details`
+`{ circuit, state, remainingMs? }`, `{ limiter, permits, retryAfterMs }` and `{ bulkhead, reason }`
+respectively; `ResilienceConfigError` takes `(message, options?)`, where `options` is the standard
+`ErrorOptions` (`cause`).

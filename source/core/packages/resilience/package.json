@@ -1,7 +1,7 @@
 {
   "name": "@vipengele/ts-core-resilience",
   "version": "0.2.1",
-  "description": "Resilience primitives for the browser and Node — timeouts, retries, circuit breaking and the typed errors they raise.",
+  "description": "Resilience primitives for the browser and Node — timeouts, retries, circuit breaking, rate limiting, bulkheads and the typed errors they raise.",
   "keywords": [
     "vipengele",
     "typescript",
@@ -34,6 +34,10 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
+    "./bulkhead": {
+      "types": "./dist/bulkhead/index.d.ts",
+      "default": "./dist/bulkhead/index.js"
+    },
     "./circuit-breaker": {
       "types": "./dist/circuit-breaker/index.d.ts",
       "default": "./dist/circuit-breaker/index.js"
@@ -41,6 +45,10 @@
     "./errors": {
       "types": "./dist/errors/index.d.ts",
       "default": "./dist/errors/index.js"
+    },
+    "./rate-limiter": {
+      "types": "./dist/rate-limiter/index.d.ts",
+      "default": "./dist/rate-limiter/index.js"
     },
     "./retry": {
       "types": "./dist/retry/index.d.ts",

@@ -1,4 +1,5 @@
 import type { Clock } from "@vipengele/ts-core-common";
+import { DURATION_CONSTRAINT, isDuration, isIntegerAtLeastOne, reject as rejectConfig } from "../config-validation";
 import { ResilienceConfigError } from "../errors";
 import { MAX_TIMEOUT_DURATION_MS } from "../timeout";
 import type { Outcome } from "../types";
@@ -32,18 +33,10 @@ export interface CircuitBreakerDeps {
   readonly clock?: Clock;
 }
 
-const WAIT_CONSTRAINT = `finite, above 0 and at most ${MAX_TIMEOUT_DURATION_MS}`;
+const LABEL = "Circuit breaker";
 
 function reject(name: string, key: string, constraint: string, value: unknown): never {
-  throw new ResilienceConfigError(`Circuit breaker "${name}" expects ${key} to be ${constraint}, got ${value}`);
-}
-
-function isIntegerAtLeastOne(value: number): boolean {
-  return Number.isInteger(value) && value >= 1;
-}
-
-function isDuration(value: number): boolean {
-  return Number.isFinite(value) && value > 0 && value <= MAX_TIMEOUT_DURATION_MS;
+  return rejectConfig(LABEL, name, key, constraint, value);
 }
 
 function validateWindow(name: string, window: SlidingWindowConfig): void {
@@ -54,7 +47,7 @@ function validateWindow(name: string, window: SlidingWindowConfig): void {
     }
   } else if (type === "time") {
     if (!isDuration(size)) {
-      reject(name, "slidingWindow.size", WAIT_CONSTRAINT, size);
+      reject(name, "slidingWindow.size", DURATION_CONSTRAINT, size);
     }
   } else {
     reject(name, "slidingWindow.type", '"count" or "time"', type);
@@ -65,11 +58,11 @@ function validateWaits(name: string, config: CircuitBreakerConfig): void {
   const { waitDurationInOpenMs, maxWaitInHalfOpenMs } = config;
   if (!isDuration(waitDurationInOpenMs)) {
     // biome-ignore lint/security/noSecrets: a config key name, flagged only for its length and casing
-    reject(name, "waitDurationInOpenMs", WAIT_CONSTRAINT, waitDurationInOpenMs);
+    reject(name, "waitDurationInOpenMs", DURATION_CONSTRAINT, waitDurationInOpenMs);
   }
   if (maxWaitInHalfOpenMs !== undefined && !isDuration(maxWaitInHalfOpenMs)) {
     // biome-ignore lint/security/noSecrets: a config key name, flagged only for its length and casing
-    reject(name, "maxWaitInHalfOpenMs", WAIT_CONSTRAINT, maxWaitInHalfOpenMs);
+    reject(name, "maxWaitInHalfOpenMs", DURATION_CONSTRAINT, maxWaitInHalfOpenMs);
   }
 }
 
