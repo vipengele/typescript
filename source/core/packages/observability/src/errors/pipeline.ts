@@ -10,7 +10,7 @@ import {
   serializeError,
   toJsonSafe,
 } from "@vipengele/ts-core-common";
-import { type Resource, Scope, snapshot } from "@vipengele/ts-core-common/scope";
+import { type Breadcrumb, breadcrumbs, type Resource, Scope, snapshot } from "@vipengele/ts-core-common/scope";
 import type { RedactionPolicy } from "@vipengele/ts-core-redaction";
 import { mergeAttributes } from "../merge-attributes";
 import { type RedactionSetting, redactAttributes, redactError } from "../redaction";
@@ -93,6 +93,14 @@ export interface Pipeline {
    * 60 tokens per minute when absent.
    */
   readonly rateLimit?: false | Readonly<RateLimitOptions> | undefined;
+  /** The most breadcrumbs an event carries, the newest kept; 0 attaches none. 100 when absent. */
+  readonly maxBreadcrumbs?: number | undefined;
+  /**
+   * Run on a copy of each crumb of the trail, oldest first, before the newest `maxBreadcrumbs` are
+   * kept. A throw, `null` or a result that is not an object drops that crumb alone. Every crumb is
+   * kept as it is when absent.
+   */
+  readonly beforeBreadcrumb?: ((crumb: Breadcrumb) => Breadcrumb | null) | undefined;
 }
 
 /** The state one capture function keeps across the events it runs; a stage turned off has none. */
@@ -103,6 +111,9 @@ interface PipelineState {
 
 /** `serializeError`'s default `maxBreadth`, which `frames` take when no `maxBreadth` is set. */
 const DEFAULT_MAX_BREADTH = 100;
+
+/** The most breadcrumbs an event carries when the pipeline sets no `maxBreadcrumbs`. */
+const DEFAULT_MAX_BREADCRUMBS = 100;
 
 /** An event after normalization, before enrichment: the payload a caller handed over, and nothing else. */
 type NormalizedPayload = Pick<ErrorEvent, "message" | "exception">;
@@ -196,6 +207,51 @@ function scopeAttributes(pipeline: Pipeline): Attributes {
   }
 }
 
+/** `hook`'s result for a copy of `crumb`, or `null` when it throws, returns `null` or returns anything but an object. */
+function applyBreadcrumbHook(hook: (crumb: Breadcrumb) => Breadcrumb | null, crumb: Breadcrumb): Breadcrumb | null {
+  try {
+    const result: unknown = hook(structuredClone(crumb));
+    return typeof result === "object" ? (result as Breadcrumb | null) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** `crumb` as a new object whose `data` is cut to the pipeline's `limits`; a `data` that is not an object is left out. */
+function boundBreadcrumb(crumb: Breadcrumb, pipeline: Pipeline): Breadcrumb {
+  const { data, ...rest } = crumb;
+  return typeof data === "object" && data !== null ? { ...rest, data: normalizeAttributes(data, pipeline.limits) } : rest;
+}
+
+/** The current Unit of Work's breadcrumbs, oldest first; a Scope that throws when read yields none, and the event still goes out. */
+function currentTrail(): Breadcrumb[] {
+  try {
+    return breadcrumbs(Scope.current());
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * The current Unit of Work's trail as an event carries it: each crumb, oldest first, through
+ * `beforeBreadcrumb` when one is set, then the newest `maxBreadcrumbs` of what survives, each one's
+ * `data` cut to `limits` as the event's attributes are. `undefined` when nothing is left. The buffer
+ * is only read, never cleared: every Reporter attaches from the same one.
+ */
+function trailOf(pipeline: Pipeline): Breadcrumb[] | undefined {
+  const max = pipeline.maxBreadcrumbs ?? DEFAULT_MAX_BREADCRUMBS;
+  if (max === 0) {
+    return undefined;
+  }
+  const hook = pipeline.beforeBreadcrumb;
+  let trail = currentTrail();
+  if (hook !== undefined) {
+    trail = trail.map((crumb) => applyBreadcrumbHook(hook, crumb)).filter((crumb): crumb is Breadcrumb => crumb !== null);
+  }
+  const kept = trail.slice(-max).map((crumb) => boundBreadcrumb(crumb, pipeline));
+  return kept.length === 0 ? undefined : kept;
+}
+
 /** Stage 2: whether the event is inside the sample, drawing one number for it when a `sampleRate` is set. */
 function isSampled(pipeline: Pipeline): boolean {
   return pipeline.sampleRate === undefined || (pipeline.random ?? Math.random)() < pipeline.sampleRate;
@@ -232,7 +288,8 @@ function isIgnored(payload: NormalizedPayload, pipeline: Pipeline): boolean {
  * The attributes come from `attributesOf`: the scope's beneath the call's own, except for a
  * serialized exception, whose attributes are the record's alone and read no Scope.
  * The input's own trace, or else the span active at capture time, rides along as `trace`; neither
- * leaves the key out.
+ * leaves the key out. Every input, a serialized exception included, carries the current Unit of
+ * Work's trail as `breadcrumbs` (`trailOf`); an empty trail leaves the key out.
  */
 function enrich(payload: NormalizedPayload, input: CaptureInput, mechanism: Mechanism, id: string, pipeline: Pipeline): ErrorEvent {
   const trace = traceOf(input);
@@ -246,6 +303,10 @@ function enrich(payload: NormalizedPayload, input: CaptureInput, mechanism: Mech
   };
   if (trace !== undefined) {
     event.trace = trace;
+  }
+  const trail = trailOf(pipeline);
+  if (trail !== undefined) {
+    event.breadcrumbs = trail;
   }
   return event;
 }
@@ -290,9 +351,9 @@ function isEnvironmentEnabled(resource: Resource, pipeline: Pipeline): boolean {
 
 /**
  * Stage 6, between enrichment and the processors: a copy of `event` whose `attributes`, `mechanism.data`,
- * and every link of its exception chain are redacted by `policy`, the links as the logger redacts
- * a record's error. The event's `message`, and every link's `stack` and `frames`, are kept as they
- * are. A throwing policy throws out of here, and the event is dropped like any stage's.
+ * each breadcrumb's `data`, and every link of its exception chain are redacted by `policy`, the links
+ * as the logger redacts a record's error. The event's `message`, each breadcrumb's `message`, and
+ * every link's `stack` and `frames`, are kept as they are. A throwing policy throws out of here, and the event is dropped like any stage's.
  */
 function redactEvent(event: ErrorEvent, policy: RedactionPolicy): ErrorEvent {
   const redacted: ErrorEvent = { ...event, attributes: redactAttributes(event.attributes, policy) };
@@ -301,6 +362,11 @@ function redactEvent(event: ErrorEvent, policy: RedactionPolicy): ErrorEvent {
   }
   if (event.mechanism.data !== undefined) {
     redacted.mechanism = { ...event.mechanism, data: redactAttributes(event.mechanism.data, policy) };
+  }
+  if (event.breadcrumbs !== undefined) {
+    redacted.breadcrumbs = event.breadcrumbs.map((crumb) =>
+      crumb.data === undefined ? crumb : { ...crumb, data: redactAttributes(crumb.data, policy) },
+    );
   }
   return redacted;
 }

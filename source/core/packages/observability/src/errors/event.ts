@@ -1,4 +1,5 @@
 import type { Attributes, Level, SerializedError } from "@vipengele/ts-core-common";
+import type { Breadcrumb } from "@vipengele/ts-core-common/scope";
 import type { LogTrace } from "../trace";
 
 /**
@@ -26,6 +27,11 @@ export interface ErrorEvent {
   attributes: Attributes;
   fingerprint?: string[];
   trace?: LogTrace;
+  /**
+   * The trail of the Unit of Work the event was raised in, oldest first, each crumb's `data` cut to
+   * the Reporter's limits. Omitted when the trail is empty.
+   */
+  breadcrumbs?: Breadcrumb[];
 }
 
 /**

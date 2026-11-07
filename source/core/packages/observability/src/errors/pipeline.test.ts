@@ -1,5 +1,5 @@
 import { type SerializedError, type SerializeErrorOptions, serializeError } from "@vipengele/ts-core-common";
-import { type Resource, Scope } from "@vipengele/ts-core-common/scope";
+import { type Breadcrumb, breadcrumbs, type Resource, Scope } from "@vipengele/ts-core-common/scope";
 import { secretKeys } from "@vipengele/ts-core-redaction";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ErrorEvent } from "./event";
@@ -212,6 +212,7 @@ describe("scope attributes in an event", () => {
     const event = onlyEvent(transport.events);
     expect(event.id).toBe(id);
     expect(event.attributes).toEqual({ callOnly: 1 });
+    expect("breadcrumbs" in event).toBe(false);
   });
 });
 
@@ -1207,8 +1208,8 @@ describe("a serialized exception", () => {
     return value;
   }
 
-  it("takes its attributes from the input alone, reading no Scope", () => {
-    const { transport, capture } = aCapture({ dedupe: false });
+  it("takes its attributes from the input alone, reading the Scope for nothing but its trail", () => {
+    const { transport, capture } = aCapture({ dedupe: false, maxBreadcrumbs: 0 });
     const current = vi.spyOn(Scope, "current");
 
     Scope.isolated("request", { scopeOnly: "scope", shared: "scope" }, () => {
@@ -1372,5 +1373,281 @@ describe("a serialized exception", () => {
     expect(event.exception?.data?.token).toBe("changed");
     expect(error).toEqual(snapshot);
     expect(input).toEqual(serialized(snapshot, { attributes: { token: "abc" }, trace: OTHER_TRACE }));
+  });
+});
+
+describe("the breadcrumb trail in an event", () => {
+  /** A capture function over a test transport, with `options` laid over a fixed clock and no processors. */
+  function aCapture(options: Partial<Pipeline> = {}) {
+    const transport = createTestTransport();
+    return { transport, capture: createCapture({ clock: () => 1, processors: [], transport, ...options }) };
+  }
+
+  /** Records one crumb per message into the current Unit of Work, at times 1, 2, 3 and on. */
+  function record(...messages: string[]): void {
+    for (const [index, message] of messages.entries()) {
+      Scope.addBreadcrumb({ message, time: index + 1 });
+    }
+  }
+
+  const messagesOf = (event: ErrorEvent | undefined) => event?.breadcrumbs?.map((crumb) => crumb.message);
+
+  it("carries the Unit of Work's trail, oldest first, on a captured exception and a captured message", () => {
+    const { transport, reporter } = aReporter();
+
+    Scope.isolated("request", {}, () => {
+      Scope.addBreadcrumb({ message: "clicked", category: "ui", level: "info", data: { button: "save" }, time: 5 });
+      Scope.addBreadcrumb({ message: "fetched", time: 6 });
+      reporter.captureException(new Error("boom"));
+      reporter.captureMessage("hello");
+    });
+
+    const trail = [
+      { time: 5, message: "clicked", category: "ui", level: "info", data: { button: "save" } },
+      { time: 6, message: "fetched" },
+    ];
+    expect(transport.events).toHaveLength(2);
+    expect(transport.events[0]?.breadcrumbs).toEqual(trail);
+    expect(transport.events[1]?.breadcrumbs).toEqual(trail);
+  });
+
+  it("carries the trail of the Unit of Work current at capture on a serialized exception, its attributes still the input's alone", () => {
+    const { transport, capture } = aCapture();
+
+    Scope.isolated("request", { scoped: true }, () => {
+      record("first", "second");
+      capture(
+        { kind: "serialized-exception", error: serializeError(new Error("logged")), level: "error", attributes: { fromRecord: 1 } },
+        { handled: true, source: "logger" },
+      );
+    });
+
+    const event = onlyEvent(transport.events);
+    expect(messagesOf(event)).toEqual(["first", "second"]);
+    expect(event.attributes).toEqual({ fromRecord: 1 });
+  });
+
+  it("carries only the crumbs of its own Unit of Work, an inherited scope sharing its parent's", () => {
+    const { transport, capture } = aCapture();
+
+    Scope.isolated("other", {}, () => {
+      record("elsewhere");
+    });
+    Scope.isolated("request", {}, () => {
+      record("outer");
+      Scope.inherit("step", {}, () => {
+        record("inner");
+        capture({ kind: "message", message: "hello" }, { handled: true, source: "capture" });
+      });
+    });
+
+    expect(messagesOf(onlyEvent(transport.events))).toEqual(["outer", "inner"]);
+  });
+
+  it("leaves the field out when the trail is empty", () => {
+    const { transport, capture } = aCapture();
+
+    Scope.isolated("request", {}, () => {
+      capture({ kind: "message", message: "hello" }, { handled: true, source: "capture" });
+    });
+
+    expect("breadcrumbs" in onlyEvent(transport.events)).toBe(false);
+  });
+
+  it("leaves the field out, and runs no hook, when maxBreadcrumbs is 0", () => {
+    const beforeBreadcrumb = vi.fn((crumb: Breadcrumb) => crumb);
+    const { transport, capture } = aCapture({ maxBreadcrumbs: 0, beforeBreadcrumb });
+
+    Scope.isolated("request", {}, () => {
+      record("first");
+      capture({ kind: "message", message: "hello" }, { handled: true, source: "capture" });
+    });
+
+    expect("breadcrumbs" in onlyEvent(transport.events)).toBe(false);
+    expect(beforeBreadcrumb).not.toHaveBeenCalled();
+  });
+
+  it("keeps the newest maxBreadcrumbs crumbs, oldest first", () => {
+    const { transport, capture } = aCapture({ maxBreadcrumbs: 2 });
+
+    Scope.isolated("request", {}, () => {
+      record("a", "b", "c", "d");
+      capture({ kind: "message", message: "hello" }, { handled: true, source: "capture" });
+    });
+
+    expect(messagesOf(onlyEvent(transport.events))).toEqual(["c", "d"]);
+  });
+
+  it("keeps up to 100 crumbs when no maxBreadcrumbs is set", () => {
+    const { transport, capture } = aCapture();
+
+    Scope.isolated("request", {}, () => {
+      record(...Array.from({ length: 120 }, (_, index) => `crumb${index}`));
+      capture({ kind: "message", message: "hello" }, { handled: true, source: "capture" });
+    });
+
+    const messages = messagesOf(onlyEvent(transport.events));
+    expect(messages).toHaveLength(100);
+    expect(messages?.[0]).toBe("crumb20");
+    expect(messages?.[99]).toBe("crumb119");
+  });
+
+  it("runs beforeBreadcrumb on each crumb, oldest first, and attaches what it returns", () => {
+    const seen: string[] = [];
+    const { transport, capture } = aCapture({
+      beforeBreadcrumb: (crumb) => {
+        seen.push(crumb.message);
+        return { ...crumb, message: crumb.message.toUpperCase() };
+      },
+    });
+
+    Scope.isolated("request", {}, () => {
+      record("a", "b", "c");
+      capture({ kind: "message", message: "hello" }, { handled: true, source: "capture" });
+    });
+
+    expect(seen).toEqual(["a", "b", "c"]);
+    expect(messagesOf(onlyEvent(transport.events))).toEqual(["A", "B", "C"]);
+  });
+
+  it("hands beforeBreadcrumb a copy, so changing it leaves the buffer as it was", () => {
+    const { transport, capture } = aCapture({
+      beforeBreadcrumb: (crumb) => {
+        const writable = crumb as { message: string; data?: Record<string, unknown> };
+        writable.message = "changed";
+        (writable.data as Record<string, unknown>).key = "changed";
+        return crumb;
+      },
+    });
+
+    Scope.isolated("request", {}, () => {
+      Scope.addBreadcrumb({ message: "original", data: { key: "original" }, time: 1 });
+      capture({ kind: "message", message: "hello" }, { handled: true, source: "capture" });
+
+      expect(breadcrumbs(Scope.current())).toEqual([{ time: 1, message: "original", data: { key: "original" } }]);
+    });
+
+    expect(onlyEvent(transport.events).breadcrumbs).toEqual([{ time: 1, message: "changed", data: { key: "changed" } }]);
+  });
+
+  it("drops only the crumb for which beforeBreadcrumb throws, returns null or returns a non-object", () => {
+    const { transport, capture } = aCapture({
+      beforeBreadcrumb: (crumb) => {
+        switch (crumb.message) {
+          case "throws":
+            throw new Error("hook failed");
+          case "null":
+            return null;
+          case "string":
+            return "not a crumb" as unknown as Breadcrumb;
+          default:
+            return crumb;
+        }
+      },
+    });
+
+    Scope.isolated("request", {}, () => {
+      record("kept1", "throws", "null", "string", "kept2");
+      capture({ kind: "message", message: "hello" }, { handled: true, source: "capture" });
+    });
+
+    expect(messagesOf(onlyEvent(transport.events))).toEqual(["kept1", "kept2"]);
+  });
+
+  it("runs beforeBreadcrumb before the newest maxBreadcrumbs are kept", () => {
+    const { transport, capture } = aCapture({
+      maxBreadcrumbs: 2,
+      beforeBreadcrumb: (crumb) => (crumb.message === "d" ? null : crumb),
+    });
+
+    Scope.isolated("request", {}, () => {
+      record("a", "b", "c", "d");
+      capture({ kind: "message", message: "hello" }, { handled: true, source: "capture" });
+    });
+
+    expect(messagesOf(onlyEvent(transport.events))).toEqual(["b", "c"]);
+  });
+
+  it("leaves out a data beforeBreadcrumb returns that is not an object", () => {
+    const { transport, capture } = aCapture({
+      beforeBreadcrumb: (crumb) => ({ ...crumb, data: "not data" }) as unknown as Breadcrumb,
+    });
+
+    Scope.isolated("request", {}, () => {
+      Scope.addBreadcrumb({ message: "a", data: { key: 1 }, time: 1 });
+      capture({ kind: "message", message: "hello" }, { handled: true, source: "capture" });
+    });
+
+    expect(onlyEvent(transport.events).breadcrumbs).toEqual([{ time: 1, message: "a" }]);
+  });
+
+  it("cuts each crumb's data to the Reporter's limits", () => {
+    const transport = createTestTransport();
+    const reporter = createReporter((b) => b.transport(transport).limits({ maxStringLength: 3 }));
+
+    Scope.isolated("request", {}, () => {
+      Scope.addBreadcrumb({ message: "a long message stays whole", data: { note: "abcdefgh" }, time: 1 });
+      reporter.captureMessage("hi");
+    });
+
+    expect(onlyEvent(transport.events).breadcrumbs).toEqual([
+      { time: 1, message: "a long message stays whole", data: { note: `abc${CUT}` } },
+    ]);
+  });
+
+  it("leaves the buffer as it was after attaching it", () => {
+    const { transport, capture } = aCapture();
+
+    Scope.isolated("request", {}, () => {
+      record("a", "b");
+      capture({ kind: "message", message: "one" }, { handled: true, source: "capture" });
+      capture({ kind: "message", message: "two" }, { handled: true, source: "capture" });
+
+      expect(breadcrumbs(Scope.current()).map((crumb) => crumb.message)).toEqual(["a", "b"]);
+    });
+
+    expect(transport.events.map(messagesOf)).toEqual([
+      ["a", "b"],
+      ["a", "b"],
+    ]);
+  });
+
+  it("is seen by every processor and by beforeSend", () => {
+    const seen: (string[] | undefined)[] = [];
+    const transport = createTestTransport();
+    const reporter = createReporter((b) =>
+      b
+        .transport(transport)
+        .addProcessor((event) => {
+          seen.push(messagesOf(event));
+          return { ...event, breadcrumbs: [...(event.breadcrumbs ?? []), { time: 9, message: "added" }] };
+        })
+        .beforeSend((event) => {
+          seen.push(messagesOf(event));
+          return event;
+        }),
+    );
+
+    Scope.isolated("request", {}, () => {
+      record("a");
+      reporter.captureMessage("hello");
+    });
+
+    expect(seen).toEqual([["a"], ["a", "added"]]);
+    expect(messagesOf(onlyEvent(transport.events))).toEqual(["a", "added"]);
+  });
+
+  it("does not stop deduplication: two events differing only in their trail are duplicates", () => {
+    const { transport, capture } = aCapture();
+    const sameSite = () => new Error("same");
+
+    Scope.isolated("request", {}, () => {
+      for (const message of ["first", "second"]) {
+        Scope.addBreadcrumb({ message, time: 1 });
+        capture({ kind: "exception", error: sameSite() }, { handled: true, source: "capture" });
+      }
+    });
+
+    expect(messagesOf(onlyEvent(transport.events))).toEqual(["first"]);
   });
 });

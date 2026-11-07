@@ -23,6 +23,36 @@ function withSecretFields<T extends Error>(error: T): T {
   return Object.assign(error, { password: SECRET, reason: "quota" });
 }
 
+describe("Reporter redaction of the breadcrumb trail", () => {
+  it("masks a secret key in each crumb's data and keeps every crumb's message", () => {
+    const transport = createTestTransport();
+    const reporter = createReporter((b) => b.transport(transport));
+
+    Scope.isolated("request", {}, () => {
+      Scope.addBreadcrumb({ message: "signed in", data: { password: SECRET, user: "ada" }, time: 1 });
+      Scope.addBreadcrumb({ message: `password ${SECRET}`, time: 2 });
+      reporter.captureMessage("hello");
+    });
+
+    expect(onlyEvent(transport).breadcrumbs).toEqual([
+      { time: 1, message: "signed in", data: { password: REDACTED, user: "ada" } },
+      { time: 2, message: `password ${SECRET}` },
+    ]);
+  });
+
+  it("leaves each crumb's data as it is when redaction is off", () => {
+    const transport = createTestTransport();
+    const reporter = createReporter((b) => b.transport(transport).redaction(null));
+
+    Scope.isolated("request", {}, () => {
+      Scope.addBreadcrumb({ message: "signed in", data: { password: SECRET }, time: 1 });
+      reporter.captureMessage("hello");
+    });
+
+    expect(onlyEvent(transport).breadcrumbs).toEqual([{ time: 1, message: "signed in", data: { password: SECRET } }]);
+  });
+});
+
 describe("Reporter redaction of the trace", () => {
   it("leaves trace intact under a policy that matches its field names", () => {
     const registry = globalThis as unknown as Record<symbol, unknown>;

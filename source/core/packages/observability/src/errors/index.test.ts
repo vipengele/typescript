@@ -1,5 +1,6 @@
 import type { Level } from "@vipengele/ts-core-common";
 import {
+  type Breadcrumb as CommonBreadcrumb,
   type Resource as CommonResource,
   type ScopeAttributes as CommonScopeAttributes,
   type ScopeUser as CommonScopeUser,
@@ -9,6 +10,7 @@ import { expect, expectTypeOf, test } from "vitest";
 import type { DropReason as DeliveryDropReason } from "../delivery/delivery";
 import type { Sink } from "../logger/record";
 import type {
+  Breadcrumb,
   DropReason,
   ErrorEvent,
   ErrorEventProcessor,
@@ -66,6 +68,11 @@ test("the entry point exports the Scope types", () => {
   expectTypeOf<ScopeAttributes>().toEqualTypeOf<CommonScopeAttributes>();
   expectTypeOf<ScopeUser>().toEqualTypeOf<CommonScopeUser>();
   expectTypeOf(entry.Scope.setUser).parameter(0).toEqualTypeOf<ScopeUser>();
+});
+
+test("the entry point exports the Breadcrumb type an Error Event's trail holds", () => {
+  expectTypeOf<Breadcrumb>().toEqualTypeOf<CommonBreadcrumb>();
+  expectTypeOf<ErrorEvent["breadcrumbs"]>().toEqualTypeOf<Breadcrumb[] | undefined>();
 });
 
 test("the exported ErrorEvent is the framework's type, not the DOM one", () => {
