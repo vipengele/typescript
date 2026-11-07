@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "notes": {
+    "build-runs-tsup-before-tsc": {
+      "count": 2,
+      "first": "2026-11-06T06:37:28.71858095Z",
+      "last": "2026-11-06T07:18:17.478259438Z"
+    },
+    "workspace-deps-resolve-through-dist-only": {
+      "count": 1,
+      "first": "2026-11-06T06:37:28.730460325Z",
+      "last": "2026-11-06T06:37:28.730460325Z"
+    }
+  }
+}

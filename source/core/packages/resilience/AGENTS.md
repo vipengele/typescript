@@ -1,7 +1,7 @@
 # @vipengele/ts-core-resilience
 
-Resilience primitives. Entry points: `.` (re-exports `./errors`, `./retry` and `./timeout`),
-`./errors`, `./retry` and `./timeout`. Run commands from `source/core` (`pnpm build`, `pnpm type-check`,
+Resilience primitives. Entry points: `.` (re-exports `./circuit-breaker`, `./errors`, `./retry` and
+`./timeout`), `./circuit-breaker`, `./errors`, `./retry` and `./timeout`. Run commands from `source/core` (`pnpm build`, `pnpm type-check`,
 `pnpm test`, `pnpm lint`, `pnpm format:check`).
 
 ## Errors (`src/errors/resilience-errors.ts`)
@@ -16,12 +16,17 @@ Resilience primitives. Entry points: `.` (re-exports `./errors`, `./retry` and `
 - A test asserts every exported `*_CODE` constant starts with `resilience.`; a code outside the
   prefix would be missed by `isResilienceError`.
 - Constructors take `(message, options?: ErrorOptions)`. `OperationTimeoutError` takes
-  `(message, durationMs, options?)` and exposes `durationMs`. No error sets `name`.
+  `(message, durationMs, options?)` and exposes `durationMs`. `CircuitOpenError` takes
+  `(message, details: CircuitOpenErrorDetails, options?)` and exposes `circuit`, `state` and
+  `remainingMs` (`circuit`, not `name`, which `Error#name` already owns). No error sets `name`.
 
 ## Package layout
 
 - `tsup.config.ts` has one entry per export and `package-exports.test.ts` fails when an `exports`
   key and a tsup entry disagree.
+- `src/circuit-breaker/` holds `circuit-breaker.ts` (the policy and state machine), `config.ts`
+  (config types and validation) and `sliding-window.ts`; the window and the validator are internal and
+  not exported from the barrel.
 - The only dependency is `@vipengele/ts-core-common`, resolved through its built `dist/`, so it is
   built before this package's tests run (turbo's `^build`; the lydite setup line in
   `.lydite/components.yml`).
@@ -88,3 +93,66 @@ Resilience primitives. Entry points: `.` (re-exports `./errors`, `./retry` and `
   declined emits nothing.
 - The loop is split into small helpers (`attemptOnce`, `delayFor`, `sanitizeDelay`, `settle`)
   to keep each function's cyclomatic complexity well under lydite's CRAP gate of 30.
+
+## Circuit breaker (`src/circuit-breaker/`)
+
+- `createCircuitBreaker(name, config, { clock? })` returns a `CircuitBreakerPolicy`: a `Policy` plus
+  `events: Listenable<CircuitBreakerEvent>`, a `state` getter, a `metrics` getter, `reset()` and
+  `forceOpen()`. There is no scheduler: the breaker never sleeps. `op` runs once with `attempt: 1`.
+  Helpers stay small to keep each function under lydite's CRAP gate of 30.
+- `validateCircuitBreakerConfig` (`config.ts`) throws `ResilienceConfigError` at creation, with
+  `Circuit breaker "<name>" expects <key> to be <constraint>, got <value>`, or `A circuit breaker needs
+  a non-empty name`. `failureRateThreshold` is finite in (0, 100]; `minimumCalls` and
+  `permittedCallsInHalfOpen` are integers of at least 1 for both window types; `slidingWindow.type`
+  is `"count"` or `"time"`; a count `size` is an integer of at least 1; a time `size` (ms) and the two
+  waits are finite, above 0 and at most `MAX_TIMEOUT_DURATION_MS`. A count window with `minimumCalls >
+  size` is rejected, never clamped.
+- Count windows are a ring of the last `size` outcomes. Time windows are aggregated buckets of
+  `max(1, ceil(size / 100))` ms (about 100), evicted lazily against the clock on every record and
+  read, so memory is bounded whatever the throughput and the edge is accurate to one bucket. A clock
+  reading earlier than the newest bucket lands in it and evicts nothing.
+- Classification is three-way. A call is ignored when the caller's signal is aborted at completion or
+  the error is a `RateLimitExceededError`, `BulkheadFullError` or `CircuitOpenError` (by guard). An
+  ignored call is not recorded, releases its half-open permit and increments `ignoredCalls`.
+  Otherwise `isFailure(outcome)` decides, default `!outcome.ok`; a custom one sees `ok: true`
+  outcomes. An `isFailure` that throws classifies the outcome as a failure, and the caller still gets
+  the op's own value or error. A synchronous throw from `op` is an `ok: false` outcome. A pre-aborted
+  caller signal rejects with its reason before admission and is not counted.
+- Every transition increments a generation and each admitted call captures it. An outcome whose
+  generation is not current is recorded nowhere, though its value or error still reaches the caller.
+- Closed: after recording, the circuit opens (`failure-rate`) when buffered calls reach
+  `minimumCalls` and the failure rate is at or above the threshold.
+- open to half-open is lazy: no timer. The `state` getter is pure: it reports `"half-open"` once
+  `waitDurationInOpenMs` has elapsed and `"open"` once a half-open circuit is past
+  `maxWaitInHalfOpenMs`, but mutates nothing and emits nothing. The transition and its event happen
+  on the next `execute`, and after the open wait that call is the first probe. A read (`state`,
+  `metrics`) never transitions and never emits; time-bucket eviction on read is the one allowed
+  housekeeping. Between the wait elapsing and the next call, `state` reads `"half-open"` while
+  `metrics` still holds the open period's counters. Elapsed time is `max(0, now - enteredAt)`, so a
+  clock stepping back never gives a negative `remainingMs`.
+- Half-open admits up to `permittedCallsInHalfOpen` calls, counting in-flight ones, and refuses the
+  rest with state `"half-open"`. When that many non-ignored probes have recorded, the failure rate
+  over just those decides: below the threshold closes with a fresh window (`half-open-passed`), at
+  or above opens for another full wait (`half-open-failed`). `minimumCalls` does not apply.
+  Admission is synchronous: the state read, lazy transition, permit take and generation capture all
+  happen inside `execute` before its first `await`, which a synchronous burst depends on.
+- `maxWaitInHalfOpenMs` is measured from entering half-open. The first `execute` after the deadline
+  transitions to open (`half-open-timed-out`, new wait starting then) and is itself refused;
+  outstanding probes are stale by generation. Unset waits indefinitely.
+- `forceOpen()` moves to `"forced-open"` (`forced-open`), refusing every call until `reset()`, and is
+  a no-op while forced-open. `reset()` from any state moves to closed with a fresh window, counters
+  and generation, and emits `reset` only when the state actually changes; in closed it still clears
+  the window and counters and makes in-flight outcomes stale, with no event.
+- `metrics` is a frozen snapshot per read: `failureRate`, `bufferedCalls`, `failedCalls`,
+  `successfulCalls`, `notPermittedCalls`, `ignoredCalls`. `failureRate` (0 to 100) is `undefined`
+  below `minimumCalls` while closed, until all permitted probes have recorded while half-open, and
+  always while open or forced-open. Every counter resets on every state transition, `reset()` and
+  `forceOpen()` included.
+- Events carry `kind`, `name` and `at`, and are emitted after the state mutation.
+  `circuit-state-changed` has `from`, `to` and a `reason` (`failure-rate`, `wait-elapsed`,
+  `half-open-passed`, `half-open-failed`, `half-open-timed-out`, `reset`, `forced-open`);
+  `circuit-call-not-permitted` has the refusing `state`. There is no per-call success or failure
+  event.
+- Refusals are `CircuitOpenError`s with message `Circuit breaker "<name>" is <state> and refused the
+  call`, and `circuit`, `state` and `remainingMs`. `remainingMs` is set only for `"open"`, the time
+  until half-open, never below 0.
