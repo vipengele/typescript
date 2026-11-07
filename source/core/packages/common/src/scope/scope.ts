@@ -169,9 +169,14 @@ function setContext(name: string, data: Readonly<Record<string, unknown>>): void
  *
  * It never throws: an input without a string `message` is dropped, and a `category` that is not a
  * string, a `level` that is not a `Level` or a `data` that is not a record is left out of the entry.
+ * A carrier whose `current()` throws drops the entry.
  */
 function addBreadcrumb(input: BreadcrumbInput): void {
-  record(current(), input);
+  try {
+    record(current(), input);
+  } catch {
+    // The entry is dropped: a breadcrumb call sits in code that is already handling something else.
+  }
 }
 
 /**

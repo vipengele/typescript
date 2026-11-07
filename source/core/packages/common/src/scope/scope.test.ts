@@ -310,4 +310,17 @@ describe("Scope.useCarrier", () => {
       expect(carrier.calls).toEqual(["run:undefined"]);
     });
   });
+
+  test("Scope.addBreadcrumb drops the entry when the carrier's current() throws", () => {
+    const carrier: ContextCarrier<Scope> = {
+      current: () => {
+        throw new Error("carrier failure");
+      },
+      run: (_value, fn) => fn(),
+    };
+
+    withCarrier(carrier, () => {
+      expect(() => Scope.addBreadcrumb({ message: "lost" })).not.toThrow();
+    });
+  });
 });
