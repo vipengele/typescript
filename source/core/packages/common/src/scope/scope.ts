@@ -1,4 +1,5 @@
 import type { ContextCarrier } from "../context";
+import { type BreadcrumbInput, addBreadcrumb as record } from "./breadcrumbs";
 import {
   assertSettable,
   createChildScope,
@@ -161,6 +162,19 @@ function setContext(name: string, data: Readonly<Record<string, unknown>>): void
 }
 
 /**
+ * Records a breadcrumb into the current Unit of Work's trail: the buffer the current scope shares
+ * with every scope of its Unit of Work, or the default scope's own outside any `isolated`. `data` is
+ * normalized and the whole entry frozen when it is recorded, `time` defaults to `systemClock`, and
+ * the trail keeps the newest 100 entries.
+ *
+ * It never throws: an input without a string `message` is dropped, and a `category` that is not a
+ * string, a `level` that is not a `Level` or a `data` that is not a record is left out of the entry.
+ */
+function addBreadcrumb(input: BreadcrumbInput): void {
+  record(current(), input);
+}
+
+/**
  * Replaces the carrier the current scope rides on — a zone.js-backed carrier in an application that
  * already runs under zone.js, say. The replacement is seen immediately by every copy of the package
  * in the realm, and applies to every propagation made from then on.
@@ -184,5 +198,6 @@ export const Scope = {
   setUser,
   setTag,
   setContext,
+  addBreadcrumb,
   useCarrier,
 } as const;
