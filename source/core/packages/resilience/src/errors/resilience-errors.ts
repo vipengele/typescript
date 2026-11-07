@@ -21,9 +21,35 @@ export const RESILIENCE_CONFIG_ERROR_CODE = "resilience.config";
 /** The base of every error this package raises; each concrete error fixes its own `resilience.*` code. */
 export abstract class ResilienceError extends VipengeleError {}
 
+/** What a {@link CircuitOpenError} reports about the circuit that refused the call. */
+export type CircuitOpenErrorDetails = {
+  /** The name of the circuit breaker that refused the call. */
+  circuit: string;
+  /** The state the circuit was in when it refused the call. */
+  state: "open" | "half-open" | "forced-open";
+  /** Milliseconds until the circuit becomes half-open; set only while `state` is `"open"`. */
+  remainingMs?: number;
+};
+
 /** Raised when a call is refused because the circuit is open. */
 export class CircuitOpenError extends ResilienceError {
   readonly code = CIRCUIT_OPEN_ERROR_CODE;
+
+  /** The name of the circuit breaker that refused the call. */
+  readonly circuit: string;
+
+  /** The state the circuit was in when it refused the call. */
+  readonly state: CircuitOpenErrorDetails["state"];
+
+  /** Milliseconds until the circuit becomes half-open; `undefined` unless `state` is `"open"`. */
+  readonly remainingMs: number | undefined;
+
+  constructor(message: string, details: CircuitOpenErrorDetails, options?: ErrorOptions) {
+    super(message, options);
+    this.circuit = details.circuit;
+    this.state = details.state;
+    this.remainingMs = details.remainingMs;
+  }
 }
 
 /** Raised when a call is refused because the rate limit is exhausted. */

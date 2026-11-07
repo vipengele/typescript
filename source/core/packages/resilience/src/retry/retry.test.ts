@@ -244,7 +244,7 @@ describe("delay sanitising", () => {
 
 describe("the default shouldRetry", () => {
   test.each([
-    { name: "CircuitOpenError", error: new CircuitOpenError("open") },
+    { name: "CircuitOpenError", error: new CircuitOpenError("open", { circuit: "c", state: "open" }) },
     { name: "RateLimitExceededError", error: new RateLimitExceededError("limited") },
     { name: "BulkheadFullError", error: new BulkheadFullError("full") },
   ])("does not retry a $name, and emits nothing", async ({ error }) => {

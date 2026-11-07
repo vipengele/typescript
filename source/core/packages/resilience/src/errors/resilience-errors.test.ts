@@ -37,7 +37,7 @@ const cases = [
     name: "CircuitOpenError",
     code: CIRCUIT_OPEN_ERROR_CODE,
     literal: "resilience.circuit-open",
-    make: () => new CircuitOpenError("open"),
+    make: () => new CircuitOpenError("open", { circuit: "payments", state: "open" }),
     guard: isCircuitOpenError,
   },
   {
@@ -116,7 +116,7 @@ describe("the concrete guards reject each other's errors", () => {
 test("every error keeps its message and cause", () => {
   const cause = new Error("root");
   const raised = [
-    new CircuitOpenError("kept", { cause }),
+    new CircuitOpenError("kept", { circuit: "payments", state: "open" }, { cause }),
     new RateLimitExceededError("kept", { cause }),
     new BulkheadFullError("kept", { cause }),
     new OperationTimeoutError("kept", 1, { cause }),
@@ -127,6 +127,26 @@ test("every error keeps its message and cause", () => {
     expect(error.message).toBe("kept");
     expect(error.cause).toBe(cause);
   }
+});
+
+describe("CircuitOpenError", () => {
+  test("carries the circuit, its state and the time until half-open", () => {
+    const error = new CircuitOpenError("open", { circuit: "payments", state: "open", remainingMs: 1500 });
+
+    expect(error.circuit).toBe("payments");
+    expect(error.state).toBe("open");
+    expect(error.remainingMs).toBe(1500);
+  });
+
+  test.each(["open", "half-open", "forced-open"] as const)("carries the %s state", (state) => {
+    expect(new CircuitOpenError("refused", { circuit: "c", state }).state).toBe(state);
+  });
+
+  test("leaves remainingMs undefined when omitted", () => {
+    const error = new CircuitOpenError("refused", { circuit: "c", state: "forced-open" });
+
+    expect(error.remainingMs).toBeUndefined();
+  });
 });
 
 describe("OperationTimeoutError", () => {
