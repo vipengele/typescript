@@ -99,6 +99,8 @@ export function createReporter(configure?: (builder: ReporterBuilder) => Reporte
     ignoreErrors,
     dedupe,
     rateLimit,
+    maxBreadcrumbs,
+    beforeBreadcrumb,
   } = (configure === undefined ? initial : configure(initial)).build();
   fillRuntimeContext();
   const capture = createCapture({
@@ -115,6 +117,8 @@ export function createReporter(configure?: (builder: ReporterBuilder) => Reporte
     ignoreErrors,
     dedupe,
     rateLimit,
+    maxBreadcrumbs,
+    beforeBreadcrumb,
   });
   const flush = async (timeoutMs?: number): Promise<boolean> => (transport === undefined ? true : transport.flush(timeoutMs));
   const teardown = setupIntegrations(integrations, {
