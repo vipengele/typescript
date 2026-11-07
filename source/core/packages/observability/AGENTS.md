@@ -160,6 +160,9 @@ Run commands from `source/core` (`pnpm build`, `pnpm type-check`, `pnpm test`, `
   `severity.ts` and `time.ts` know neither. `severity.ts` gives `severityText` as the upper-case
   level name (`Uppercase<Level>`) for both wrappers. `encode-error-events.ts` sets `eventName:
   "exception"` on a record for an event carrying an `exception`; a captured message has none.
+  It also writes `vipengele.breadcrumbs` (arrayValue of kvlistValue with `time`, `message`, `category`,
+  `level`, `data`, oldest first; no attribute for an empty trail), an encoder-owned key that wins over
+  an event attribute of the same name.
 - `src/delivery/` and `src/otlp/` are entry-point-neutral: any entry point may import them, the OTLP
   Transport of `./errors` included (ADR-0010, ADR-0022), so `delivery/` stays free of `LogRecord`,
   `ErrorEvent` and anything from `./logger`, and `logger/` never imports `errors/` (shipped `errors/` source takes only types from `logger/`).
@@ -180,6 +183,13 @@ Run commands from `source/core` (`pnpm build`, `pnpm type-check`, `pnpm test`, `
   handlers; no active span gives no `trace` key. Redaction never touches it. After processors and
   `beforeSend`, a `trace` failing the `src/trace.ts` guards is dropped and the event kept, so a
   transport never sees a malformed id.
+- `enrich` also sets `breadcrumbs` for every input kind, a serialized exception included: `trailOf`
+  reads the current Unit of Work's buffer (`breadcrumbs(Scope.current())`, a throw gives none), runs
+  `beforeBreadcrumb` on a `structuredClone` of each crumb oldest first (a throw, `null` or non-object
+  drops that crumb), then keeps the newest `maxBreadcrumbs` (0..100, default 100, `ReporterConfigError`
+  otherwise) with `data` cut to `limits`; an empty trail leaves the key out. The buffer is never cleared.
+  Redaction covers each crumb's `data` only (not `message`/`category`/`level`); processors and
+  `beforeSend` see the trail; dedupe ignores it. A Scope's tag is an attribute, not a breadcrumb.
 - Stages: gate, `sampleRate`, normalize, `ignoreErrors`, enrich, redaction, processors, `beforeSend`,
   dedupe, rate limit, transport (ADR-0020). The Reporter owns policy drops and the Transport delivery
   drops; every drop still returns the id. `sampleRate` 1, `ignoreErrors` `[]`, `dedupe` on and
@@ -218,11 +228,18 @@ Run commands from `source/core` (`pnpm build`, `pnpm type-check`, `pnpm test`, `
   pipeline (`createLoggerSink`, wired in `reporter.ts`). It reports each record with an `error` at
   `minLevel` (default `"error"`) or above as a handled event, mechanism `{ handled: true, source:
   "logger" }`, the record's level, its attributes plus `logger.category` and `logger.message`, the
-  record's `trace` (else the active span) and the reporter's clock for `time`. `enrich` reads no
-  Scope for it: the record's attributes already carry the Scope from when it was written. An invalid `minLevel`
-  throws `ReporterConfigError`. A write during the same sink's own capture is dropped (synchronous
-  re-entrancy guard). After `close()` it behaves like `captureException` after close; there is no
+  record's `trace` (else the active span) and the reporter's clock for `time`. `enrich` takes its
+  attributes from the record alone, since they already carry the Scope from when it was written; it
+  reads the Scope only for the breadcrumb trail. An invalid `minLevel`
+  throws `ReporterConfigError`. A write during the same sink's own capture is not reported (synchronous
+  re-entrancy guard), only recorded as a breadcrumb. After `close()` it behaves like `captureException` after close; there is no
   reporter closed flag. Every stage applies (ADR-0026).
+- Unless `{ breadcrumbs: false }`, `write` then records every received record (even one with no error
+  or below `minLevel`) through `Scope.addBreadcrumb` as `{ time, message, category, level }`, no data,
+  into the Unit of Work current when `write` runs, after capturing, so the event's own trail ends
+  before the record. A record arriving during the sink's own capture is recorded, not reported. Wrapped
+  in `createBatchingSink` it records into whatever Unit of Work is current at flush: add it directly or
+  pass `{ breadcrumbs: false }`. Logger thresholds apply (warn+ for an unconfigured category).
 - It captures through an internal `serialized-exception` kind, not public: the error is already a
   `SerializedError`, so `serializeError` is skipped, but it is lifted to an `ExceptionRecord` (frames,
   `cause`/`errors` chain) like a thrown value, and its own `trace` wins over the live span. It is
