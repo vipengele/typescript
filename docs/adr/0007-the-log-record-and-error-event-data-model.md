@@ -45,7 +45,7 @@ interface ErrorEvent {
   exception?: ExceptionRecord;    // absent only for a captured message
   mechanism: Mechanism;
   attributes: Attributes;
-  breadcrumbs: Breadcrumb[];      // superseded by ADR-0006: the tagged ancestors of the capturing Scope, not a buffer; the event has no such field
+  breadcrumbs: Breadcrumb[];      // superseded by ADR-0006, then by ADR-0027: optional on the event, a snapshot of the Unit of Work's buffer
   fingerprint?: string[];
   trace?: { traceId: string; spanId: string; flags: number };
 }
@@ -151,7 +151,9 @@ and handed to the Transport unchanged; each attaches it once per payload.
   navigations, clicks. **Superseded by ADR-0006**: there is no separate buffer, and a scope's `tag`
   is its Breadcrumb, so the `Breadcrumb[]` shape and rolling-buffer description above belong to a
   design this repo no longer builds. An Error Event's trail is the tagged ancestors of the Scope it
-  was raised in, read by walking up from that Scope, not copied at capture.
+  was raised in, read by walking up from that Scope, not copied at capture. **ADR-0027 supersedes
+  that in turn**: the event carries `breadcrumbs?: Breadcrumb[]`, a snapshot of a bounded
+  per-Unit-of-Work buffer.
 - **No separate `tags`, `extra` or `user`**, unlike Sentry: everything is `attributes`, and
   `Scope.setUser` writes OpenTelemetry's `user.*` keys, `Scope.setTag` the plain key and
   `Scope.setContext` `name.field` keys (ADR-0006). Which attributes a backend indexes is the
