@@ -1,3 +1,4 @@
+import { Scope } from "@vipengele/ts-core-common/scope";
 import { createManualTime } from "@vipengele/ts-core-common/testing";
 import { describe, expect, it, vi } from "vitest";
 import type { DeliveryRequest, DeliveryResponse } from "../../delivery/delivery";
@@ -104,6 +105,33 @@ describe("createOtlpTransport", () => {
       expect(record.traceId).toBe(TRACE_ID);
       expect(record.spanId).toBe(SPAN_ID);
       expect(record.flags).toBe(1);
+    });
+  });
+
+  it("exports the Unit of Work's breadcrumbs as the vipengele.breadcrumbs attribute", async () => {
+    const { transport, calls } = setup();
+    const reporter = createReporter((b) => b.transport(transport));
+
+    Scope.isolated("request", {}, () => {
+      Scope.addBreadcrumb({ message: "clicked", category: "ui", time: 5 });
+      reporter.captureMessage("hello");
+    });
+    await reporter.flush();
+
+    expect(attributesOf(calls[0]?.init.body ?? "").get("vipengele.breadcrumbs")).toEqual({
+      arrayValue: {
+        values: [
+          {
+            kvlistValue: {
+              values: [
+                { key: "time", value: { intValue: "5" } },
+                { key: "message", value: { stringValue: "clicked" } },
+                { key: "category", value: { stringValue: "ui" } },
+              ],
+            },
+          },
+        ],
+      },
     });
   });
 

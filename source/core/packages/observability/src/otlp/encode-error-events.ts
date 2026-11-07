@@ -23,6 +23,7 @@ const MECHANISM_HANDLED = "vipengele.mechanism.handled";
 const MECHANISM_SOURCE = "vipengele.mechanism.source";
 const MECHANISM_DATA = "vipengele.mechanism.data";
 const FINGERPRINT = "vipengele.fingerprint";
+const BREADCRUMBS = "vipengele.breadcrumbs";
 
 /**
  * Encodes `entries` as an OTLP/HTTP JSON `ExportLogsServiceRequest` body (ADR-0007, ADR-0022), one
@@ -84,7 +85,7 @@ function exceptionBody(exception: ExceptionRecord): string {
 
 /**
  * The event's own attributes, then `log.record.uid`, the `exception.*` keys when it carries an
- * exception, the mechanism and the fingerprint. A key the encoder writes for this event wins: an
+ * exception, the mechanism, the fingerprint and `vipengele.breadcrumbs` when it carries any. A key the encoder writes for this event wins: an
  * event attribute of the same name is left out, since OTLP attribute keys are unique. A key it does
  * not write for this event, such as `exception.type` on a captured message, keeps the event's value.
  */
@@ -95,6 +96,7 @@ function eventAttributes(event: ErrorEvent): KeyValue[] {
     ...exception,
     ...mechanismAttributes(event.mechanism),
     ...fingerprintAttributes(event.fingerprint),
+    ...breadcrumbAttributes(event.breadcrumbs),
   ];
   const writtenKeys = new Set(written.map(({ key }) => key));
   return [...toKeyValues(event.attributes).filter(({ key }) => !writtenKeys.has(key)), ...written];
@@ -109,6 +111,15 @@ function mechanismAttributes(mechanism: ErrorEvent["mechanism"]): KeyValue[] {
     attributes.push({ key: MECHANISM_DATA, value: toAnyValue(mechanism.data) });
   }
   return attributes;
+}
+
+/** The trail as an array of kvlists, oldest first; an event with no breadcrumbs writes no attribute. */
+function breadcrumbAttributes(breadcrumbs: ErrorEvent["breadcrumbs"]): KeyValue[] {
+  if (breadcrumbs === undefined || breadcrumbs.length === 0) {
+    return [];
+  }
+  const values = breadcrumbs.map(({ time, message, category, level, data }) => toAnyValue({ time, message, category, level, data }));
+  return [{ key: BREADCRUMBS, value: { arrayValue: { values } } }];
 }
 
 function fingerprintAttributes(fingerprint: ErrorEvent["fingerprint"]): KeyValue[] {
