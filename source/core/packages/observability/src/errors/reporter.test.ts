@@ -580,6 +580,65 @@ describe("createReporter", () => {
       expect(Scope.resource()["os.type"]).toBeUndefined();
     });
   });
+
+  describe("breadcrumbs", () => {
+    const messagesOf = (event: ErrorEvent): string[] | undefined => event.breadcrumbs?.map((crumb) => crumb.message);
+
+    it("attaches the recorded breadcrumbs to an event when nothing is configured", () => {
+      Scope.isolated("breadcrumbs-test", {}, () => {
+        const transport = createTestTransport();
+        const reporter = createReporter((b) => b.transport(transport));
+        Scope.addBreadcrumb({ message: "one" });
+        Scope.addBreadcrumb({ message: "two" });
+
+        reporter.captureMessage("boom");
+
+        expect(messagesOf(onlyEvent(transport.events))).toEqual(["one", "two"]);
+      });
+    });
+
+    it("keeps the newest maxBreadcrumbs", () => {
+      Scope.isolated("breadcrumbs-test", {}, () => {
+        const transport = createTestTransport();
+        const reporter = createReporter((b) => b.transport(transport).maxBreadcrumbs(2));
+        for (const message of ["one", "two", "three"]) {
+          Scope.addBreadcrumb({ message });
+        }
+
+        reporter.captureMessage("boom");
+
+        expect(messagesOf(onlyEvent(transport.events))).toEqual(["two", "three"]);
+      });
+    });
+
+    it("leaves breadcrumbs absent when maxBreadcrumbs is 0", () => {
+      Scope.isolated("breadcrumbs-test", {}, () => {
+        const transport = createTestTransport();
+        const reporter = createReporter((b) => b.transport(transport).maxBreadcrumbs(0));
+        Scope.addBreadcrumb({ message: "one" });
+
+        reporter.captureMessage("boom");
+
+        expect(onlyEvent(transport.events)).not.toHaveProperty("breadcrumbs");
+      });
+    });
+
+    it("drops a breadcrumb the beforeBreadcrumb hook rejects", () => {
+      Scope.isolated("breadcrumbs-test", {}, () => {
+        const transport = createTestTransport();
+        const reporter = createReporter((b) =>
+          b.transport(transport).beforeBreadcrumb((crumb) => (crumb.message === "noise" ? null : crumb)),
+        );
+        for (const message of ["one", "noise", "two"]) {
+          Scope.addBreadcrumb({ message });
+        }
+
+        reporter.captureMessage("boom");
+
+        expect(messagesOf(onlyEvent(transport.events))).toEqual(["one", "two"]);
+      });
+    });
+  });
 });
 
 describe("createCapture", () => {

@@ -1,4 +1,5 @@
 import { systemClock } from "@vipengele/ts-core-common";
+import type { Breadcrumb } from "@vipengele/ts-core-common/scope";
 import { secretKeys } from "@vipengele/ts-core-redaction";
 import { describe, expect, it } from "vitest";
 import { ReporterBuilder } from "./builder";
@@ -35,9 +36,12 @@ describe("ReporterBuilder", () => {
       ignoreErrors: [],
       dedupe: true,
       rateLimit: { burst: 60, perMinute: 60 },
+      maxBreadcrumbs: 100,
+      beforeBreadcrumb: undefined,
     });
     expect(settings).toHaveProperty("enabledEnvironments", undefined);
     expect(settings).toHaveProperty("beforeSend", undefined);
+    expect(settings).toHaveProperty("beforeBreadcrumb", undefined);
     expect(Object.isFrozen(settings.processors)).toBe(true);
     expect(Object.isFrozen(settings.ignoreErrors)).toBe(true);
     expect(Object.isFrozen(settings.rateLimit)).toBe(true);
@@ -304,6 +308,72 @@ describe("ReporterBuilder", () => {
     it("names what it rejects", () => {
       expect(() => new ReporterBuilder().beforeSend("hook" as never)).toThrow(
         "Invalid reporter beforeSend hook of type string: expected a function.",
+      );
+    });
+  });
+
+  describe("maxBreadcrumbs", () => {
+    it("keeps the count set last, and returns the builder", () => {
+      const builder = new ReporterBuilder();
+
+      expect(builder.maxBreadcrumbs(10)).toBe(builder);
+      expect(builder.build().maxBreadcrumbs).toBe(10);
+      expect(builder.maxBreadcrumbs(20).build().maxBreadcrumbs).toBe(20);
+    });
+
+    it.for([0, 1, 100])("accepts %d", (count) => {
+      expect(new ReporterBuilder().maxBreadcrumbs(count).build().maxBreadcrumbs).toBe(count);
+    });
+
+    it.for([
+      ["NaN", Number.NaN],
+      ["a fraction", 1.5],
+      ["a negative number", -1],
+      ["a number above 100", 101],
+      ["infinity", Number.POSITIVE_INFINITY],
+      ["a numeric string", "5"],
+      ["null", null],
+      ["undefined", undefined],
+      ["a bigint", 1n],
+    ] as const)("rejects %s and leaves the builder as it was", ([, value]) => {
+      const builder = new ReporterBuilder().maxBreadcrumbs(7);
+
+      expect(() => builder.maxBreadcrumbs(value as never)).toThrow(expect.toSatisfy(isReporterConfigError));
+      expect(builder.build().maxBreadcrumbs).toBe(7);
+    });
+
+    it("names the value it rejects", () => {
+      expect(() => new ReporterBuilder().maxBreadcrumbs(101)).toThrow(
+        "Invalid reporter maxBreadcrumbs 101: expected an integer from 0 to 100.",
+      );
+      expect(() => new ReporterBuilder().maxBreadcrumbs("5" as never)).toThrow(
+        "Invalid reporter maxBreadcrumbs of type string: expected an integer from 0 to 100.",
+      );
+    });
+  });
+
+  describe("beforeBreadcrumb", () => {
+    const first = (crumb: Breadcrumb): Breadcrumb => crumb;
+    const last = (): null => null;
+
+    it("keeps the hook set last, and returns the builder", () => {
+      const builder = new ReporterBuilder();
+
+      expect(builder.beforeBreadcrumb(first)).toBe(builder);
+      expect(builder.build().beforeBreadcrumb).toBe(first);
+      expect(builder.beforeBreadcrumb(last).build().beforeBreadcrumb).toBe(last);
+    });
+
+    it.for([null, undefined, 5, "hook", {}])("rejects %o and leaves the builder as it was", (value) => {
+      const builder = new ReporterBuilder().beforeBreadcrumb(first);
+
+      expect(() => builder.beforeBreadcrumb(value as never)).toThrow(expect.toSatisfy(isReporterConfigError));
+      expect(builder.build().beforeBreadcrumb).toBe(first);
+    });
+
+    it("names what it rejects", () => {
+      expect(() => new ReporterBuilder().beforeBreadcrumb("hook" as never)).toThrow(
+        "Invalid reporter beforeBreadcrumb hook of type string: expected a function.",
       );
     });
   });

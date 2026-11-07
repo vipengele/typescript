@@ -1,4 +1,5 @@
 import { VipengeleError } from "../errors/vipengele-error";
+import type { Breadcrumb } from "./breadcrumbs";
 
 /** The attributes a scope holds of its own. */
 export type ScopeAttributes = Record<string, unknown>;
@@ -26,7 +27,7 @@ export interface Resource {
 
 /** A node of the scope tree, as the rest of the framework and an application see it. */
 export interface Scope {
-  /** The scope's Breadcrumb: a short label for the step it represents. The root and the default scope carry none. */
+  /** A short label for the step the scope represents. The root and the default scope carry none. */
   readonly tag: string | undefined;
   /** The value of `key` on this scope or its nearest ancestor holding it, read at call time; `undefined` when none does. */
   get(key: string): unknown;
@@ -63,16 +64,24 @@ export function isReservedScopeKeyError(value: unknown): value is ReservedScopeK
   return value instanceof Error && (value as Partial<VipengeleError>).code === RESERVED_SCOPE_KEY_ERROR_CODE;
 }
 
-// Ancestry and own attributes live under `Symbol.for` keys rather than `#private` fields: the tree
-// is shared by every copy of the package in the realm, and one copy's code walks nodes another copy
-// created, which a `#private` field would reject with a TypeError. Neither key is part of `Scope`.
+// Ancestry, own attributes and the breadcrumb buffer live under `Symbol.for` keys rather than
+// `#private` fields: the tree is shared by every copy of the package in the realm, and one copy's
+// code walks nodes another copy created, which a `#private` field would reject with a TypeError.
+// None of these keys is part of `Scope`.
 const PARENT: unique symbol = Symbol.for("vipengele:scope:parent");
 const ATTRIBUTES: unique symbol = Symbol.for("vipengele:scope:attributes");
+/**
+ * The slot holding a node's breadcrumb buffer: a plain array, so every copy of the package appends
+ * to it the same way. It sits outside the attribute bag, so `snapshot`, the reserved-key checks and
+ * attribute redaction never see it. A node another copy built without it holds no buffer.
+ */
+export const BREADCRUMBS: unique symbol = Symbol.for("vipengele:scope:breadcrumbs");
 const TREE = Symbol.for("vipengele:scope:tree");
 
 interface ScopeNode extends Scope {
   readonly [PARENT]: ScopeNode | undefined;
   readonly [ATTRIBUTES]: ScopeAttributes;
+  readonly [BREADCRUMBS]?: Breadcrumb[] | undefined;
 }
 
 /**
@@ -109,10 +118,12 @@ class TreeScope implements ScopeNode {
   // A prototype-less bag, so a key like `__proto__` is stored as an attribute rather than
   // replacing the bag's prototype, and `Object.hasOwn` is the whole existence check.
   readonly [ATTRIBUTES]: ScopeAttributes = Object.create(null) as ScopeAttributes;
+  readonly [BREADCRUMBS]: Breadcrumb[] | undefined;
 
-  constructor(parent: ScopeNode | undefined, tag: string | undefined) {
+  constructor(parent: ScopeNode | undefined, tag: string | undefined, breadcrumbs: Breadcrumb[] | undefined) {
     this[PARENT] = parent;
     this.tag = tag;
+    this[BREADCRUMBS] = breadcrumbs;
   }
 
   get(key: string): unknown {
@@ -156,10 +167,10 @@ export function assertSettable(scope: Scope, key: string): void {
 /**
  * Builds a root holding exactly `resource`'s keys, and a default scope beneath it. The root's
  * attributes are frozen, and only {@link setResource} replaces them; the default scope is mutable
- * like any other non-root scope.
+ * like any other non-root scope. Each of the two holds a breadcrumb buffer of its own.
  */
 export function createScopeTree(resource: Resource): ScopeTree {
-  const root = new TreeScope(undefined, undefined);
+  const root = new TreeScope(undefined, undefined, []);
   const attributes = root[ATTRIBUTES];
   attributes["service.name"] = resource["service.name"];
   attributes["service.version"] = resource["service.version"];
@@ -174,7 +185,7 @@ export function createScopeTree(resource: Resource): ScopeTree {
   attributes["device.type"] = resource["device.type"];
   Object.freeze(attributes);
 
-  return { root, defaultScope: new TreeScope(root, undefined) };
+  return { root, defaultScope: new TreeScope(root, undefined, []) };
 }
 
 /** The keys a root holds, and the only ones {@link setResource} reads from its argument. */
@@ -222,13 +233,27 @@ export function setResource(root: Scope, resource: Partial<Resource>): void {
 }
 
 /**
+ * The breadcrumb buffer a new child of `parent` holds. A child of the root begins a Unit of Work and
+ * gets a fresh buffer; any other child shares its parent's, so every scope of one Unit of Work
+ * records into one trail. A parent holding no buffer passes none on.
+ */
+function bufferFor(parent: ScopeNode): Breadcrumb[] | undefined {
+  if (parent[PARENT] === undefined) {
+    return [];
+  }
+  const buffer = parent[BREADCRUMBS];
+  return Array.isArray(buffer) ? buffer : undefined;
+}
+
+/**
  * Creates a child of `parent` carrying `tag` and its own copy of `attributes`. Each attribute goes
  * through {@link Scope.set}, so one the root holds is refused here exactly as it would be later.
  *
  * @throws {ReservedScopeKeyError} when `attributes` holds a key the root holds.
  */
 export function createChildScope(parent: Scope, tag: string, attributes: ScopeAttributes): Scope {
-  const child = new TreeScope(parent as ScopeNode, tag);
+  const node = parent as ScopeNode;
+  const child = new TreeScope(node, tag, bufferFor(node));
   for (const [key, value] of Object.entries(attributes)) {
     child.set(key, value);
   }

@@ -63,7 +63,7 @@ Transport's wire format in the same decision keeps the core from being fitted to
 
 Not mapped: the parsed `frames`, `inApp` included, as structure, because the stacktrace text carries
 them; and the per-link fields of the chain beyond type, message and stack, such as `code`. Error
-Events carry no breadcrumbs, since the trail is the Scope chain (`0006-one-scope-tree-shared-by-the-logger-and-the-reporter.md`), so there is nothing to map.
+Events carry no breadcrumbs, since the trail is the Scope chain (`0006-one-scope-tree-shared-by-the-logger-and-the-reporter.md`), so there is nothing to map. **Superseded by ADR-0027**: breadcrumbs export as the `vipengele.breadcrumbs` attribute.
 
 The 64 KiB keepalive budget is per document, and each queue draws on it alone. An app using both the
 log sink and the transport sends two unload keepalive requests, and the browser may refuse whichever

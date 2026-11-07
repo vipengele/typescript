@@ -958,6 +958,8 @@ drains it, and so does `globalHandlers` under an `"exit"` policy, which waits up
   - `mechanism` is `vipengele.mechanism.handled`, `vipengele.mechanism.source` and, when present,
     `vipengele.mechanism.data`; `fingerprint`, when present, is `vipengele.fingerprint`, a string
     array.
+  - `breadcrumbs`, when the event carries any, is `vipengele.breadcrumbs`, an array of kvlists
+    (`time`, `message`, `category`, `level`, `data`; a field the crumb lacks is omitted), oldest first.
   - The event's own attributes come first. A key the encoder writes wins over an event attribute of
     the same name.
 - **Not mapped** — the parsed stack frames are not sent as structure; the stacktrace text carries
@@ -976,7 +978,7 @@ Reporter, and the builder configures it. Every capture runs these stages in orde
 2. `sampleRate`
 3. normalize
 4. `ignoreErrors`
-5. enrich
+5. enrich (Scope attributes, `trace` and the breadcrumb trail)
 6. redaction
 7. processors
 8. `beforeSend`
@@ -1000,6 +1002,8 @@ type ErrorEventProcessor = (event: ErrorEvent) => ErrorEvent | null;
 | `ignoreErrors(patterns: readonly (string \| RegExp)[])` | `[]` | Drops an event a pattern matches. |
 | `dedupe(enabled: boolean)` | `true` | Drops an event that repeats the last one that passed. |
 | `rateLimit(limit: false \| RateLimitOptions)` | `{ burst: 60, perMinute: 60 }` | A token bucket; `false` turns it off. |
+| `maxBreadcrumbs(n: number)` | `100` | The most breadcrumbs an event carries, 0 to 100; the newest are kept. |
+| `beforeBreadcrumb(hook: (crumb: Breadcrumb) => Breadcrumb \| null)` | none | Maps each breadcrumb at attach time; `null` drops it. See Scopes. |
 
 `RateLimitOptions` is `{ burst: number; perMinute: number }`: `burst` a finite number of at least 1, since a bucket holding less than one token never lets an event pass, and `perMinute` a positive finite number. An invalid
 argument throws `ReporterConfigError` and leaves the builder unchanged.
@@ -1067,7 +1071,36 @@ Scope.isolated("http-request", { requestId: "abc" }, () => {
   Every key is validated before any is written, so a Resource key throws `ReservedScopeKeyError`
   and leaves nothing written. `setContext` needs a non-empty string `name`, else a `TypeError`.
   The event gains no `tags`, `user` or `contexts` field.
-- **A Scope's tag** is its Breadcrumb; an Error Event carries no breadcrumb trail field.
+
+**Breadcrumbs** — `Scope.addBreadcrumb({ message, category?, level?, data?, time? })` records one
+step into the current Unit of Work's trail. Every Scope of a Unit of Work (an `isolated` Scope and
+the `inherit` Scopes beneath it) shares one buffer, which keeps the newest 100 entries; outside any
+`isolated` Scope the default Scope holds its own. `data` is normalized and the entry frozen when it
+is recorded, and `time` (epoch milliseconds) defaults to the system clock. The call never throws: an
+input without a string `message` is dropped.
+
+```ts
+Scope.isolated("http-request", { requestId: "abc" }, () => {
+  Scope.addBreadcrumb({ message: "cart loaded", category: "checkout", data: { items: 3 } });
+  reporter.captureException(error); // event.breadcrumbs: [{ time, message: "cart loaded", ... }]
+});
+```
+
+- **`event.breadcrumbs`** — set in the enrich stage, for every capture including one that comes from
+  `reporter.loggerSink()`: the current Unit of Work's trail, oldest first. With an empty trail the
+  field is absent. The trail is only read, never cleared.
+- **`builder.maxBreadcrumbs(n)`** — the most breadcrumbs an event carries, an integer from 0 to 100
+  (default 100). The newest `n` are kept; `0` attaches none. Anything else throws
+  `ReporterConfigError`.
+- **`builder.beforeBreadcrumb(hook)`** — `(crumb: Breadcrumb) => Breadcrumb | null`, called for each
+  crumb of the trail, oldest first, on a copy, before the newest `maxBreadcrumbs` are sliced. It
+  returns the crumb to keep, possibly changed, or `null` to drop it. A hook that throws, or returns
+  anything that is not an object or `null`, drops that crumb. A later call replaces the hook.
+- **Redaction** — the redaction stage applies the policy to each crumb's `data` and `message`, so value detectors scan the message. Its
+  `category` and `level` are not scanned. Processors and `beforeSend` see the redacted trail, and
+  deduplication ignores it. A crumb's `data` is cut to the reporter's `limits` as the event's
+  attributes are.
+- A Scope's tag is an attribute, not a breadcrumb: `setTag` writes a key that rides in `attributes`.
 
 **Redaction** — on by default, using the `secretKeys` preset from `@vipengele/ts-core-redaction`. A
 stage after enrichment and before the processors applies the policy to the merged `attributes`, to
@@ -1273,12 +1306,24 @@ Logging.logger("app.checkout").error("charge failed", new Error("card declined")
 
 - **What is reported** — a record that carries an `error` at `minLevel` or above. `minLevel` is any
   `Level` and defaults to `"error"`; anything else throws `ReporterConfigError`. A record without an
-  error, or below `minLevel`, is ignored, so a bare `log.error("message")` is not reported.
+  error, or below `minLevel`, is not reported (it is still recorded as a breadcrumb), so a bare
+  `log.error("message")` produces no event.
+- **Breadcrumbs** — unless `{ breadcrumbs: false }` is passed, the sink records every record it
+  receives, whether it is reported or not, as a breadcrumb in the current Unit of Work: the record's
+  `time`, `message`, `category` and `level`, with no attributes. It records after capturing the
+  record's error, so a reported event's trail ends before the record that caused it. A record that
+  arrives during the sink's own capture is recorded, not reported. The logger's thresholds decide
+  which records reach the sink, so a category nothing configures, which resolves to `warn`, gives
+  `warn` and above. Every event the reporter produces, from `captureException` too, carries the trail.
+- **Batching** — `createBatchingSink` hands records on at flush, not at write. A `loggerSink` wrapped
+  in it records and attaches the trail of whatever Unit of Work is current at that flush. Add the
+  sink to the builder directly, or pass `{ breadcrumbs: false }` to the wrapped one.
 - **Mapping** — the event has the record's `level`, the record's attributes plus `logger.category`
   and `logger.message`, the record's serialized error chain (frames and `cause`/`errors` links
   included) and the mechanism `{ handled: true, source: "logger" }`. Its `time` comes from the
   reporter's clock, not the record's. The attributes come from the record alone, so the Scope is the
-  one in effect when the record was written, not when the sink runs.
+  one in effect when the record was written, not when the sink runs. Only the breadcrumb trail is read
+  from the Scope the sink runs in.
 - **Pipeline** — every stage applies: sampling, `ignoreErrors`, processors, `beforeSend`, and, since
   the event is handled, deduplication and the rate limit. The record's attributes are already
   redacted by the logger; the reporter redacts them again, which changes nothing. The error was

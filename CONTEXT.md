@@ -188,7 +188,7 @@ call chain. Scopes form a tree: the root holds the environment and never changes
 innermost value winning, except that no scope may `set` a key the root already holds. A scope
 created to begin a Unit of Work is a child of the root, not of whatever scope was current; every
 other scope is a child of the current one.
-Either kind may carry a tag, its own Breadcrumb.
+Either kind may carry a tag, a short label for the step it represents.
 `Scope.setUser`, `Scope.setTag` and `Scope.setContext` write attributes to the current scope.
 _Avoid_: context as a name for the Scope tree (OpenTelemetry's word for its own propagation
 object), MDC-style ambient data, request context (the browser has no request). `setContext` is the
@@ -228,13 +228,13 @@ extension to OpenTelemetry's names; Sentry calls it `dist`.
 
 **Unit of Work**:
 One request, job or message handled end to end — the span of work whose Breadcrumbs belong
-together. In the browser the page is the only unit of work.
+together, and that shares one Breadcrumb trail. In the browser the page is the only unit of work.
 
 **Breadcrumb**:
-The tag a scope was created with — a short label for the step it represents (a request's path, a
-click, a query). There is no separate record and no buffer: an Error Event's breadcrumb trail is
-the tagged ancestors of the Scope it was raised in, walked from the root down. Recording a
-breadcrumb for something is creating a scope for it.
+A timestamped entry — a message, optionally a category, level and data — recording something that
+happened in a Unit of Work (a request, a click, a Log Record). The recent entries of a Unit of Work
+form a bounded trail, oldest dropped first, and an Error Event carries the trail as it stood when it
+was raised. A Scope's tag is only its label, not a Breadcrumb.
 
 **Transport**:
 What delivers Error Events (and exported Log Records) out of the process: console, HTTP JSON, OTLP.

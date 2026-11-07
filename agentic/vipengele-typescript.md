@@ -35,7 +35,8 @@ Error Event, Scope, Breadcrumb, Transport) before naming things.
     `globalThis` registry, `agentic/rules/shared-realm-state-lives-behind-a-globalthis-symbol-slot.md`)
     is a tree-shakeable slice of the package's surface, not a separate package — a bundler-using
     consumer imports only the sub-path it needs. `./scope` is one such sub-path: `Scope`
-    (`current`/`propagate`/`inherit`/`isolated`/`useCarrier`), the ambient context tree the logger
+    (`current`/`propagate`/`inherit`/`isolated`/`useCarrier`/`addBreadcrumb`, with the `Breadcrumb` and
+    `BreadcrumbInput` types; ADR-0027), the ambient context tree the logger
     and the error reporter both read attributes from, built on `./context`'s store; its root holds
     the eleven reserved `Resource` keys (`service.name`, `service.version`, `service.dist`,
     `deployment.environment.name`, `process.runtime.name`, `process.runtime.version`, `os.type`,
@@ -90,7 +91,9 @@ Error Event, Scope, Breadcrumb, Transport) before naming things.
     through an eleven-stage pipeline (gate, sampling, normalize, `ignoreErrors`, enrich, redaction, processors,
     `beforeSend`, dedupe, rate limit, transport; dedupe and the rate limit are on by default and skip an
     unhandled event, ADR-0020; `enrich` sets `trace` from the active OpenTelemetry span, and `reporter.loggerSink()`
-    reports each logged record that carries an error as a handled event, ADR-0026) and hand
+    reports each logged record that carries an error as a handled event, ADR-0026, and records every
+    received Log Record as a breadcrumb unless `{ breadcrumbs: false }`; `enrich` attaches the Unit of Work's
+    breadcrumb trail, bounded by `maxBreadcrumbs` and filtered by `beforeBreadcrumb`, ADR-0027) and hand
     the survivor, with that Resource, to a `Transport`, the fire-and-forget delivery contract (ADR-0010;
     `agentic/rules/transport-send-is-fire-and-forget.md`) every transport — the built-in
     `createConsoleTransport`, `createHttpTransport`, `createTestTransport` and `createOtlpTransport`
@@ -108,7 +111,8 @@ Error Event, Scope, Breadcrumb, Transport) before naming things.
   `IsoWeekday`, `NameStyle`) from its `./locale` sub-path, `LocalDate`, `LocalTime`,
   `LocalDateTime`, `Instant`, `ZoneId` and `ZonedDateTime` (with their errors, guards,
   `ZoneResolutionError` and `DateSegment`, `DateSegmentType`, `DateTimeSegment`, `DateTimeSegmentType`, `TimeSegment`, `TimeSegmentType`, `DateTimeTryParseResult`,
-  `Disambiguation`, `IsoDayOfWeek`, `ZonedDateTimeOptions`) from its `./types/date-time` sub-path, and `redact`,
+  `Disambiguation`, `IsoDayOfWeek`, `ZonedDateTimeOptions`) from its `./types/date-time` sub-path, the types `Breadcrumb` and
+  `BreadcrumbInput` from its `./scope` sub-path, and `redact`,
   `secretKeys`, `composePolicies`, `redactUrl`, `redactQueryString`, `redactHeaders`, `maskKeepLast` and `pseudonymize`, the value
   detectors `valueDetectors`, `jwt`, `bearerToken`, `creditCard`, `email`, `awsAccessKey`,
   `githubToken` and `stripeKey` (with `RedactionPolicy`, `KeyMatcher`, `Detector`, `RedactOptions`,

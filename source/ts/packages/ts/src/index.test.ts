@@ -20,6 +20,8 @@ import type {
   Attributes,
   AttributesInput,
   AttributeValue,
+  Breadcrumb,
+  BreadcrumbInput,
   DateSegment,
   DateSegmentType,
   DateTimeSegment,
@@ -278,6 +280,14 @@ test("VipengeleError resolves from @vipengele/ts-core-common", () => {
 
 test("Scope resolves from @vipengele/ts-core-common/scope and isolates a tagged unit of work", () => {
   expect(Scope.isolated("t", {}, () => Scope.current().tag)).toBe("t");
+});
+
+test("Breadcrumb and BreadcrumbInput resolve from @vipengele/ts-core-common/scope and describe a recorded step", () => {
+  const input: BreadcrumbInput = { message: "clicked", category: "ui", level: "info", data: { id: 1 }, time: 5 };
+
+  const crumb: Breadcrumb = { time: input.time ?? 0, message: input.message, category: input.category, level: input.level };
+
+  expect(crumb).toEqual({ time: 5, message: "clicked", category: "ui", level: "info" });
 });
 
 test("normalizeAttributes resolves from @vipengele/ts-core-common and produces an AttributeValue-safe record", () => {

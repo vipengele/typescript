@@ -98,11 +98,19 @@ Scope.isolated("http-request", { requestId: "abc" }, () => {
 - `Scope.setTag(key, value)` — sets the plain `key` on the current scope.
 - `Scope.setContext(name, data)` — sets one `name.field` key per own field of `data` on the current
   scope, one level deep; `name` must be a non-empty string, else a `TypeError`.
+- `Scope.addBreadcrumb({ message, category?, level?, data?, time? })` — records a `Breadcrumb` into
+  the current Unit of Work's trail: every scope of one `isolated` call, and the scopes it `inherit`s,
+  share one trail, and the default scope has its own. `data` is normalized and the entry frozen when
+  recorded, `time` (epoch milliseconds) defaults to the system clock, and the trail keeps the newest
+  100 entries. It never throws: an entry without a string `message` is dropped, and a `category`,
+  `level` or `data` of the wrong type is left out of the entry.
 - `Scope.useCarrier(carrier)` — replaces the carrier the current scope rides on, seen by every copy
   of the package in the realm from then on.
 - `snapshot(scope)` — the attributes `scope` and its non-root ancestors hold, flattened into one
   null-prototype record, innermost winning and never the Resource keys. Framework-internal, not for
   application use.
+- `breadcrumbs(scope)` — a copy of the trail `scope` records into, oldest first. Framework-internal,
+  not for application use.
 
 `setUser`, `setTag` and `setContext` write flat dotted keys to the current scope, and validate every
 key before writing any: a Resource key throws `ReservedScopeKeyError` and leaves nothing written.

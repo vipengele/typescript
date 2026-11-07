@@ -1,4 +1,4 @@
-import { Scope } from "@vipengele/ts-core-common/scope";
+import { breadcrumbs, Scope } from "@vipengele/ts-core-common/scope";
 import { afterEach, describe, expect, it } from "vitest";
 import type { Logger } from "../logger/logger";
 import { createLoggerProvider } from "../logger/provider";
@@ -17,6 +17,7 @@ const SPAN_ID = "00f067aa0ba902b7";
 const otelRegistry = globalThis as unknown as Record<symbol, unknown>;
 
 const SECRET = "s3cret-value";
+const TIME = 1_700_000_000_123.5;
 const REDACTED = "[REDACTED]";
 
 /** Registers a fake OpenTelemetry API whose active context holds a span with these ids. */
@@ -42,7 +43,12 @@ function onlyEvent(events: readonly ErrorEvent[]): ErrorEvent {
  */
 function wire(transport: Transport, options?: LoggerSinkOptions): { reporter: Reporter; logger: Logger } {
   const reporter = createReporter((b) => b.transport(transport).dedupe(false));
-  const provider = createLoggerProvider((b) => b.addLevels({ "*": "trace" }).addSink(reporter.loggerSink(options)));
+  const provider = createLoggerProvider((b) =>
+    b
+      .addLevels({ "*": "trace" })
+      .clock(() => TIME)
+      .addSink(reporter.loggerSink(options)),
+  );
   return { reporter, logger: provider.logger("app.checkout") };
 }
 
@@ -179,5 +185,121 @@ describe("Reporter.loggerSink", () => {
     expect(event.attributes.user).toBe("ada");
     expect(event.exception?.data).toEqual({ password: REDACTED });
     expect(JSON.stringify(event)).not.toContain(SECRET);
+  });
+});
+
+describe("Reporter.loggerSink breadcrumbs", () => {
+  it("records a record without an error into the writer's Unit of Work as its time, message, category and level, without data", () => {
+    const transport = createTestTransport();
+    const { logger } = wire(transport);
+
+    const trail = Scope.isolated("request", { requestId: "r-1" }, () => {
+      logger.info("cart loaded", { items: 3 });
+      return breadcrumbs(Scope.current());
+    });
+
+    expect(trail).toEqual([{ time: TIME, message: "cart loaded", category: "app.checkout", level: "info" }]);
+    expect(transport.events).toEqual([]);
+  });
+
+  it("records into the Unit of Work current at write, shared by the scopes it inherits into", () => {
+    const transport = createTestTransport();
+    const { logger } = wire(transport);
+
+    const [inner, outer, other] = Scope.isolated("request", {}, () => {
+      const nested = Scope.inherit("step", {}, () => {
+        logger.warn("slow step");
+        return breadcrumbs(Scope.current());
+      });
+      const separate = Scope.isolated("job", {}, () => breadcrumbs(Scope.current()));
+      return [nested, breadcrumbs(Scope.current()), separate] as const;
+    });
+
+    expect(inner.map((crumb) => crumb.message)).toEqual(["slow step"]);
+    expect(outer).toEqual(inner);
+    expect(other).toEqual([]);
+  });
+
+  it("records a record below the minimum level that carries an error, without reporting it", () => {
+    const transport = createTestTransport();
+    const { logger } = wire(transport);
+
+    const trail = Scope.isolated("request", {}, () => {
+      logger.warn("retrying", new Error("timeout"));
+      return breadcrumbs(Scope.current());
+    });
+
+    expect(trail).toEqual([{ time: TIME, message: "retrying", category: "app.checkout", level: "warn" }]);
+    expect(transport.events).toEqual([]);
+  });
+
+  it("captures an error record before recording it, so its event leaves its own record out of the trail", () => {
+    const transport = createTestTransport();
+    const { logger } = wire(transport);
+
+    const trail = Scope.isolated("request", {}, () => {
+      logger.info("charging card");
+      logger.error("payment failed", new Error("card declined"));
+      return breadcrumbs(Scope.current());
+    });
+
+    expect(onlyEvent(transport.events).breadcrumbs).toEqual([
+      { time: TIME, message: "charging card", category: "app.checkout", level: "info" },
+    ]);
+    expect(trail).toEqual([
+      { time: TIME, message: "charging card", category: "app.checkout", level: "info" },
+      { time: TIME, message: "payment failed", category: "app.checkout", level: "error" },
+    ]);
+  });
+
+  it("records, without reporting, a record its own transport logs back while the capture runs", () => {
+    const inner = createTestTransport();
+    let logger: Logger | undefined;
+    const transport: Transport = {
+      send(event, resource) {
+        logger?.error("delivery failed", new Error("socket closed"));
+        inner.send(event, resource);
+      },
+      flush: (timeoutMs) => inner.flush(timeoutMs),
+      close: (timeoutMs) => inner.close(timeoutMs),
+    };
+    logger = wire(transport).logger;
+
+    const trail = Scope.isolated("request", {}, () => {
+      logger?.error("payment failed", new Error("card declined"));
+      return breadcrumbs(Scope.current());
+    });
+
+    const event = onlyEvent(inner.events);
+    expect(event.exception?.message).toBe("card declined");
+    expect(event.breadcrumbs).toBeUndefined();
+    expect(trail.map((crumb) => crumb.message)).toEqual(["delivery failed", "payment failed"]);
+  });
+
+  it("records nothing when breadcrumbs is false, and still reports an error record", () => {
+    const transport = createTestTransport();
+    const { logger } = wire(transport, { breadcrumbs: false });
+
+    const trail = Scope.isolated("request", {}, () => {
+      logger.info("charging card");
+      logger.error("payment failed", new Error("card declined"));
+      logger.error("payment failed again", new Error("card declined"));
+      return breadcrumbs(Scope.current());
+    });
+
+    expect(trail).toEqual([]);
+    expect(transport.events.map((event) => event.breadcrumbs)).toEqual([undefined, undefined]);
+  });
+
+  it("records a record when breadcrumbs is true", () => {
+    const transport = createTestTransport();
+    const { logger } = wire(transport, { breadcrumbs: true });
+
+    const trail = Scope.isolated("request", {}, () => {
+      logger.debug("cache miss");
+      return breadcrumbs(Scope.current());
+    });
+
+    expect(trail).toEqual([{ time: TIME, message: "cache miss", category: "app.checkout", level: "debug" }]);
   });
 });
