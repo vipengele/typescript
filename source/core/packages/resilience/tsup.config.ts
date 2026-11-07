@@ -3,6 +3,7 @@ import { defineConfig } from "tsup";
 export default defineConfig({
   entry: [
     "src/index.ts",
+    "src/bulkhead/index.ts",
     "src/circuit-breaker/index.ts",
     "src/errors/index.ts",
     "src/rate-limiter/index.ts",

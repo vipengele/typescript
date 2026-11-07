@@ -1,3 +1,4 @@
+export * from "./bulkhead";
 export * from "./circuit-breaker";
 export * from "./errors";
 export * from "./rate-limiter";

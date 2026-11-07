@@ -34,6 +34,10 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
+    "./bulkhead": {
+      "types": "./dist/bulkhead/index.d.ts",
+      "default": "./dist/bulkhead/index.js"
+    },
     "./circuit-breaker": {
       "types": "./dist/circuit-breaker/index.d.ts",
       "default": "./dist/circuit-breaker/index.js"
