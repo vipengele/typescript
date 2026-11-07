@@ -42,6 +42,10 @@
       "types": "./dist/errors/index.d.ts",
       "default": "./dist/errors/index.js"
     },
+    "./rate-limiter": {
+      "types": "./dist/rate-limiter/index.d.ts",
+      "default": "./dist/rate-limiter/index.js"
+    },
     "./retry": {
       "types": "./dist/retry/index.d.ts",
       "default": "./dist/retry/index.js"
