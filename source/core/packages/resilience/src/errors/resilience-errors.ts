@@ -52,14 +52,60 @@ export class CircuitOpenError extends ResilienceError {
   }
 }
 
+/** What a {@link RateLimitExceededError} reports about the limiter that refused the call. */
+export type RateLimitExceededErrorDetails = {
+  /** The name of the rate limiter that refused the call. */
+  readonly limiter: string;
+  /** The number of permits the refused call asked for. */
+  readonly permits: number;
+  /** Milliseconds until the requested permits are available; maps to an HTTP `Retry-After`. */
+  readonly retryAfterMs: number;
+};
+
 /** Raised when a call is refused because the rate limit is exhausted. */
 export class RateLimitExceededError extends ResilienceError {
   readonly code = RATE_LIMIT_EXCEEDED_ERROR_CODE;
+
+  /** The name of the rate limiter that refused the call. */
+  readonly limiter: string;
+
+  /** The number of permits the refused call asked for. */
+  readonly permits: number;
+
+  /** Milliseconds until the requested permits are available; maps to an HTTP `Retry-After`. */
+  readonly retryAfterMs: number;
+
+  constructor(message: string, details: RateLimitExceededErrorDetails, options?: ErrorOptions) {
+    super(message, options);
+    this.limiter = details.limiter;
+    this.permits = details.permits;
+    this.retryAfterMs = details.retryAfterMs;
+  }
 }
+
+/** What a {@link BulkheadFullError} reports about the bulkhead that refused the call. */
+export type BulkheadFullErrorDetails = {
+  /** The name of the bulkhead that refused the call. */
+  readonly bulkhead: string;
+  /** `"full"` when no slot and no queue place was free; `"wait-timeout"` when a queued call waited too long. */
+  readonly reason: "full" | "wait-timeout";
+};
 
 /** Raised when a call is refused because the bulkhead has no free slot. */
 export class BulkheadFullError extends ResilienceError {
   readonly code = BULKHEAD_FULL_ERROR_CODE;
+
+  /** The name of the bulkhead that refused the call. */
+  readonly bulkhead: string;
+
+  /** Why the bulkhead refused the call. */
+  readonly reason: BulkheadFullErrorDetails["reason"];
+
+  constructor(message: string, details: BulkheadFullErrorDetails, options?: ErrorOptions) {
+    super(message, options);
+    this.bulkhead = details.bulkhead;
+    this.reason = details.reason;
+  }
 }
 
 /** Raised when an operation does not settle within its time limit. */
