@@ -24,29 +24,47 @@ one realm.
    Every event is recorded exactly once, however many Reporters or copies installed.
 2. **The oldest live install's options apply**, looked up when the wrapped API is called, not when it
    was installed. Tearing an install down removes it from the list and hands over to the next. When
-   the list empties the original is restored, but only if the global still holds our wrapper. If
-   something else has wrapped it since, the wrapper stays in place and passes through inertly:
-   restoring would remove the other party's wrapper.
+   the list empties the slot forgets its patch and the patch's restore runs. The restore owns the
+   check, property by property: it puts an original back only where the global still holds our
+   wrapper. If something else has wrapped it since, our wrapper stays in place beneath it and passes
+   through inertly, because restoring would remove the other party's wrapper.
 3. **Patching is per property and fallible.** Each assignment (one per console method, `fetch`, each
    `XMLHttpRequest.prototype` method, each `history` method) is tried on its own. One that throws,
    on a frozen or accessor property, is skipped, and only what was actually patched is restored. A
    type whose every assignment failed does not join the list.
-4. **The slot contract is the cross-copy contract.** The `:v1` in each key is its version. An entry
-   in the install list is `{ options }`, where `options` carries the per-type option fields
-   (`clock`, the redaction policy, and the type's own toggles such as `selectorAttributes`). Copies
-   of the package agree on that shape and nothing else: a change to it takes a new key, as with
-   `vipengele.logger.provider.v1`. Navigation also keeps its last-known URL in its slot.
+4. **The slot contract is the cross-copy contract.** The `:v1` in each key is its version. A slot is
+   `{ installs: InstallEntry[], patch: { restore } | undefined }`, and an `InstallEntry` is
+   `{ options }`, where `options` carries the per-type option fields (`clock`, the redaction policy,
+   and the type's own toggles such as `selectorAttributes`). The `patch` object's identity marks
+   which patch is current. A wrapper reads its options through the reader its own patch was given,
+   and the reader gives the oldest install's options only while the slot's `patch` is still that
+   patch, and nothing once it is not. A wrapper left inert under someone else's wrapper therefore
+   never records alongside a newer patch of the same type. An entry may come from another copy of
+   the package, so a reader defaults any option field it finds missing: `systemClock` for a `clock`,
+   `secretKeys` for a `redaction`. Copies agree on that shape and nothing else: a change to it takes
+   a new key, as with `vipengele.logger.provider.v1`. State a patch needs between calls, such as
+   navigation's last-known URL, lives in that patch's closure: only one patch per type is current in
+   a realm, so nothing else reads it. Navigation's starts at `location.href` when the patch is made
+   and follows every navigation the patch sees, suppressed ones included, so a suppressed navigation
+   does not make the next one report a stale origin.
 5. **The package's own traffic is suppressed, not matched.** A counter in a
    `Symbol.for("vipengele:breadcrumbs:suppressed:v1")` slot, read through `breadcrumbsSuppressed()`
    and raised by `suppressBreadcrumbs(fn)`, lives in `src/breadcrumb-suppression.ts`. It sits outside
    `src/errors/` because the logger calls it and the logger may not import `./errors`. Each place
    the package invokes `fetch` or a `console` method runs inside `suppressBreadcrumbs`. A wrapper
-   reads the counter when the call starts and carries the answer to settlement: a request started
-   while suppressed records nothing when it settles, whatever the counter says by then. The helpers
+   reads the counter when the call starts (for XHR, at `send`) and carries the answer to
+   settlement: a request started while suppressed records nothing when it settles, whatever the
+   counter says by then. The helpers
    are internal and not exported.
 6. **A recorded URL is redacted at record time.** Fetch, XHR and navigation crumbs pass their URLs
    through `redactUrl` from `@vipengele/ts-core-redaction`, with `secretKeys` unless the
-   integration's `redaction` option names another policy. The buffer never holds a raw URL.
+   integration's `redaction` option names another policy. A URL the policy fails on is replaced
+   whole by a placeholder. The buffer never holds a raw URL.
+7. **A request's crumb records into the Unit of Work that started it.** A fetch or XHR wrapper
+   captures the current Scope when the request starts (for XHR, at `send`) and records there when
+   it settles, wherever the settlement runs. The options, the suppression answer and the start time
+   are read at the same moment, so a request that settles after every install is torn down still
+   records with what it started under.
    Event-time redaction (ADR-0027 item 8) still runs over the crumb on top.
 
 ## Narrowing ADR-0027 item 8
