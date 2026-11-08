@@ -245,8 +245,8 @@ describe("delay sanitising", () => {
 describe("the default shouldRetry", () => {
   test.each([
     { name: "CircuitOpenError", error: new CircuitOpenError("open", { circuit: "c", state: "open" }) },
-    { name: "RateLimitExceededError", error: new RateLimitExceededError("limited") },
-    { name: "BulkheadFullError", error: new BulkheadFullError("full") },
+    { name: "RateLimitExceededError", error: new RateLimitExceededError("limited", { limiter: "api", permits: 1, retryAfterMs: 250 }) },
+    { name: "BulkheadFullError", error: new BulkheadFullError("full", { bulkhead: "db", reason: "full" }) },
   ])("does not retry a $name, and emits nothing", async ({ error }) => {
     const { time, policy, events } = setup();
     const op = vi.fn(() => Promise.reject(error));

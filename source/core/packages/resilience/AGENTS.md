@@ -1,7 +1,8 @@
 # @vipengele/ts-core-resilience
 
-Resilience primitives. Entry points: `.` (re-exports `./circuit-breaker`, `./errors`, `./retry` and
-`./timeout`), `./circuit-breaker`, `./errors`, `./retry` and `./timeout`. Run commands from `source/core` (`pnpm build`, `pnpm type-check`,
+Resilience primitives. Entry points: `.` (re-exports `./bulkhead`, `./circuit-breaker`, `./errors`, `./rate-limiter`,
+`./retry` and `./timeout`), `./bulkhead`, `./circuit-breaker`, `./errors`, `./rate-limiter`, `./retry` and
+`./timeout`. Run commands from `source/core` (`pnpm build`, `pnpm type-check`,
 `pnpm test`, `pnpm lint`, `pnpm format:check`).
 
 ## Errors (`src/errors/resilience-errors.ts`)
@@ -15,10 +16,12 @@ Resilience primitives. Entry points: `.` (re-exports `./circuit-breaker`, `./err
   with `resilience.`, so a plain `Error` carrying such a code passes.
 - A test asserts every exported `*_CODE` constant starts with `resilience.`; a code outside the
   prefix would be missed by `isResilienceError`.
-- Constructors take `(message, options?: ErrorOptions)`. `OperationTimeoutError` takes
-  `(message, durationMs, options?)` and exposes `durationMs`. `CircuitOpenError` takes
-  `(message, details: CircuitOpenErrorDetails, options?)` and exposes `circuit`, `state` and
-  `remainingMs` (`circuit`, not `name`, which `Error#name` already owns). No error sets `name`.
+- `ResilienceConfigError` takes `(message, options?: ErrorOptions)`. `CircuitOpenError`,
+  `RateLimitExceededError` and `BulkheadFullError` take `(message, details, options?)` and expose the
+  fields of `details` (`circuit`, `state`, `remainingMs`; `limiter`, `permits`, `retryAfterMs`;
+  `bulkhead`, `reason`), named so as not to clash with `Error#name`. `OperationTimeoutError` takes
+  `(message, durationMs, options?)` and exposes `durationMs`. No error sets `name`, so it reads
+  "Error".
 
 ## Package layout
 
@@ -27,6 +30,11 @@ Resilience primitives. Entry points: `.` (re-exports `./circuit-breaker`, `./err
 - `src/circuit-breaker/` holds `circuit-breaker.ts` (the policy and state machine), `config.ts`
   (config types and validation) and `sliding-window.ts`; the window and the validator are internal and
   not exported from the barrel.
+- `src/rate-limiter/` and `src/bulkhead/` each hold the policy (`rate-limiter.ts`, `bulkhead.ts`) and
+  its `config.ts` (config and deps types, validation).
+- `src/config-validation.ts` is internal and not exported: the shared `reject(label, name, key,
+  constraint, value)` that throws `ResilienceConfigError`, `isIntegerAtLeastOne`, `isDuration` and
+  `DURATION_CONSTRAINT`.
 - The only dependency is `@vipengele/ts-core-common`, resolved through its built `dist/`, so it is
   built before this package's tests run (turbo's `^build`; the lydite setup line in
   `.lydite/components.yml`).
@@ -156,3 +164,47 @@ Resilience primitives. Entry points: `.` (re-exports `./circuit-breaker`, `./err
 - Refusals are `CircuitOpenError`s with message `Circuit breaker "<name>" is <state> and refused the
   call`, and `circuit`, `state` and `remainingMs`. `remainingMs` is set only for `"open"`, the time
   until half-open, never below 0.
+
+## Rate limiter (`src/rate-limiter/`)
+
+- `createRateLimiter(name, { limitForPeriod, refreshPeriodMs, maxWaitMs, burst? }, { clock?, scheduler? })`
+  returns a `RateLimiterPolicy`: a `Policy` plus `events: Listenable<RateLimiterEvent>` and
+  `tryAcquire(permits = 1)`. `op` runs once with `attempt: 1`.
+- Ranges: `limitForPeriod` an integer of at least 1; `refreshPeriodMs` finite, above 0 and at most
+  `MAX_TIMEOUT_DURATION_MS`; `burst` an integer of at least `limitForPeriod`, default `limitForPeriod`;
+  `maxWaitMs` required, finite, at least 0 and at most `MAX_TIMEOUT_DURATION_MS`, `0` meaning fail fast.
+- The limiter starts with `limitForPeriod` permits. Refill is discrete, counted in whole periods from
+  creation on the injected clock: the cycle index is `max(lastCycle, floor((now - start) /
+  refreshPeriodMs))`, so it never goes back. A backward clock step adds nothing and the forward step
+  after it does not refill twice. Each passed period adds `limitForPeriod`, capped at `burst`; with no
+  `burst` that is resilience4j's per-cycle reset.
+- The wait is computed before reserving. Beyond `maxWaitMs` the call rejects at once with a
+  `RateLimitExceededError` carrying `retryAfterMs`, reserving nothing and sleeping not at all. Within
+  it, the call reserves (the balance goes negative) and sleeps with the caller's signal. Calls are
+  served in arrival order, and `tryAcquire` never overtakes a reservation.
+- An abort refunds the permits, capped at `burst`, and rejects with `signal.reason`. Sleepers keep their
+  due instants, so a refund benefits later arrivals only. This is an accepted trade-off, as in
+  resilience4j, and can briefly put more calls in one period than `burst`.
+- `execute` takes 1 permit. `tryAcquire(permits = 1)` throws `RangeError` for a non-integer or a value
+  below 1, returns `false` for more than `burst`, and emits nothing.
+- Events carry `kind`, `name` and `at`. `rate-limit-exceeded` has `permits` and `retryAfterMs`;
+  `rate-limit-waited` has `permits` and `waitMs`, the planned wait.
+
+## Bulkhead (`src/bulkhead/`)
+
+- `createBulkhead(name, { maxConcurrent, maxQueue?, maxWaitMs? }, { clock?, scheduler? })` returns a
+  `BulkheadPolicy`: a `Policy` plus `events: Listenable<BulkheadEvent>` and an `available` getter,
+  `maxConcurrent - running`. `op` runs once with `attempt: 1`.
+- `maxConcurrent` is an integer of at least 1; `maxQueue` an integer of at least 0, default 0;
+  `maxWaitMs` finite, above 0 and at most `MAX_TIMEOUT_DURATION_MS`, and rejected when `maxQueue` is 0
+  (fail fast is `maxQueue: 0`). Without `maxWaitMs` a queued call waits until it gets a permit or aborts.
+- A running caller's permit is released only when `op` settles (resolve, reject or synchronous
+  throw). An abort does not release it, so `maxConcurrent` is a true limit; the bulkhead never aborts a
+  signal.
+- A queued caller whose signal aborts leaves the queue and rejects with `signal.reason`, emitting no
+  event. `maxWaitMs` elapsing rejects with `BulkheadFullError` reason `"wait-timeout"`. A call finding
+  no permit and no queue place rejects with reason `"full"`.
+- A released permit is handed to the oldest waiter (FIFO) without changing `running`.
+- Each queue entry's wait sleep has its own `AbortController`. It is aborted (the rejection swallowed)
+  and the caller-signal listener removed when the entry is granted or leaves the queue.
+- Event `bulkhead-rejected` carries `kind`, `name`, `at` and `reason`.

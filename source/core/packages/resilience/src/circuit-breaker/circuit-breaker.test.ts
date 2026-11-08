@@ -424,7 +424,7 @@ describe("admission and transitions", () => {
   test("reset while closed clears the window and counters without an event", async () => {
     const { breaker, events } = setup();
     await runAll(breaker, [true, true, true]);
-    await breaker.execute(() => Promise.reject(new BulkheadFullError("full"))).catch(() => undefined);
+    await breaker.execute(() => Promise.reject(new BulkheadFullError("full", { bulkhead: "db", reason: "full" }))).catch(() => undefined);
 
     breaker.reset();
 
@@ -501,15 +501,15 @@ describe("outcome classification and generations", () => {
     const slowDone = rejectionOf(breaker.execute(slow.op));
     breaker.reset();
 
-    slow.reject(new RateLimitExceededError("limited"));
+    slow.reject(new RateLimitExceededError("limited", { limiter: "api", permits: 1, retryAfterMs: 250 }));
     await slowDone;
 
     expect(breaker.metrics.ignoredCalls).toBe(0);
   });
 
   const refusals: Array<[string, () => Error]> = [
-    ["RateLimitExceededError", () => new RateLimitExceededError("limited")],
-    ["BulkheadFullError", () => new BulkheadFullError("full")],
+    ["RateLimitExceededError", () => new RateLimitExceededError("limited", { limiter: "api", permits: 1, retryAfterMs: 250 })],
+    ["BulkheadFullError", () => new BulkheadFullError("full", { bulkhead: "db", reason: "full" })],
     ["CircuitOpenError", () => new CircuitOpenError("downstream open", { circuit: "inner", state: "open", remainingMs: 5 })],
   ];
 
@@ -732,7 +732,7 @@ describe("metrics and events", () => {
 
   test("the open period's counters stay visible while the getter reads half-open, and reset on the transition", async () => {
     const { breaker, time } = setup();
-    await breaker.execute(() => Promise.reject(new BulkheadFullError("full"))).catch(() => undefined);
+    await breaker.execute(() => Promise.reject(new BulkheadFullError("full", { bulkhead: "db", reason: "full" }))).catch(() => undefined);
     expect(breaker.metrics.ignoredCalls).toBe(1);
     await open(breaker);
     expect(breaker.metrics.ignoredCalls).toBe(0);

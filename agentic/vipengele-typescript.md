@@ -102,6 +102,12 @@ Error Event, Scope, Breadcrumb, Transport) before naming things.
     opt-in IndexedDB `offline` queue that persists undelivered bodies and replays them, ADR-0024; `createHttpTransport` also drains its queue on page hide as one `keepalive`
     fetch within the 64 KiB budget, through `src/delivery/unload.ts`, with a `lifecycle` option to
     turn it off and an `"unload-budget"` `DropReason` for what does not fit, ADR-0023) included — implements.
+  - `packages/resilience` — `@vipengele/ts-core-resilience`: resilience policies, each a tree-shakeable
+    sub-path (`./retry`, `./timeout`, `./circuit-breaker`, `./rate-limiter` with `createRateLimiter`,
+    `./bulkhead` with `createBulkhead`) re-exported from the root. `./errors` holds the
+    `ResilienceError` family (`CircuitOpenError`, `RateLimitExceededError`, `BulkheadFullError`,
+    `OperationTimeoutError`, `ResilienceConfigError`), each with a `resilience.<kind>` `code`, a
+    type-guard and, for the first three, detail fields passed as a `details` constructor argument.
 - `source/ts/` — `@vipengele/ts`, the framework's batteries-included umbrella package
   (`packages/ts/`, nested so `release.yml`'s publish-order globbing sees it). Its name is a
   deliberate exception to the `@vipengele/ts-<project>-<package>` convention (ADR-0003). It
