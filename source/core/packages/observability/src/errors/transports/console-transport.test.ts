@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Level } from "@vipengele/ts-core-common";
 import type { Resource } from "@vipengele/ts-core-common/scope";
+import { breadcrumbsSuppressed } from "../../breadcrumb-suppression";
 import type { ErrorEvent } from "../event";
 import { createConsoleTransport } from "./console-transport";
 import type { ConsoleLike } from "./console-transport";
@@ -89,5 +90,20 @@ describe("createConsoleTransport", () => {
     transport.send(anEvent("error"), RESOURCE);
 
     expect(target.error).not.toHaveBeenCalled();
+  });
+});
+
+describe("createConsoleTransport breadcrumb suppression", () => {
+  it("calls the console method with breadcrumbs suppressed", () => {
+    const seen: boolean[] = [];
+    const observe = () => {
+      seen.push(breadcrumbsSuppressed());
+    };
+    const transport = createConsoleTransport({ console: { error: observe, warn: observe, info: observe, debug: observe } });
+
+    transport.send(anEvent("error"), RESOURCE);
+
+    expect(seen).toEqual([true]);
+    expect(breadcrumbsSuppressed()).toBe(false);
   });
 });

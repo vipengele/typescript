@@ -2,6 +2,7 @@ import { systemClock, type Threshold } from "@vipengele/ts-core-common";
 import type { Resource } from "@vipengele/ts-core-common/scope";
 import { secretKeys } from "@vipengele/ts-core-redaction";
 import { describe, expect, test, vi } from "vitest";
+import { breadcrumbsSuppressed } from "../breadcrumb-suppression";
 import { isLoggingConfigError } from "./config-error";
 import { entryFor, type LevelEntry } from "./levels";
 import { createLogger, type Logger } from "./logger";
@@ -1197,5 +1198,26 @@ describe("the environment layer", () => {
     });
 
     expect(provider.logger("a").enabled("debug")).toBe(true);
+  });
+});
+
+describe("the default warn line", () => {
+  test("writes to console.warn with breadcrumbs suppressed", () => {
+    const name = "__vipengeleProviderWarnSuppressionTest";
+    const seen: boolean[] = [];
+    const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {
+      seen.push(breadcrumbsSuppressed());
+    });
+    const provider = createLoggerProvider();
+    const uninstall = provider.installConsole(name);
+    try {
+      (globalThis as unknown as Record<string, () => void>)[name]?.();
+    } finally {
+      uninstall();
+      consoleWarn.mockRestore();
+    }
+
+    expect(seen).toEqual([true]);
+    expect(breadcrumbsSuppressed()).toBe(false);
   });
 });

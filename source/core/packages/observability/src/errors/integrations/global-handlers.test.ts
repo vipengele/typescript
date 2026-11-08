@@ -1,6 +1,7 @@
 import { detectCapability } from "@vipengele/ts-core-common/runtime";
 import { Scope } from "@vipengele/ts-core-common/scope";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { breadcrumbsSuppressed } from "../../breadcrumb-suppression";
 import type { IntegrationHost } from "../integration";
 import { createReporter } from "../reporter";
 import { createTestTransport } from "../transports/test-transport";
@@ -309,6 +310,20 @@ describe("globalHandlers in Node", () => {
     flush.resolve(true);
     await settle();
     expect(process.exit).toHaveBeenCalledExactlyOnceWith(1);
+  });
+
+  it("writes the crash to the console with breadcrumbs suppressed", () => {
+    const { process, emit } = aProcess();
+    const seen: boolean[] = [];
+    vi.spyOn(console, "error").mockImplementation(() => {
+      seen.push(breadcrumbsSuppressed());
+    });
+    installOn(process, { onUncaught: "exit" });
+
+    emit("uncaughtException", new Error("boom"));
+
+    expect(seen).toEqual([true]);
+    expect(breadcrumbsSuppressed()).toBe(false);
   });
 
   it("waits for the flush no longer than flushTimeoutMs, and exits even when the flush times out", async () => {

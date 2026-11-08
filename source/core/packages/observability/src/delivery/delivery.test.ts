@@ -3,6 +3,7 @@ import { createManualTime, type ManualTime } from "@vipengele/ts-core-common/tes
 import type { Scheduler } from "@vipengele/ts-core-common";
 import type { Resource } from "@vipengele/ts-core-common/scope";
 import { afterEach, describe, expect, test, vi } from "vitest";
+import { breadcrumbsSuppressed } from "../breadcrumb-suppression";
 import {
   createDelivery,
   type DeliveryEntry,
@@ -811,5 +812,39 @@ describe("createDelivery isOffline", () => {
     expect(calls).toHaveLength(2);
     expect(reads).toBe(0);
     expect(drops).toEqual([]);
+  });
+});
+
+describe("createDelivery breadcrumb suppression", () => {
+  /** A responder answering 200 that records whether breadcrumbs were suppressed as fetch was called. */
+  function observing(seen: boolean[]): Responder {
+    return () => {
+      seen.push(breadcrumbsSuppressed());
+      return status(200);
+    };
+  }
+
+  test("calls fetch with breadcrumbs suppressed for an export attempt", async () => {
+    const seen: boolean[] = [];
+    const { delivery } = harness([observing(seen)], { limits: { maxBatchSize: 1 } });
+
+    delivery.enqueue("a", RESOURCE);
+    await tick();
+
+    expect(seen).toEqual([true]);
+    expect(breadcrumbsSuppressed()).toBe(false);
+  });
+
+  test("calls fetch with breadcrumbs suppressed for the keepalive request of a hidden page", () => {
+    const seen: boolean[] = [];
+    const window = new EventTarget();
+    const { delivery, calls } = harness([observing(seen)], { lifecycle: { window } });
+
+    delivery.enqueue("a", RESOURCE);
+    window.dispatchEvent(new Event("pagehide"));
+
+    expect(calls[0]?.init.keepalive).toBe(true);
+    expect(seen).toEqual([true]);
+    expect(breadcrumbsSuppressed()).toBe(false);
   });
 });

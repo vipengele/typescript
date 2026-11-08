@@ -1,4 +1,5 @@
 import type { Resource } from "@vipengele/ts-core-common/scope";
+import { suppressBreadcrumbs } from "../../breadcrumb-suppression";
 import { drain, openOffline } from "../../delivery/offline/wrapper";
 import type { StatusClass } from "../../delivery/retry-policy";
 import { type FittingPrefix, largestFittingPrefix, UNLOAD_BUDGET_BYTES, watchUnload } from "../../delivery/unload";
@@ -150,7 +151,9 @@ export function createHttpTransport(options: HttpTransportOptions): Transport {
         onDrop(events, reason);
       } else if (!warned.has(reason)) {
         warned.add(reason);
-        warnings?.warn(`HTTP transport dropped ${events.length} event(s): ${reason}. Later "${reason}" drops are not reported.`);
+        suppressBreadcrumbs(() =>
+          warnings?.warn(`HTTP transport dropped ${events.length} event(s): ${reason}. Later "${reason}" drops are not reported.`),
+        );
       }
     } catch {
       // A failing drop report must not reach `send`'s caller or stop the send loop.
