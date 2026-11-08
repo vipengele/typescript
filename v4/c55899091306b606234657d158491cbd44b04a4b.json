@@ -1,0 +1,22 @@
+{
+  "core-common": {
+    "covered": 1250,
+    "total": 1250,
+    "producer": "vitest 5.0.0, @vitest/coverage-v8 5.0.0"
+  },
+  "core-observability": {
+    "covered": 2845,
+    "total": 2845,
+    "producer": "vitest 5.0.0, @vitest/coverage-v8 5.0.0"
+  },
+  "core-redaction": {
+    "covered": 462,
+    "total": 462,
+    "producer": "vitest 5.0.0, @vitest/coverage-v8 5.0.0"
+  },
+  "core-resilience": {
+    "covered": 445,
+    "total": 445,
+    "producer": "vitest 5.0.0, @vitest/coverage-v8 5.0.0"
+  }
+}
