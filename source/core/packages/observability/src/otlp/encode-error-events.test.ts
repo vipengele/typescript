@@ -287,6 +287,61 @@ describe("encodeErrorEvents", () => {
     ]);
   });
 
+  test("encodes breadcrumbs as an array of kvlists, leaving out the fields a crumb lacks", () => {
+    const logRecord = encodeOne(
+      event({
+        breadcrumbs: [
+          { time: 1700000000000, message: "plain" },
+          { time: 1700000000001, message: "full", category: "http", level: "warn", data: { status: 500 } },
+        ],
+      }),
+    );
+
+    expect(attributeOf(logRecord, "vipengele.breadcrumbs")).toEqual({
+      arrayValue: {
+        values: [
+          {
+            kvlistValue: {
+              values: [
+                { key: "time", value: { intValue: "1700000000000" } },
+                { key: "message", value: { stringValue: "plain" } },
+              ],
+            },
+          },
+          {
+            kvlistValue: {
+              values: [
+                { key: "time", value: { intValue: "1700000000001" } },
+                { key: "message", value: { stringValue: "full" } },
+                { key: "category", value: { stringValue: "http" } },
+                { key: "level", value: { stringValue: "warn" } },
+                { key: "data", value: { kvlistValue: { values: [{ key: "status", value: { intValue: "500" } }] } } },
+              ],
+            },
+          },
+        ],
+      },
+    });
+  });
+
+  test("writes no breadcrumbs attribute for an event without a trail", () => {
+    expect(attributeOf(encodeOne(event()), "vipengele.breadcrumbs")).toBeUndefined();
+    expect(attributeOf(encodeOne(event({ breadcrumbs: [] })), "vipengele.breadcrumbs")).toBeUndefined();
+  });
+
+  test("drops an event attribute named vipengele.breadcrumbs in favour of the encoder's value", () => {
+    const logRecord = encodeOne(event({ breadcrumbs: [{ time: 1, message: "step" }], attributes: { "vipengele.breadcrumbs": "mine" } }));
+
+    expect(logRecord.attributes.filter(({ key }) => key === "vipengele.breadcrumbs")).toHaveLength(1);
+    expect(JSON.stringify(logRecord.attributes)).not.toContain("mine");
+  });
+
+  test("keeps an event attribute named vipengele.breadcrumbs when the event has no trail", () => {
+    const logRecord = encodeOne(event({ attributes: { "vipengele.breadcrumbs": "mine" } }));
+
+    expect(attributeOf(logRecord, "vipengele.breadcrumbs")).toEqual({ stringValue: "mine" });
+  });
+
   test("encodes no entries as an empty request", () => {
     expect(decode(encodeErrorEvents([]))).toEqual({ resourceLogs: [] });
   });

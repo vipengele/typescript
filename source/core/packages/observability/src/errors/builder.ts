@@ -1,4 +1,5 @@
 import { type Clock, type SerializeErrorOptions, systemClock } from "@vipengele/ts-core-common";
+import type { Breadcrumb } from "@vipengele/ts-core-common/scope";
 import { secretKeys } from "@vipengele/ts-core-redaction";
 import type { RedactionSetting } from "../redaction";
 import type { Integration } from "./integration";
@@ -50,6 +51,18 @@ export interface ReporterSettings {
   readonly dedupe: boolean;
   /** The token bucket events pass after deduplication, frozen, or `false` for none. */
   readonly rateLimit: false | Readonly<RateLimitOptions>;
+  /** The most breadcrumbs an event carries, from 0 to 100: the newest ones. 0 attaches none. */
+  readonly maxBreadcrumbs: number;
+  /** Maps each breadcrumb at attach time. Absent when none was set. */
+  readonly beforeBreadcrumb?: (crumb: Breadcrumb) => Breadcrumb | null;
+}
+
+/** The most breadcrumbs an event can carry. */
+const MAX_BREADCRUMBS_LIMIT = 100;
+
+/** A breadcrumb count is an integer from 0 to {@link MAX_BREADCRUMBS_LIMIT}, both included. */
+function isBreadcrumbCount(value: unknown): value is number {
+  return Number.isInteger(value) && (value as number) >= 0 && (value as number) <= MAX_BREADCRUMBS_LIMIT;
 }
 
 /** The options {@link ReporterBuilder.limits} accepts, in the order they are validated. */
@@ -91,7 +104,8 @@ function validateProcessor(processor: unknown, what: string): ErrorEventProcesso
  * Composes a Reporter's settings, starting from the defaults: no transport, the high-resolution
  * epoch clock, no integrations, the `secretKeys` redaction preset, no processors, no
  * `beforeSend`, a sample rate of 1 drawn with `Math.random`, no ignored errors, deduplication on,
- * and a rate limit with a burst of 60 refilled at 60 tokens per minute. Every method returns the
+ * a rate limit with a burst of 60 refilled at 60 tokens per minute, up to 100 breadcrumbs and no
+ * `beforeBreadcrumb`. Every method returns the
  * builder, so calls chain.
  */
 export class ReporterBuilder {
@@ -109,6 +123,8 @@ export class ReporterBuilder {
   #ignoreErrors: readonly (string | RegExp)[] = Object.freeze([]);
   #dedupe = true;
   #rateLimit: false | Readonly<RateLimitOptions> = DEFAULT_RATE_LIMIT;
+  #maxBreadcrumbs = MAX_BREADCRUMBS_LIMIT;
+  #beforeBreadcrumb: ((crumb: Breadcrumb) => Breadcrumb | null) | undefined;
 
   /** Where captured events go. A later call replaces the transport an earlier one set. */
   transport(transport: Transport): this {
@@ -329,6 +345,37 @@ export class ReporterBuilder {
     return this;
   }
 
+  /**
+   * The most breadcrumbs an event carries, from 0 to 100. An event gets the newest `n` of its Unit of
+   * Work's trail, after `beforeBreadcrumb` has run; 0 turns the trail off. 100 applies unless set. A
+   * later call replaces the count an earlier one set.
+   *
+   * @throws {ReporterConfigError} When `n` is not an integer from 0 to 100; the builder is then left as it was.
+   */
+  maxBreadcrumbs(n: number): this {
+    if (!isBreadcrumbCount(n)) {
+      throw new ReporterConfigError(`Invalid reporter maxBreadcrumbs ${describe(n)}: expected an integer from 0 to 100.`);
+    }
+    this.#maxBreadcrumbs = n;
+    return this;
+  }
+
+  /**
+   * The hook that maps each breadcrumb when it is attached to an event. It runs on every crumb of the
+   * trail, oldest first, on a copy, before the newest `maxBreadcrumbs` are kept. It returns the crumb
+   * to keep, or `null` to drop it; a throw or a result that is not an object drops that crumb only. A
+   * later call replaces the hook an earlier one set.
+   *
+   * @throws {ReporterConfigError} When `hook` is not a function; the builder is then left as it was.
+   */
+  beforeBreadcrumb(hook: (crumb: Breadcrumb) => Breadcrumb | null): this {
+    if (typeof hook !== "function") {
+      throw new ReporterConfigError(`Invalid reporter beforeBreadcrumb hook ${describe(hook)}: expected a function.`);
+    }
+    this.#beforeBreadcrumb = hook;
+    return this;
+  }
+
   /** The settings composed so far, as a snapshot a later call on this builder does not change. */
   build(): ReporterSettings {
     return {
@@ -347,6 +394,8 @@ export class ReporterBuilder {
       ignoreErrors: this.#ignoreErrors,
       dedupe: this.#dedupe,
       rateLimit: this.#rateLimit,
+      maxBreadcrumbs: this.#maxBreadcrumbs,
+      beforeBreadcrumb: this.#beforeBreadcrumb,
     };
   }
 }

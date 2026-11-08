@@ -1,5 +1,5 @@
 import { Scope } from "@vipengele/ts-core-common/scope";
-import type { RedactionPolicy } from "@vipengele/ts-core-redaction";
+import { email, type RedactionPolicy } from "@vipengele/ts-core-redaction";
 import { describe, expect, it } from "vitest";
 import type { ErrorEvent } from "./event";
 import { createCapture } from "./pipeline";
@@ -22,6 +22,64 @@ function onlyEvent(transport: TestTransport): ErrorEvent {
 function withSecretFields<T extends Error>(error: T): T {
   return Object.assign(error, { password: SECRET, reason: "quota" });
 }
+
+describe("Reporter redaction of the breadcrumb trail", () => {
+  it("masks a value a detector matches in a crumb's message and keeps its category and level", () => {
+    const transport = createTestTransport();
+    const reporter = createReporter((b) => b.transport(transport).redaction({ keys: [], detectors: [email] }));
+
+    Scope.isolated("request", {}, () => {
+      Scope.addBreadcrumb({ message: "mail ada@example.com sent", category: "mail", level: "info", time: 1 });
+      Scope.addBreadcrumb({ message: "nothing secret", time: 2 });
+      reporter.captureMessage("hello");
+    });
+
+    expect(onlyEvent(transport).breadcrumbs).toEqual([
+      { time: 1, message: `mail ${REDACTED} sent`, category: "mail", level: "info" },
+      { time: 2, message: "nothing secret" },
+    ]);
+  });
+
+  it("leaves a crumb's message as it is when redaction is off", () => {
+    const transport = createTestTransport();
+    const reporter = createReporter((b) => b.transport(transport).redaction(null));
+
+    Scope.isolated("request", {}, () => {
+      Scope.addBreadcrumb({ message: "mail ada@example.com sent", time: 1 });
+      reporter.captureMessage("hello");
+    });
+
+    expect(onlyEvent(transport).breadcrumbs).toEqual([{ time: 1, message: "mail ada@example.com sent" }]);
+  });
+
+  it("masks a secret key in each crumb's data and keeps a crumb's message the key policy does not match", () => {
+    const transport = createTestTransport();
+    const reporter = createReporter((b) => b.transport(transport));
+
+    Scope.isolated("request", {}, () => {
+      Scope.addBreadcrumb({ message: "signed in", data: { password: SECRET, user: "ada" }, time: 1 });
+      Scope.addBreadcrumb({ message: `password ${SECRET}`, time: 2 });
+      reporter.captureMessage("hello");
+    });
+
+    expect(onlyEvent(transport).breadcrumbs).toEqual([
+      { time: 1, message: "signed in", data: { password: REDACTED, user: "ada" } },
+      { time: 2, message: `password ${SECRET}` },
+    ]);
+  });
+
+  it("leaves each crumb's data as it is when redaction is off", () => {
+    const transport = createTestTransport();
+    const reporter = createReporter((b) => b.transport(transport).redaction(null));
+
+    Scope.isolated("request", {}, () => {
+      Scope.addBreadcrumb({ message: "signed in", data: { password: SECRET }, time: 1 });
+      reporter.captureMessage("hello");
+    });
+
+    expect(onlyEvent(transport).breadcrumbs).toEqual([{ time: 1, message: "signed in", data: { password: SECRET } }]);
+  });
+});
 
 describe("Reporter redaction of the trace", () => {
   it("leaves trace intact under a policy that matches its field names", () => {

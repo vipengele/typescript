@@ -27,7 +27,8 @@ Java's MDC. Scopes form a tree.
 - **There is no separate Breadcrumb buffer.** A scope's tag *is* its Breadcrumb. An Error Event's
   trail is the tagged ancestors of the Scope it was raised in, read by walking from the root down —
   recording a breadcrumb for something is creating a scope for it (`Scope.inherit` or
-  `Scope.isolated` with a tag), never a separate call.
+  `Scope.isolated` with a tag), never a separate call. **Superseded by ADR-0027**: a Breadcrumb is a
+  timestamped entry in a bounded buffer per Unit of Work, and a scope's tag is only its label.
 
 `Scope.setUser({ id, email, username })`, `Scope.setTag(key, value)` and
 `Scope.setContext(name, data)` write to the **current** scope, as flat dotted attribute keys:
@@ -107,7 +108,7 @@ or relies on `logger.with()`, which is lexical and survives everything.
   (`experimentalDecorators`) decorator calls, told apart by argument shape.
 
 A `Scope`'s public surface is only `tag`, `get` and `set` — never `parent`. Walking the tree to read
-a breadcrumb trail is the reporter's own internal concern, not something an application does, so
+a breadcrumb trail (a tag walk here; a buffer under ADR-0027) is the reporter's own internal concern, not something an application does, so
 nothing about ancestry is exposed outside the framework's own code. The one exception is the
 framework-internal `snapshot(scope)`, exported from `@vipengele/ts-core-common/scope` but not
 re-exported by `./errors`, which the reporter's enrich stage uses to flatten the attributes of a

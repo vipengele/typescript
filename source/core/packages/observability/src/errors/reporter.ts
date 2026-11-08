@@ -29,8 +29,15 @@ export interface Reporter {
    * A logger Sink that reports each record carrying an `error` at `minLevel` (`"error"` by default)
    * or above through this reporter's pipeline, as a handled event with mechanism source `"logger"`,
    * the record's level and trace, and its attributes plus `logger.category` and `logger.message`. A
-   * record without an error is ignored, and so is a write made while the same sink's capture is
-   * still running. Each call returns a new sink.
+   * record without an error is not reported, and neither is a write made while the same sink's
+   * capture is still running. Each call returns a new sink.
+   *
+   * Unless `breadcrumbs` is `false`, every record the sink receives, reported or not, is recorded as
+   * a breadcrumb — its time, message, category and level, no attributes — into the Unit of Work
+   * current when the sink's `write` runs, after the record's own event is captured. A logger sink
+   * wrapped in `createBatchingSink` runs `write` at flush time, so it records, and attaches to its
+   * events, the trail of whichever Unit of Work is current at flush; add it to the logger directly,
+   * or pass `{ breadcrumbs: false }` when wrapping it.
    *
    * @throws {ReporterConfigError} When `minLevel` is given and is not a level.
    */
@@ -99,6 +106,8 @@ export function createReporter(configure?: (builder: ReporterBuilder) => Reporte
     ignoreErrors,
     dedupe,
     rateLimit,
+    maxBreadcrumbs,
+    beforeBreadcrumb,
   } = (configure === undefined ? initial : configure(initial)).build();
   fillRuntimeContext();
   const capture = createCapture({
@@ -115,6 +124,8 @@ export function createReporter(configure?: (builder: ReporterBuilder) => Reporte
     ignoreErrors,
     dedupe,
     rateLimit,
+    maxBreadcrumbs,
+    beforeBreadcrumb,
   });
   const flush = async (timeoutMs?: number): Promise<boolean> => (transport === undefined ? true : transport.flush(timeoutMs));
   const teardown = setupIntegrations(integrations, {
