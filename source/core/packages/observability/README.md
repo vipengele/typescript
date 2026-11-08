@@ -1078,6 +1078,8 @@ the `inherit` Scopes beneath it) shares one buffer, which keeps the newest 100 e
 `isolated` Scope the default Scope holds its own. `data` is normalized and the entry frozen when it
 is recorded, and `time` (epoch milliseconds) defaults to the system clock. The call never throws: an
 input without a string `message` is dropped.
+[Automatic breadcrumbs](#automatic-breadcrumbs) records console, `fetch`, `XMLHttpRequest`, navigation and
+click crumbs without a call to `addBreadcrumb`.
 
 ```ts
 Scope.isolated("http-request", { requestId: "abc" }, () => {
@@ -1407,3 +1409,67 @@ policy decides what follows:
 
 A reporter with integrations owns the global state they install until `close()`. Two reporters that
 both add `globalHandlers` each install their own listeners, and each captures every error.
+
+### Automatic breadcrumbs
+
+`autoBreadcrumbs` is an `Integration` that records Breadcrumbs from the runtime's own globals into
+the current Unit of Work's trail (ADR-0028), so an event carries what the page or process did just
+before it:
+
+```ts
+import { autoBreadcrumbs, createConsoleTransport, createReporter } from "@vipengele/ts-core-observability/errors";
+
+const reporter = createReporter((builder) =>
+  builder
+    .transport(createConsoleTransport())
+    .add(autoBreadcrumbs({ xhr: false, clicks: { selectorAttributes: ["data-testid", "aria-label"] } })),
+);
+```
+
+- **Toggles** — `console`, `fetch`, `xhr`, `navigation` and `clicks`. Each is on by default wherever
+  the runtime has its global and is skipped silently where it does not: in Node only `console` and
+  `fetch` install, in the browser all five. `false` turns a type off, `true` or an options object
+  turns it on. Only `clicks` has an option of its own, `selectorAttributes`.
+- **`redaction`** — the `RedactionPolicy` every recorded URL is redacted with. Defaults to
+  `secretKeys`.
+- **`clock`** — supplies each crumb's `time` and each request's `duration_ms`. Defaults to
+  `systemClock`.
+- **Bad options** — the factory throws `ReporterConfigError` when `options` is not an object, a
+  toggle is neither a boolean nor an object, `clicks.selectorAttributes` is not an array of strings,
+  `redaction` is not a `RedactionPolicy` or `clock` is not a function. It throws when `autoBreadcrumbs`
+  is called, not when the reporter is built.
+
+| Type | Category | Level | Message | `data` |
+|------|----------|-------|---------|--------|
+| `console` | `console` | `debug` for `debug`, `info` for `info` and `log`, `warn`, `error` | the arguments rendered and joined by a space, cut at 1000 characters | none |
+| `fetch` | `http` | `error` for a rejection or a status of 500 or more, `warn` for 400 or more, else `info` | `GET https://…` | `method`, `url`, `status_code`, `duration_ms`, and `error` (the error's name) for a rejection |
+| `xhr` | `http` | as `fetch`; a status of 0 is `error` | `GET https://…` | `method`, `url`, `status_code`, `duration_ms`; a status of 0 has no `status_code` and `error: "NetworkError"` |
+| `navigation` | `navigation` | `info` | `<from> → <to>` | `from`, `to` |
+| `clicks` | `ui.click` | `info` | the clicked element's selector | none |
+
+`fetch` and `xhr` record when the request settles. `navigation` covers `history.pushState`,
+`replaceState` and `popstate`, and records nothing when the URL does not change.
+
+**URLs** — `fetch`, `xhr` and `navigation` pass every URL through `redactUrl` when the crumb is
+recorded, so the buffer never holds a raw URL: userinfo is replaced and each query and fragment
+parameter the policy matches is masked. A URL the policy fails on is replaced whole by
+`[REDACTED: unredactable url]`. The pipeline's redaction stage still runs over the trail on top.
+
+**Clicks** — a click records the clicked element and up to four ancestors, innermost last, joined by
+` > `, each as `tag#id.class[attr="v"]` with the tag lower-cased. `selectorAttributes` names the
+attributes rendered, in order, and defaults to `["data-testid", "name", "aria-label", "title",
+"role"]`. `value` is never rendered, even when listed, and an `<input>` renders only as
+`input[type="…"]`. The selector is cut at 200 characters, dropping ancestors from the outermost in;
+if the clicked element's own segment is longer, it is cut at its end. An element's text and an input's
+value are never read.
+
+**One patch per realm** — each global is wrapped at most once per realm, however many reporters or
+resolved copies of the package install the integration, so an event is recorded once. The oldest live
+install's `redaction`, `clock` and type options apply. Closing a reporter removes its install; when
+the last one for a type closes, the original is restored, except where something else has wrapped
+the global since, in which case the wrapper stays beneath it and records nothing.
+
+**Scope and self-traffic** — a `fetch` or `xhr` crumb lands in the Unit of Work current when the
+request started (`send` for `xhr`), wherever it settles, with the options it started under. The
+package's own `fetch` and `console` calls (transports, the OTLP and HTTP delivery, the console sink)
+are never recorded.
