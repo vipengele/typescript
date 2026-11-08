@@ -162,6 +162,74 @@ describe("installConsole", () => {
     expect(rendered).toBe(false);
   });
 
+  test("caps the message for a huge top-level string argument", () => {
+    const { target } = fakeConsole();
+    installed({ clock: () => 0 }, target);
+    const huge = "z".repeat(10_000_000);
+
+    const [crumb] = trailOf(() => {
+      target.log("head", huge, "tail");
+    });
+
+    expect(crumb?.message).toBe(`head ${"z".repeat(995)}`);
+  });
+
+  test("cuts a huge string nested in an object before JSON escapes it", () => {
+    const { target } = fakeConsole();
+    installed({ clock: () => 0 }, target);
+    const body = '"'.repeat(10_000_000);
+
+    const [crumb] = trailOf(() => {
+      target.log({ status: 500, body });
+    });
+
+    expect(crumb?.message).toHaveLength(1000);
+    expect(crumb?.message.startsWith('{"status":500,"body":"\\"')).toBe(true);
+  });
+
+  test("cuts a huge error message to the cap", () => {
+    const { target } = fakeConsole();
+    installed({ clock: () => 0 }, target);
+
+    const [crumb] = trailOf(() => {
+      target.log(new Error("e".repeat(10_000_000)));
+    });
+
+    expect(crumb?.message).toBe(`Error: ${"e".repeat(993)}`);
+  });
+
+  test("cuts a huge String fallback to the cap", () => {
+    const { target } = fakeConsole();
+    installed({ clock: () => 0 }, target);
+
+    const [crumb] = trailOf(() => {
+      target.log(BigInt(`1${"0".repeat(5_000)}`));
+    });
+
+    expect(crumb?.message).toBe(`1${"0".repeat(999)}`);
+  });
+
+  test("stops descending into a value once its JSON text reaches the cap", () => {
+    const { target } = fakeConsole();
+    installed({ clock: () => 0 }, target);
+    let reads = 0;
+    const rows = Array.from({ length: 100 }, () => ({
+      inner: {
+        get value() {
+          reads += 1;
+          return "v".repeat(100);
+        },
+      },
+    }));
+
+    const [crumb] = trailOf(() => {
+      target.log(rows);
+    });
+
+    expect(crumb?.message).toHaveLength(1000);
+    expect(reads).toBeLessThan(15);
+  });
+
   test("records nothing for a call made while breadcrumbs are suppressed, and still calls the original", () => {
     const { target, calls } = fakeConsole();
     installed({ clock: () => 0 }, target);

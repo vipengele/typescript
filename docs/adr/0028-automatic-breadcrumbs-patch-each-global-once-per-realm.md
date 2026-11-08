@@ -72,8 +72,11 @@ one realm.
 ADR-0027 item 8 redacts a crumb's `message` and `data` only in the pipeline's redaction stage, at
 attach time. That holds for crumbs whose text is already a Log Record's, which the logger redacted.
 A URL is raw input from the page: a token in a query string would sit in the shared buffer, and be
-visible to anything that reads the trail, until an event carried it out. Automatic crumbs are
-therefore redacted before they are stored. Nothing else about item 8 changes.
+visible to anything that reads the trail, until an event carried it out. The URLs in fetch, XHR and
+navigation crumbs are therefore redacted before they are stored (item 6). A console crumb's message
+and a click crumb's selector are stored as rendered and redacted at attach time by the pipeline's
+redaction stage, as item 8 redacts any crumb added with `addBreadcrumb`. Nothing else about item 8
+changes.
 
 ## Why ADR-0012's no-guard rule does not carry over
 
@@ -110,3 +113,8 @@ event twice. One patch per realm gives every Reporter the whole trail. The guard
   want different redaction policies for automatic crumbs cannot have both.
 - A fetch or XHR that settles after every install is torn down still records, with the options it
   saw when it started.
+- A console crumb holds the logged text, unredacted, in the shared trail until an event attaches
+  it. Anything that reads the raw trail before the redaction stage sees that text: `breadcrumbs()`
+  from `@vipengele/ts-core-common/scope`, and a Reporter's `beforeBreadcrumb` hook, which runs in
+  the enrich stage ahead of redaction. A secret logged to the console is masked in the event, not
+  in the buffer.

@@ -1079,7 +1079,8 @@ the `inherit` Scopes beneath it) shares one buffer, which keeps the newest 100 e
 is recorded, and `time` (epoch milliseconds) defaults to the system clock. The call never throws: an
 input without a string `message` is dropped.
 [Automatic breadcrumbs](#automatic-breadcrumbs) records console, `fetch`, `XMLHttpRequest`, navigation and
-click crumbs without a call to `addBreadcrumb`.
+click crumbs without a call to `addBreadcrumb`; it redacts their URLs when it records them, and leaves
+console messages and click selectors to the redaction stage, like any other crumb.
 
 ```ts
 Scope.isolated("http-request", { requestId: "abc" }, () => {
@@ -1431,7 +1432,7 @@ const reporter = createReporter((builder) =>
   `fetch` install, in the browser all five. `false` turns a type off, `true` or an options object
   turns it on. Only `clicks` has an option of its own, `selectorAttributes`.
 - **`redaction`** — the `RedactionPolicy` every recorded URL is redacted with. Defaults to
-  `secretKeys`.
+  `secretKeys`. It does not apply to console messages or click selectors.
 - **`clock`** — supplies each crumb's `time` and each request's `duration_ms`. Defaults to
   `systemClock`.
 - **Bad options** — the factory throws `ReporterConfigError` when `options` is not an object, a
@@ -1454,6 +1455,12 @@ const reporter = createReporter((builder) =>
 recorded, so the buffer never holds a raw URL: userinfo is replaced and each query and fragment
 parameter the policy matches is masked. A URL the policy fails on is replaced whole by
 `[REDACTED: unredactable url]`. The pipeline's redaction stage still runs over the trail on top.
+
+**Console messages and click selectors** — these are stored as rendered, not redacted when they are
+recorded. Like any crumb added with `Scope.addBreadcrumb`, they are redacted when an event attaches
+the trail, by the pipeline's redaction stage (see [Scopes](#scopes)). Until then the trail holds the
+logged text as it was: `breadcrumbs(Scope.current())` and a `beforeBreadcrumb` hook, which runs
+before the redaction stage, see it unredacted.
 
 **Clicks** — a click records the clicked element and up to four ancestors, innermost last, joined by
 ` > `, each as `tag#id.class[attr="v"]` with the tag lower-cased. `selectorAttributes` names the

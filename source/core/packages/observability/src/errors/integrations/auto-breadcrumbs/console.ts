@@ -45,49 +45,79 @@ const MAX_JSON_NODES = 200;
 /** Stands in for an argument that neither `JSON.stringify` nor `String` can render. */
 const UNRENDERABLE = "[unrenderable]";
 
-/** `value` as JSON text, leaving out every value after the first {@link MAX_JSON_NODES} it visits. */
-function boundedJson(value: unknown): string | undefined {
+/** Each visited value's share of the JSON budget beyond its key and its own text: quotes, colon, comma. */
+const JSON_NODE_OVERHEAD = 4;
+
+/** Roughly how many characters `nested` adds to JSON text once its strings are cut at `budget`. */
+function jsonSize(key: string, nested: unknown, budget: number): number {
+  const own =
+    typeof nested === "string"
+      ? Math.min(nested.length, budget)
+      : typeof nested === "object" && nested !== null
+        ? 2
+        : String(nested).length;
+  return key.length + own + JSON_NODE_OVERHEAD;
+}
+
+/**
+ * `value` as JSON text written for at most about `budget` characters: each string is cut to `budget`,
+ * and once the estimated text reaches `budget`, or {@link MAX_JSON_NODES} values have been visited,
+ * every later value is left out without being descended into. The root value is always kept.
+ */
+function boundedJson(value: unknown, budget: number): string | undefined {
   let visited = 0;
-  return JSON.stringify(value, (_key, nested: unknown) => {
+  let size = 0;
+  return JSON.stringify(value, (key: string, nested: unknown) => {
     visited += 1;
-    return visited > MAX_JSON_NODES ? undefined : nested;
+    if (visited > MAX_JSON_NODES || size >= budget) {
+      return undefined;
+    }
+    size += jsonSize(key, nested, budget);
+    return typeof nested === "string" && nested.length > budget ? nested.slice(0, budget) : nested;
   });
 }
 
 /**
- * One argument as message text: a string as it is, an `Error` as `name: message`, anything else as
- * bounded JSON, or through `String` when JSON gives nothing or throws (a cycle, a `bigint`).
+ * One argument as message text of at most `budget` characters: a string as it is, an `Error` as
+ * `name: message`, anything else as bounded JSON, or through `String` when JSON gives nothing or
+ * throws (a cycle, a `bigint`). A string is sliced, never copied whole.
  */
-function render(value: unknown): string {
+function render(value: unknown, budget: number): string {
   try {
     if (typeof value === "string") {
-      return value;
+      return value.slice(0, budget);
     }
     if (value instanceof Error) {
-      return `${value.name}: ${value.message}`;
+      return `${String(value.name).slice(0, budget)}: ${String(value.message).slice(0, budget)}`.slice(0, budget);
     }
     try {
-      const json = boundedJson(value);
+      const json = boundedJson(value, budget);
       if (json !== undefined) {
-        return json;
+        return json.slice(0, budget);
       }
     } catch {
       // Rendered through `String` below.
     }
-    return String(value);
+    return String(value).slice(0, budget);
   } catch {
     return UNRENDERABLE;
   }
 }
 
-/** The arguments rendered and joined by a space, cut at {@link MAX_MESSAGE_LENGTH}; rendering stops once the cap is reached. */
+/**
+ * The arguments rendered and joined by a space, cut at {@link MAX_MESSAGE_LENGTH}. Each argument is
+ * rendered within what is left of the cap, and rendering stops once the cap is reached.
+ */
 function messageOf(args: readonly unknown[]): string {
   let message = "";
   for (const [index, arg] of args.entries()) {
+    if (index > 0) {
+      message += " ";
+    }
     if (message.length >= MAX_MESSAGE_LENGTH) {
       break;
     }
-    message += (index === 0 ? "" : " ") + render(arg);
+    message += render(arg, MAX_MESSAGE_LENGTH - message.length);
   }
   return message.slice(0, MAX_MESSAGE_LENGTH);
 }
@@ -113,7 +143,9 @@ function record(options: () => ConsoleInstrumentationOptions | undefined, method
  * Joins the realm's console instrumentation with `options` and returns the function that leaves
  * it. While the patch is current, each of {@link CONSOLE_METHODS} on `target` records a breadcrumb
  * in category `"console"` before calling the original with the same `this` and arguments, and
- * returns or throws what the original does. A method that is missing or cannot be assigned is left
+ * returns or throws what the original does. The message is stored as rendered, not redacted: like a
+ * crumb given to `Scope.addBreadcrumb`, it is redacted when an event attaches the trail, by the
+ * Reporter's redaction stage. A method that is missing or cannot be assigned is left
  * as it is while the others are patched; a `target` that is not an object installs nothing.
  */
 export function installConsole(options: ConsoleInstrumentationOptions, target: ConsoleTarget | undefined = globalThis.console): () => void {
