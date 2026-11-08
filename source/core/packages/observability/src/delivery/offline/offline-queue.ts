@@ -1,4 +1,5 @@
 import { type Clock, type Scheduler, systemClock, systemScheduler } from "@vipengele/ts-core-common";
+import { suppressBreadcrumbs } from "../../breadcrumb-suppression";
 import type { DeliveryEntry, DeliveryFetch, DeliveryRequest, DeliveryResponse, DropReason, UndeliveredReason } from "../delivery";
 import { classifyStatus, type StatusClass } from "../retry-policy";
 import { type LifecycleTarget, utf8ByteLength } from "../unload";
@@ -361,7 +362,7 @@ export class OfflineQueue<T> {
     try {
       const headers = await Promise.race([whenAborted(attempt.signal), requestHeaders(this.#options.headers, this.#contentType)]);
       response = await Promise.race([
-        doFetch(this.#options.url, { method: "POST", headers, body, signal: attempt.signal }),
+        suppressBreadcrumbs(() => doFetch(this.#options.url, { method: "POST", headers, body, signal: attempt.signal })),
         whenAborted(expired.signal),
       ]);
     } catch {
