@@ -222,6 +222,20 @@ Run commands from `source/core` (`pnpm build`, `pnpm type-check`, `pnpm test`, `
   no `tags`, `user` or `contexts` field. `secretKeys` splits keys on every non-alphanumeric
   character, so `session.id` from `Scope.setContext("session", { id })` is masked by default.
 
+## Automatic breadcrumbs (`src/errors/integrations/auto-breadcrumbs/`, `src/breadcrumb-suppression.ts`)
+
+- `autoBreadcrumbs` is an `Integration` recording console, fetch, XHR, navigation and click breadcrumbs
+  into the Scope trail. Each global is patched at most once per realm through a `globalThis` slot
+  (`Symbol.for("vipengele:breadcrumbs:instrumentation:<type>:v1")`, `registry.ts`); every install joins
+  the slot's list, the oldest live install's options apply, and a restore only undoes a property that
+  still holds its own wrapper. Per-property patching is fallible: a failed assignment is skipped
+  (ADR-0028).
+- The package's own `fetch` and `console` calls (delivery, offline queue, HTTP transport, console
+  sink) run inside `suppressBreadcrumbs` (`breadcrumb-suppression.ts`, a realm-wide counter in a
+  `globalThis` slot). Suppression covers the synchronous call only; an instrumented `fetch` reads it
+  when called. Any new code in this package that calls `fetch` or `console` must wrap it, or its
+  traffic lands in the trail.
+
 ## Logger sink (`src/errors/logger-sink.ts`)
 
 - `reporter.loggerSink(options?: LoggerSinkOptions)` returns a `Sink` closing over the private
