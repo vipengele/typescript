@@ -1,4 +1,4 @@
-import type { Level } from "@vipengele/ts-core-common";
+import type { Clock, Level } from "@vipengele/ts-core-common";
 import {
   type Breadcrumb as CommonBreadcrumb,
   type Resource as CommonResource,
@@ -6,15 +6,20 @@ import {
   type ScopeUser as CommonScopeUser,
   Scope,
 } from "@vipengele/ts-core-common/scope";
+import type { RedactionPolicy } from "@vipengele/ts-core-redaction";
 import { expect, expectTypeOf, test } from "vitest";
 import type { DropReason as DeliveryDropReason } from "../delivery/delivery";
 import type { Sink } from "../logger/record";
 import type {
+  AutoBreadcrumbsOptions,
   Breadcrumb,
+  ClickBreadcrumbsOptions,
+  ConsoleBreadcrumbsOptions,
   DropReason,
   ErrorEvent,
   ErrorEventProcessor,
   ExitPolicy,
+  FetchBreadcrumbsOptions,
   GlobalErrorEventLike,
   GlobalEventTarget,
   GlobalHandlersOptions,
@@ -26,6 +31,7 @@ import type {
   IntegrationCaptureContext,
   IntegrationHost,
   LoggerSinkOptions,
+  NavigationBreadcrumbsOptions,
   OtlpTransport,
   OtlpTransportDropReason,
   OtlpTransportOfflineOptions,
@@ -35,6 +41,7 @@ import type {
   Resource,
   ScopeAttributes,
   ScopeUser,
+  XhrBreadcrumbsOptions,
 } from "./index";
 import * as entry from "./index";
 
@@ -139,4 +146,26 @@ test("the entry point exports the logger sink's options, the Reporter member tha
   expectTypeOf<entry.Reporter["loggerSink"]>().returns.toEqualTypeOf<Sink>();
   expectTypeOf<LoggerSinkOptions>().toEqualTypeOf<{ readonly minLevel?: Level; readonly breadcrumbs?: boolean }>();
   expect(entry.createReporter().loggerSink().write).toBeTypeOf("function");
+});
+
+test("the entry point exports the autoBreadcrumbs integration and its options", () => {
+  expect(entry.autoBreadcrumbs).toBeTypeOf("function");
+  expect(entry.autoBreadcrumbs().name).toBe("autoBreadcrumbs");
+  expect("createAutoBreadcrumbs" in entry).toBe(false);
+  expectTypeOf(entry.autoBreadcrumbs).parameters.toEqualTypeOf<[options?: AutoBreadcrumbsOptions]>();
+  expectTypeOf(entry.autoBreadcrumbs).returns.toEqualTypeOf<Integration>();
+  expectTypeOf<AutoBreadcrumbsOptions>().toEqualTypeOf<{
+    readonly console?: boolean | ConsoleBreadcrumbsOptions;
+    readonly fetch?: boolean | FetchBreadcrumbsOptions;
+    readonly xhr?: boolean | XhrBreadcrumbsOptions;
+    readonly navigation?: boolean | NavigationBreadcrumbsOptions;
+    readonly clicks?: boolean | ClickBreadcrumbsOptions;
+    readonly redaction?: RedactionPolicy;
+    readonly clock?: Clock;
+  }>();
+  expectTypeOf<ClickBreadcrumbsOptions>().toEqualTypeOf<{ readonly selectorAttributes?: readonly string[] }>();
+  expectTypeOf<ConsoleBreadcrumbsOptions>().toEqualTypeOf<{ readonly [option: string]: never }>();
+  expectTypeOf<FetchBreadcrumbsOptions>().toEqualTypeOf<{ readonly [option: string]: never }>();
+  expectTypeOf<XhrBreadcrumbsOptions>().toEqualTypeOf<{ readonly [option: string]: never }>();
+  expectTypeOf<NavigationBreadcrumbsOptions>().toEqualTypeOf<{ readonly [option: string]: never }>();
 });
