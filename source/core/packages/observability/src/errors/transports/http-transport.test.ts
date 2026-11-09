@@ -2,6 +2,7 @@ import type { Scheduler } from "@vipengele/ts-core-common";
 import type { Resource } from "@vipengele/ts-core-common/scope";
 import { createManualTime, type ManualTime } from "@vipengele/ts-core-common/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { breadcrumbsSuppressed } from "../../breadcrumb-suppression";
 import { failingIndexedDb, memoryIndexedDb } from "../../delivery/offline/fake-indexed-db.test-support";
 import type { ErrorEvent } from "../event";
 import type { Transport } from "../transport";
@@ -426,6 +427,21 @@ describe("createHttpTransport drops", () => {
     transport.send(anEvent("b"), resource);
 
     expect(drops).toEqual([{ messages: ["b"], reason: "queue-full" }]);
+  });
+
+  it("warns through the console with breadcrumbs suppressed", () => {
+    const time = createManualTime();
+    const seen: boolean[] = [];
+    const warn = () => {
+      seen.push(breadcrumbsSuppressed());
+    };
+    const { transport } = setup(time, { fetch: fakeFetch(time, 200).fetch, maxQueueEvents: 1, onDrop: undefined, console: { warn } });
+
+    transport.send(anEvent("a"), resource);
+    transport.send(anEvent("b"), resource);
+
+    expect(seen).toEqual([true]);
+    expect(breadcrumbsSuppressed()).toBe(false);
   });
 
   it("warns once per reason through the console when no onDrop is given", async () => {

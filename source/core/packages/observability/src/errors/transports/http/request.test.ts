@@ -1,6 +1,7 @@
 import { createManualTime, type ManualTime } from "@vipengele/ts-core-common/testing";
 import type { Resource } from "@vipengele/ts-core-common/scope";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { breadcrumbsSuppressed } from "../../../breadcrumb-suppression";
 import type { ErrorEvent } from "../../event";
 import { type HttpTransportOptions, resolveOptions } from "./options";
 import type { Batch } from "./queue";
@@ -838,5 +839,47 @@ describe("sendKeepalive", () => {
 
     expect(throwing.calls).toHaveLength(1);
     expect(rejecting.calls).toHaveLength(1);
+  });
+});
+
+describe("breadcrumb suppression", () => {
+  /** A `fetch` answering 200 that records whether breadcrumbs were suppressed as it was called. */
+  function observingFetch(): { fetch: typeof fetch; seen: boolean[] } {
+    const seen: boolean[] = [];
+    const fake = (): Promise<Response> => {
+      seen.push(breadcrumbsSuppressed());
+      return Promise.resolve(new Response(null, { status: 200 }));
+    };
+    return { fetch: fake as typeof fetch, seen };
+  }
+
+  it("calls fetch with breadcrumbs suppressed for each sendBatch attempt", async () => {
+    const time = createManualTime();
+    const { fetch, seen } = observingFetch();
+
+    await drive(time, sendBatch(aBatch(), settings(time, { fetch })));
+
+    expect(seen).toEqual([true]);
+    expect(breadcrumbsSuppressed()).toBe(false);
+  });
+
+  it("calls fetch with breadcrumbs suppressed for a keepalive request with headers at hand", () => {
+    const time = createManualTime();
+    const { fetch, seen } = observingFetch();
+
+    sendKeepalive(settings(time, { fetch, headers: { a: "b" } }), "body");
+
+    expect(seen).toEqual([true]);
+    expect(breadcrumbsSuppressed()).toBe(false);
+  });
+
+  it("calls fetch with breadcrumbs suppressed for a keepalive request sent once its headers resolve", async () => {
+    const time = createManualTime();
+    const { fetch, seen } = observingFetch();
+
+    sendKeepalive(settings(time, { fetch, headers: async () => ({ a: "b" }) }), "body");
+
+    await vi.waitFor(() => expect(seen).toEqual([true]));
+    expect(breadcrumbsSuppressed()).toBe(false);
   });
 });

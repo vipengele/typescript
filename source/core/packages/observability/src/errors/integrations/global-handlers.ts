@@ -1,5 +1,6 @@
 import { detectCapability } from "@vipengele/ts-core-common/runtime";
 import type { Level } from "@vipengele/ts-core-common";
+import { suppressBreadcrumbs } from "../../breadcrumb-suppression";
 import type { Mechanism } from "../event";
 import type { Integration, IntegrationHost } from "../integration";
 
@@ -146,7 +147,7 @@ function installProcessHandlers(process: GlobalProcess, host: IntegrationHost, o
       return;
     }
     // Node prints nothing once a listener is attached; a transport that does not write to the console would leave no trace of the crash.
-    console.error(error);
+    suppressBreadcrumbs(() => console.error(error));
     if (exiting) {
       process.exit(1);
       return;

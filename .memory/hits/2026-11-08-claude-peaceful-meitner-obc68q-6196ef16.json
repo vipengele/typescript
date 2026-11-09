@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "notes": {
+    "global-handlers-node-path-uses-local-process-type": {
+      "count": 1,
+      "first": "2026-11-08T06:52:11.062145522Z",
+      "last": "2026-11-08T06:52:11.062145522Z"
+    },
+    "integrations-replace-by-name-and-tear-down-newest-first": {
+      "count": 1,
+      "first": "2026-11-08T06:52:11.073025784Z",
+      "last": "2026-11-08T06:52:11.073025784Z"
+    }
+  }
+}

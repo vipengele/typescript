@@ -2,6 +2,7 @@ import { type Clock, type Scheduler, systemClock, systemScheduler } from "@vipen
 import type { Resource } from "@vipengele/ts-core-common/scope";
 import { type BackoffStrategy, createRetry, exponentialBackoff, type Outcome, withJitter } from "@vipengele/ts-core-resilience/retry";
 import { createTimeout } from "@vipengele/ts-core-resilience/timeout";
+import { suppressBreadcrumbs } from "../breadcrumb-suppression";
 import { classifyStatus, parseRetryAfter } from "./retry-policy";
 import { detectLifecycleTargets, type LifecycleTargets, largestFittingPrefix, UNLOAD_BUDGET_BYTES, watchUnload } from "./unload";
 
@@ -360,7 +361,7 @@ class DeliveryQueue<T> {
     const doFetch = this.#fetch;
     let pending: Promise<DeliveryResponse>;
     try {
-      pending = doFetch(this.#options.url, { ...request, signal });
+      pending = suppressBreadcrumbs(() => doFetch(this.#options.url, { ...request, signal }));
     } catch {
       return UNSENT;
     }
@@ -554,7 +555,7 @@ class DeliveryQueue<T> {
     const doFetch = this.#fetch;
     try {
       const request = { method: "POST", headers, body, signal: new AbortController().signal, keepalive: true } as const;
-      Promise.resolve(doFetch(this.#options.url, request)).catch(noop);
+      Promise.resolve(suppressBreadcrumbs(() => doFetch(this.#options.url, request))).catch(noop);
     } catch {
       // A page going away leaves nobody to report a request that could not be made to.
     }

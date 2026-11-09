@@ -1,5 +1,6 @@
 import type { RuntimeSource } from "@vipengele/ts-core-common/runtime";
 import type { Resource } from "@vipengele/ts-core-common/scope";
+import { suppressBreadcrumbs } from "../breadcrumb-suppression";
 import { type ConsoleLike, consoleMethodFor, type Formatter } from "./formatter";
 import { selectConsoleFormatter } from "./formatters/select";
 import type { LogRecord, Sink } from "./record";
@@ -33,7 +34,7 @@ export function createConsoleSink(options: ConsoleSinkOptions = {}): Sink {
   return {
     write(record: LogRecord, resource: Resource): void {
       const target: ConsoleLike = injected ?? globalThis.console;
-      target[consoleMethodFor(record.level)](...formatter.format(record, resource));
+      suppressBreadcrumbs(() => target[consoleMethodFor(record.level)](...formatter.format(record, resource)));
     },
   };
 }

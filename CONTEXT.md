@@ -236,6 +236,13 @@ happened in a Unit of Work (a request, a click, a Log Record). The recent entrie
 form a bounded trail, oldest dropped first, and an Error Event carries the trail as it stood when it
 was raised. A Scope's tag is only its label, not a Breadcrumb.
 
+**Instrumentation**:
+A source that records Breadcrumbs from a runtime global (`console`, `fetch`, `XMLHttpRequest`,
+`history`, `document`) by wrapping it. Each global is wrapped at most once per realm, however many
+Reporters ask for it, and the original is put back when the last one lets go (ADR-0028). Added to a
+Reporter as an Integration (`autoBreadcrumbs`).
+_Avoid_: auto-instrumentation, monkey patch
+
 **Transport**:
 What delivers Error Events (and exported Log Records) out of the process: console, HTTP JSON, OTLP.
 Owns batching, retry, `flush()` and `close()`. It drops an Error Event only when it cannot deliver

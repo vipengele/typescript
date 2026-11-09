@@ -93,7 +93,9 @@ Error Event, Scope, Breadcrumb, Transport) before naming things.
     unhandled event, ADR-0020; `enrich` sets `trace` from the active OpenTelemetry span, and `reporter.loggerSink()`
     reports each logged record that carries an error as a handled event, ADR-0026, and records every
     received Log Record as a breadcrumb unless `{ breadcrumbs: false }`; `enrich` attaches the Unit of Work's
-    breadcrumb trail, bounded by `maxBreadcrumbs` and filtered by `beforeBreadcrumb`, ADR-0027) and hand
+    breadcrumb trail, bounded by `maxBreadcrumbs` and filtered by `beforeBreadcrumb`, ADR-0027; the `autoBreadcrumbs`
+    integration records console, fetch, XHR, navigation and click breadcrumbs, patching each global once per realm and
+    keeping the package's own fetch and console calls out of the trail, ADR-0028) and hand
     the survivor, with that Resource, to a `Transport`, the fire-and-forget delivery contract (ADR-0010;
     `agentic/rules/transport-send-is-fire-and-forget.md`) every transport — the built-in
     `createConsoleTransport`, `createHttpTransport`, `createTestTransport` and `createOtlpTransport`

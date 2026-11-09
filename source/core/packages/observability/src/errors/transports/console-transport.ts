@@ -1,3 +1,4 @@
+import { suppressBreadcrumbs } from "../../breadcrumb-suppression";
 import type { ErrorEvent } from "../event";
 import type { Transport } from "../transport";
 
@@ -30,7 +31,7 @@ export function createConsoleTransport(options: ConsoleTransportOptions = {}): T
       if (closed) {
         return;
       }
-      target[methodFor(event.level)](event);
+      suppressBreadcrumbs(() => target[methodFor(event.level)](event));
     },
     async flush() {
       return true;

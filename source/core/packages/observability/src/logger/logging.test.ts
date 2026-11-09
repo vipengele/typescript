@@ -1,5 +1,6 @@
 import { type Resource, Scope } from "@vipengele/ts-core-common/scope";
 import { afterEach, describe, expect, test, vi } from "vitest";
+import { breadcrumbsSuppressed } from "../breadcrumb-suppression";
 import { isLoggingConfigError } from "./config-error";
 import { createLogger, type Logger } from "./logger";
 import { Logging, setWarnTarget } from "./logging";
@@ -279,6 +280,21 @@ describe("spec issues", () => {
     setWarnTarget(target);
     Logging.configure((b) => b.addSpec("a:nope"));
     expect(target).toHaveBeenCalled();
+  });
+
+  test("console.warn receives the issues with breadcrumbs suppressed", () => {
+    const seen: boolean[] = [];
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {
+      seen.push(breadcrumbsSuppressed());
+    });
+    try {
+      Logging.configure((b) => b.addSpec("a:nope"));
+    } finally {
+      warn.mockRestore();
+    }
+
+    expect(seen).toEqual([true]);
+    expect(breadcrumbsSuppressed()).toBe(false);
   });
 
   test("console.warn receives the issues when no target is injected", () => {

@@ -2,6 +2,7 @@ import { VipengeleError } from "@vipengele/ts-core-common";
 import type { Resource } from "@vipengele/ts-core-common/scope";
 import { createRetry, exponentialBackoff, type Outcome, type RetryPolicy, withJitter } from "@vipengele/ts-core-resilience/retry";
 import { createTimeout, type TimeoutPolicy } from "@vipengele/ts-core-resilience/timeout";
+import { suppressBreadcrumbs } from "../../../breadcrumb-suppression";
 import type { ErrorEvent } from "../../event";
 import { classify } from "./classify";
 import type { ResolvedHttpTransportOptions } from "./options";
@@ -216,7 +217,7 @@ async function deliver(context: RequestContext, body: string): Promise<RequestOu
         timeout.execute(
           async (bounded) => {
             const headers = await resolveHeaders(options);
-            const response = await send(options.url, { method: "POST", headers, body, signal: bounded.signal });
+            const response = await suppressBreadcrumbs(() => send(options.url, { method: "POST", headers, body, signal: bounded.signal }));
             const status = classify(response.status);
             if (status === "retry") {
               throw new RetryableStatusError(response.status, response.headers.get("Retry-After"));
@@ -324,7 +325,7 @@ export function sendKeepalive(options: ResolvedHttpTransportOptions, body: strin
     return false;
   }
   const post = (headers: Record<string, string> | undefined): Promise<Response> =>
-    send(options.url, { method: "POST", headers: withContentType(options, headers), body, keepalive: true });
+    suppressBreadcrumbs(() => send(options.url, { method: "POST", headers: withContentType(options, headers), body, keepalive: true }));
   if (isThenable(configured)) {
     Promise.resolve(configured).then(post).catch(ignore);
     return true;

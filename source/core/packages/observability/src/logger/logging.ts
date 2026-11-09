@@ -1,5 +1,6 @@
 import type { Threshold } from "@vipengele/ts-core-common";
 import { Scope } from "@vipengele/ts-core-common/scope";
+import { suppressBreadcrumbs } from "../breadcrumb-suppression";
 import { LoggingConfigError } from "./config-error";
 import { readEnvironmentSpec } from "./environment-source";
 import type { Logger } from "./logger";
@@ -42,7 +43,7 @@ export function setWarnTarget(target: WarnTarget | undefined): void {
 
 function warn(message: string): void {
   if (warnTarget === undefined) {
-    console.warn(message);
+    suppressBreadcrumbs(() => console.warn(message));
   } else {
     warnTarget(message);
   }

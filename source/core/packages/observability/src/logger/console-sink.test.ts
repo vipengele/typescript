@@ -2,6 +2,7 @@ import type { Level } from "@vipengele/ts-core-common";
 import type { RuntimeSource } from "@vipengele/ts-core-common/runtime";
 import type { Resource } from "@vipengele/ts-core-common/scope";
 import { afterEach, describe, expect, test, vi } from "vitest";
+import { breadcrumbsSuppressed } from "../breadcrumb-suppression";
 import { createConsoleSink } from "./console-sink";
 import type { ConsoleLike, Formatter } from "./formatter";
 import { ansiFormatter } from "./formatters/ansi";
@@ -200,5 +201,20 @@ describe("createConsoleSink", () => {
     const sink = createConsoleSink({ formatter: fixedFormatter(["line"]), console: target });
 
     expect(() => sink.write({ ...RECORD, level: "warn" }, RESOURCE)).toThrow(failure);
+  });
+});
+
+describe("breadcrumb suppression", () => {
+  test("calls the console method with breadcrumbs suppressed", () => {
+    const seen: boolean[] = [];
+    const observe = () => {
+      seen.push(breadcrumbsSuppressed());
+    };
+    const console: ConsoleLike = { error: observe, warn: observe, info: observe, debug: observe };
+
+    createConsoleSink({ console, formatter: jsonLinesFormatter }).write(RECORD, RESOURCE);
+
+    expect(seen).toEqual([true]);
+    expect(breadcrumbsSuppressed()).toBe(false);
   });
 });

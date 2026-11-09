@@ -1,5 +1,6 @@
 import type { Threshold } from "@vipengele/ts-core-common";
 import type { Resource } from "@vipengele/ts-core-common/scope";
+import { suppressBreadcrumbs } from "../breadcrumb-suppression";
 import { clearUnreadableStoredSpecs, createLoggingBuilder, type LoggingBuild, type LoggingBuilder } from "./builder";
 import { validateCategoryKey } from "./categories";
 import { CONSOLE_HANDLE_CATEGORY, installConsoleHandle } from "./console-handle";
@@ -362,7 +363,8 @@ export function createLoggerProvider(configure?: ConfigureCallback, options: Log
     return next;
   }
 
-  const warnLine = options.warn === undefined ? (message: string) => console.warn(message) : options.warn.bind(options);
+  const warnLine =
+    options.warn === undefined ? (message: string) => suppressBreadcrumbs(() => console.warn(message)) : options.warn.bind(options);
 
   /**
    * The console handle's write path: one `info` record under {@link CONSOLE_HANDLE_CATEGORY} through

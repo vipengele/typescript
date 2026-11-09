@@ -1,6 +1,7 @@
 import { createManualTime } from "@vipengele/ts-core-common/testing";
 import type { Resource } from "@vipengele/ts-core-common/scope";
 import { afterEach, describe, expect, test, vi } from "vitest";
+import { breadcrumbsSuppressed } from "../../breadcrumb-suppression";
 import type { DeliveryEntry, DeliveryFetch, DeliveryRequest, DeliveryResponse } from "../delivery";
 import { type OfflineDropReason, OfflineQueue, type OfflineQueueOptions } from "./offline-queue";
 import type { NewStoredBody, OfflineStore, PutOutcome, StoredBody } from "./store";
@@ -590,6 +591,21 @@ describe("replay", () => {
     await settled();
 
     expect(bodies).toEqual(["one"]);
+  });
+
+  test("calls fetch with breadcrumbs suppressed", async () => {
+    const store = new FakeStore();
+    store.seed("one");
+    const seen: boolean[] = [];
+    const fetch: DeliveryFetch = () => {
+      seen.push(breadcrumbsSuppressed());
+      return Promise.resolve(response(200));
+    };
+    create({ store: Promise.resolve(store), fetch });
+    await settled();
+
+    expect(seen).toEqual([true]);
+    expect(breadcrumbsSuppressed()).toBe(false);
   });
 
   test("ends quietly when reading the store rejects, and can run again", async () => {

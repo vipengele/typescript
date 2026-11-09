@@ -5,6 +5,15 @@ export { ReporterBuilder } from "./builder";
 export type { ErrorEvent, ExceptionRecord, Mechanism, StackFrame } from "./event";
 export type { Integration, IntegrationCaptureContext, IntegrationHost } from "./integration";
 export type {
+  AutoBreadcrumbsOptions,
+  ClickBreadcrumbsOptions,
+  ConsoleBreadcrumbsOptions,
+  FetchBreadcrumbsOptions,
+  NavigationBreadcrumbsOptions,
+  XhrBreadcrumbsOptions,
+} from "./integrations/auto-breadcrumbs/index";
+export { autoBreadcrumbs } from "./integrations/auto-breadcrumbs/index";
+export type {
   ExitPolicy,
   GlobalErrorEventLike,
   GlobalEventTarget,
