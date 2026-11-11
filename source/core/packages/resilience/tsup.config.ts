@@ -8,6 +8,7 @@ export default defineConfig({
     "src/compose/index.ts",
     "src/errors/index.ts",
     "src/rate-limiter/index.ts",
+    "src/registry/index.ts",
     "src/retry/index.ts",
     "src/timeout/index.ts",
   ],

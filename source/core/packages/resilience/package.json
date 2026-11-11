@@ -54,6 +54,10 @@
       "types": "./dist/rate-limiter/index.d.ts",
       "default": "./dist/rate-limiter/index.js"
     },
+    "./registry": {
+      "types": "./dist/registry/index.d.ts",
+      "default": "./dist/registry/index.js"
+    },
     "./retry": {
       "types": "./dist/retry/index.d.ts",
       "default": "./dist/retry/index.js"
