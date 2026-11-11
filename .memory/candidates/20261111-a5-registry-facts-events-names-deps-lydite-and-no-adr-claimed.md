@@ -1,0 +1,21 @@
+---
+about: "facts for a resilience registry: events carry kind+name+at but no policy-kind field, ctor validation is per-factory with no shared validator, no resilience ADR exists, two-copy tests plant a Symbol.for slot"
+saw:
+  - source/core/packages/resilience/src/retry/retry.ts
+  - source/core/packages/resilience/src/config-validation.ts
+  - source/core/packages/resilience/src/listenable.ts
+  - source/core/packages/common/src/context/global-registry.test.ts
+  - source/core/packages/observability/src/logger/slots.test.ts
+  - docs/adr
+  - .lydite/components.yml
+  - agentic/vipengele-typescript.md
+---
+- Events: `{ kind, name, at }` with kind in retry|retry-exhausted|timeout|circuit-state-changed|circuit-call-not-permitted|rate-limit-exceeded|rate-limit-waited|bulkhead-rejected. No explicit policy-kind field; the event kinds are disjoint across policies so an aggregated `ResilienceEvent` union is discriminable by `kind`, but name is NOT unique across kinds (a retry and a breaker may share a name), so the registry must key by (kind, name).
+- Per-instance deps: every factory takes `createX(name, config, { clock?, scheduler? })` defaulting to systemClock/systemScheduler; clock/scheduler are never global, so a registry must pass its builder's pair into each create call.
+- Validation is per factory (`validate` in retry.ts/timeout.ts, `config.ts` in cb/rl/bulkhead using shared `reject` in src/config-validation.ts, which is internal). Empty name -> `A <thing> needs a non-empty name`. All throw `ResilienceConfigError`. An override-for-existing-name error is new and has no wording convention yet.
+- Emitter (`createEmitter`, listenable.ts) is internal; swallows listener throws, snapshot iteration, each `on` independent. Registry aggregation = subscribe once per created policy `events.on`; there is no `Listenable` combinator.
+- Index/tsup: root index.ts is `export *` per sub-path; a new `./registry` entry needs package.json exports key + tsup entry (package-exports.test.ts fails otherwise); update resilience/AGENTS.md entry-point list.
+- Two-copy tests precedent: global-registry.test.ts:55 checks the slot is `Symbol.for(<same string>)` and slots.test.ts:46/274 plant a value on globalThis as "another copy" then assert the first-caller value is read and left in place. Logger tests load a fresh copy with a query-string dynamic import `./logging?copy=<n>` (`/* @vite-ignore */`) because vi.resetModules does not re-evaluate under Chromium (candidate 20261011-logger-slots...). Planted slots must be deleted in afterEach. A "same breaker" test should use the query-import copy in both Node and Chromium, not resetModules.
+- ADRs: highest number is 0028; 0012, 0014, 0015, 0023 each exist twice (duplicate numbers are tolerated). No resilience ADR exists yet; earlier stories (A3) deferred ADRs and the CONTEXT.md glossary to A7 (candidate 20261107-resilience-policy-conventions...). CONTEXT.md has no resilience terms today.
+- CLAUDE.md is rendered from `agentic/vipengele-typescript.md` (context source; resilience paragraph at lines ~107-113). Not auto-updated; an edit there plus `agtk render` is needed only if A5 changes the package surface description. umbrella re-exports are by name (note umbrella-reexports-names-individually) but the umbrella does not re-export resilience at all today.
+- Coverage: core-resilience is already a lydite component (.lydite/components.yml:30), no new entry; it builds core-common first. `vitest.shared.ts` gates 100% as union of node+chromium.
