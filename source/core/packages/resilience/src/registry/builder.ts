@@ -42,8 +42,26 @@ type LayersByKind = { [K in PolicyKind]: Array<Partial<ConfigOf<K>>> };
 type NamedLayersByKind = { [K in PolicyKind]: Map<string, Array<Partial<ConfigOf<K>>>> };
 
 /**
- * A builder and the `seal` that ends its use. Each layer is copied when it is added, so a caller
- * mutating its config object afterwards changes nothing.
+ * Copies `value` through every nested object, keeping anything else, a function such as `backoff` or
+ * `shouldRetry` included, by reference. Layers are merged only when a policy is first built, so a
+ * layer kept by reference would let a caller's later mutation of a nested value such as
+ * `slidingWindow` reach policies created afterwards.
+ */
+function copyLayer<T>(value: T): T {
+  if (typeof value !== "object" || value === null) {
+    return value;
+  }
+  const copy: Record<string, unknown> = {};
+  for (const [key, field] of Object.entries(value)) {
+    copy[key] = copyLayer(field);
+  }
+  return copy as T;
+}
+
+/**
+ * A builder and the `seal` that ends its use. Each layer is copied through its nested objects when
+ * it is added, so a caller mutating its config object afterwards, at any depth, changes
+ * nothing; functions in it are kept by reference.
  */
 export function createBuilder(): { readonly builder: RegistryBuilder; seal(): RegistrySettings } {
   const defaults: LayersByKind = { retry: [], circuitBreaker: [], rateLimiter: [], timeout: [], bulkhead: [] };
@@ -65,7 +83,7 @@ export function createBuilder(): { readonly builder: RegistryBuilder; seal(): Re
 
   function addDefaults<K extends PolicyKind>(kind: K, config: Partial<ConfigOf<K>> | undefined): void {
     requireKind(kind);
-    defaults[kind].push({ ...config });
+    defaults[kind].push(copyLayer({ ...config }));
   }
 
   function addConfigured<K extends PolicyKind>(kind: K, name: string, config: Partial<ConfigOf<K>> | undefined): void {
@@ -73,7 +91,7 @@ export function createBuilder(): { readonly builder: RegistryBuilder; seal(): Re
     requireName(kind, name);
     const byName = configured[kind];
     const layers = byName.get(name) ?? [];
-    layers.push({ ...config });
+    layers.push(copyLayer({ ...config }));
     byName.set(name, layers);
   }
 

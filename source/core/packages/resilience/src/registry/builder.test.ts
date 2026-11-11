@@ -164,6 +164,47 @@ describe("layer precedence", () => {
 
     expect(drain(registry.rateLimiter("api"))).toBe(2);
   });
+
+  test.each(["defaults", "configure", "fromConfig"] as const)(
+    "a nested value in a %s layer is copied, so mutating it afterwards changes nothing",
+    async (method) => {
+      const window: { type: "count"; size: number } = { type: "count", size: 2 };
+      const layer = { slidingWindow: window, minimumCalls: 2, failureRateThreshold: 50 };
+      const registry = createRegistry((b) => {
+        if (method === "defaults") {
+          b.defaults("circuitBreaker", layer);
+        } else if (method === "configure") {
+          b.configure("circuitBreaker", "api", layer);
+        } else {
+          b.fromConfig({ configure: { circuitBreaker: { api: layer } } });
+        }
+        window.size = 1;
+      });
+
+      const breaker = registry.circuitBreaker("api");
+      const fail = (): Promise<never> => Promise.reject(new Error("down"));
+      await breaker.execute(fail).catch(() => undefined);
+      await breaker.execute(fail).catch(() => undefined);
+
+      expect(breaker.state).toBe("open");
+    },
+  );
+
+  test("a function in a layer is kept by reference", async () => {
+    let asked = 0;
+    const shouldRetry = (): boolean => {
+      asked += 1;
+      return false;
+    };
+    const registry = createRegistry((b) => b.configure("retry", "api", { maxAttempts: 2, shouldRetry }));
+
+    await registry
+      .retry("api")
+      .execute(() => Promise.reject(new Error("down")))
+      .catch(() => undefined);
+
+    expect(asked).toBe(1);
+  });
 });
 
 describe("kind and name checks", () => {
