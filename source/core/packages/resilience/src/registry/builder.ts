@@ -45,17 +45,14 @@ type NamedLayersByKind = { [K in PolicyKind]: Map<string, Array<Partial<ConfigOf
  * Copies `value` through every nested object, keeping anything else, a function such as `backoff` or
  * `shouldRetry` included, by reference. Layers are merged only when a policy is first built, so a
  * layer kept by reference would let a caller's later mutation of a nested value such as
- * `slidingWindow` reach policies created afterwards.
+ * `slidingWindow` reach policies created afterwards. The copy is built with `Object.fromEntries`, so a
+ * key named `__proto__`, as `JSON.parse` produces, stays an ordinary field.
  */
 function copyLayer<T>(value: T): T {
   if (typeof value !== "object" || value === null) {
     return value;
   }
-  const copy: Record<string, unknown> = {};
-  for (const [key, field] of Object.entries(value)) {
-    copy[key] = copyLayer(field);
-  }
-  return copy as T;
+  return Object.fromEntries(Object.entries(value).map(([key, field]) => [key, copyLayer(field)])) as T;
 }
 
 /**

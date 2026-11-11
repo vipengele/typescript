@@ -3,9 +3,11 @@ import { describe, expect, test } from "vitest";
 import { isBulkheadFullError, isOperationTimeoutError, isRateLimitExceededError, isResilienceConfigError } from "../errors";
 import type { RateLimiterPolicy } from "../rate-limiter";
 import { fixedBackoff } from "../retry";
-import type { RegistryBuilder } from "./builder";
+import { createBuilder, type RegistryBuilder } from "./builder";
+import { builtInDefaults } from "./defaults";
+import { mergeConfig } from "./policy-table";
 import { createRegistry } from "./registry";
-import type { PolicyKind, RegistryBuilderLayer, ResilienceEvent } from "./types";
+import type { ConfigOf, PolicyKind, RegistryBuilderLayer, ResilienceEvent } from "./types";
 
 const START = 1_000;
 
@@ -189,6 +191,21 @@ describe("layer precedence", () => {
       expect(breaker.state).toBe("open");
     },
   );
+
+  test("a __proto__ key from parsed config stays an own field of the copied layer and the merged config", () => {
+    const parsed: unknown = JSON.parse('{"__proto__": {"polluted": true}, "maxConcurrent": 3}');
+    const layer = parsed as Partial<ConfigOf<"bulkhead">>;
+    const { builder, seal } = createBuilder();
+    builder.configure("bulkhead", "db", layer);
+    const [copied] = seal().configuredOf("bulkhead", "db") ?? [];
+    const merged = mergeConfig<"bulkhead">(builtInDefaults.bulkhead, [layer]);
+
+    for (const config of [copied, merged]) {
+      expect(Object.getPrototypeOf(config)).toBe(Object.prototype);
+      expect(Object.hasOwn(config as object, "__proto__")).toBe(true);
+    }
+    expect(merged.maxConcurrent).toBe(3);
+  });
 
   test("a function in a layer is kept by reference", async () => {
     let asked = 0;

@@ -39,14 +39,15 @@ export function createPolicy<K extends PolicyKind>(kind: K, name: string, config
 /**
  * Shallow-merges `layers` onto `base` in order. A field whose value is `undefined` counts as not
  * set and is skipped, so a layer cannot unset a field an earlier one set; a nested object such as
- * `slidingWindow` is replaced whole.
+ * `slidingWindow` is replaced whole. Each field is defined rather than assigned, so a key named
+ * `__proto__`, as `JSON.parse` produces, stays an ordinary field and never replaces the prototype.
  */
 export function mergeConfig<K extends PolicyKind>(base: ConfigOf<K>, layers: ReadonlyArray<Partial<ConfigOf<K>>>): ConfigOf<K> {
   const merged = { ...base };
   for (const layer of layers) {
     for (const [key, value] of Object.entries(layer)) {
       if (value !== undefined) {
-        Object.assign(merged, { [key]: value });
+        Object.defineProperty(merged, key, { value, writable: true, enumerable: true, configurable: true });
       }
     }
   }
