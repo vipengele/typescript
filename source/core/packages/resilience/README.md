@@ -464,7 +464,7 @@ const timeout = defaultRegistry().timeout("profile");
 One registry per realm, held at `globalThis[Symbol.for("vipengele.resilience.registry.v1")]` and
 created by the first call, so every resolved copy of the package shares it. It runs on the system clock
 and scheduler: `clock()` and `scheduler()` throw in its builder. A first `build` that throws leaves
-nothing created. Once it exists, a call with `build` throws and a call without returns it. A test that
+nothing created, and a `defaultRegistry` call from inside that `build` throws. Once it exists, a call with `build` throws and a call without returns it. A test that
 needs its own clock or configuration uses `createRegistry`.
 
 ## Errors

@@ -101,6 +101,38 @@ describe("defaultRegistry", () => {
     expect(slot()).toBe(registry);
   });
 
+  test("a call from inside the first build throws a ResilienceConfigError and the build's own registry fills the slot", () => {
+    let inner: unknown;
+    const registry = defaultRegistry(() => {
+      inner = errorOf(() => defaultRegistry());
+    });
+
+    expect(isResilienceConfigError(inner)).toBe(true);
+    expect((inner as Error).message).toContain("inside the build");
+    expect(slot()).toBe(registry);
+    expect(defaultRegistry()).toBe(registry);
+  });
+
+  test("a call from inside the first build that lets the error escape leaves the slot empty", () => {
+    const error = errorOf(() => defaultRegistry(() => defaultRegistry()));
+
+    expect(isResilienceConfigError(error)).toBe(true);
+    expect(slot()).toBeUndefined();
+    expect(defaultRegistry()).toBe(slot());
+  });
+
+  test("a second module instance called from inside the first build throws too", async () => {
+    const specifier = "./default-registry?copy=2";
+    const copy: typeof import("./default-registry") = await import(/* @vite-ignore */ specifier);
+    let inner: unknown;
+
+    defaultRegistry(() => {
+      inner = errorOf(() => copy.defaultRegistry());
+    });
+
+    expect(isResilienceConfigError(inner)).toBe(true);
+  });
+
   /**
    * A query-string import is a distinct instance of this module under both runtimes. It proves the
    * copies agree through the slot: it does not load a second copy of the registry or policy code,

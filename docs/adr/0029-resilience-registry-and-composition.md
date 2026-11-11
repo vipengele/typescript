@@ -63,7 +63,9 @@ from the package root.
    (`agentic/rules/shared-realm-state-lives-behind-a-globalthis-symbol-slot.md`), at
    `Symbol.for("vipengele.resilience.registry.v1")`, created lazily inside the call with no
    module-level mutable state. The first call builds with the system clock and scheduler; `clock()` and
-   `scheduler()` throw in its builder. A failed first build leaves the slot empty. A later call with
+   `scheduler()` throw in its builder. A failed first build leaves the slot empty. While that build
+   runs the slot holds a `Symbol.for` marker, so a call from inside it, from any copy, throws rather
+   than creating a second registry the first then replaces. A later call with
    `build` throws; without one it returns the shared instance. There is no exported reset and no
    exported slot key. The two-copy test imports `default-registry.ts` under a query string, which
    shows the copies agree through the slot; it does not load a second copy of the registry or policy

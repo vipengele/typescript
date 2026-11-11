@@ -9,7 +9,13 @@ import { createRegistry, type ResilienceRegistry } from "./registry";
  */
 const REGISTRY_SLOT = Symbol.for("vipengele.resilience.registry.v1");
 
-type RegistrySlot = Record<typeof REGISTRY_SLOT, ResilienceRegistry | undefined>;
+/**
+ * What the slot holds while the first call's `build` runs. It is a `Symbol.for` value, so every copy
+ * of the package recognises it, and a call that finds it is one made from inside that `build`.
+ */
+const BUILDING = Symbol.for("vipengele.resilience.registry.v1.building");
+
+type RegistrySlot = Record<typeof REGISTRY_SLOT, ResilienceRegistry | typeof BUILDING | undefined>;
 
 /**
  * A builder whose `clock` and `scheduler` throw: the default registry is shared by every copy of
@@ -52,7 +58,9 @@ function restrict(inner: RegistryBuilder): RegistryBuilder {
  * The first call creates the registry, configured by `build` when given, on the system clock and
  * scheduler: the builder's `clock` and `scheduler` throw a {@link ResilienceConfigError}. When that
  * first `build` throws, the error reaches the caller and the slot stays empty, so a later call
- * creates the registry afresh. Once the registry exists, a call without `build` returns it and a
+ * creates the registry afresh. A call made from inside that `build` throws a
+ * {@link ResilienceConfigError}: it would otherwise create a second registry, whose policies the
+ * first call's registry then replaces in the slot. Once the registry exists, a call without `build` returns it and a
  * call with one throws a {@link ResilienceConfigError}: the shared registry is configured once.
  *
  * A test that needs its own clock, scheduler or configuration uses `createRegistry`.
@@ -65,6 +73,9 @@ function restrict(inner: RegistryBuilder): RegistryBuilder {
 export function defaultRegistry(build?: (builder: RegistryBuilder) => unknown): ResilienceRegistry {
   const realm = globalThis as unknown as RegistrySlot;
   const existing = realm[REGISTRY_SLOT];
+  if (existing === BUILDING) {
+    throw new ResilienceConfigError("defaultRegistry cannot be called from inside the build that creates the default registry");
+  }
   if (existing !== undefined) {
     if (build !== undefined) {
       throw new ResilienceConfigError(
@@ -73,7 +84,13 @@ export function defaultRegistry(build?: (builder: RegistryBuilder) => unknown): 
     }
     return existing;
   }
-  const registry = createRegistry(build === undefined ? undefined : (inner) => build(restrict(inner)));
-  realm[REGISTRY_SLOT] = registry;
-  return registry;
+  realm[REGISTRY_SLOT] = BUILDING;
+  try {
+    const registry = createRegistry(build === undefined ? undefined : (inner) => build(restrict(inner)));
+    realm[REGISTRY_SLOT] = registry;
+    return registry;
+  } catch (error) {
+    realm[REGISTRY_SLOT] = undefined;
+    throw error;
+  }
 }
