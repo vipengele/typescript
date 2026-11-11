@@ -1,8 +1,8 @@
 # @vipengele/ts-core-resilience
 
-Resilience primitives. Entry points: `.` (re-exports `./bulkhead`, `./circuit-breaker`, `./errors`, `./rate-limiter`,
-`./retry` and `./timeout`), `./bulkhead`, `./circuit-breaker`, `./errors`, `./rate-limiter`, `./retry` and
-`./timeout`. Run commands from `source/core` (`pnpm build`, `pnpm type-check`,
+Resilience primitives. Entry points: `.` (re-exports `./bulkhead`, `./circuit-breaker`, `./compose`, `./errors`,
+`./rate-limiter`, `./registry`, `./retry` and `./timeout`), `./bulkhead`, `./circuit-breaker`, `./compose`,
+`./errors`, `./rate-limiter`, `./registry`, `./retry` and `./timeout`. Run commands from `source/core` (`pnpm build`, `pnpm type-check`,
 `pnpm test`, `pnpm lint`, `pnpm format:check`).
 
 ## Errors (`src/errors/resilience-errors.ts`)
@@ -32,6 +32,12 @@ Resilience primitives. Entry points: `.` (re-exports `./bulkhead`, `./circuit-br
   not exported from the barrel.
 - `src/rate-limiter/` and `src/bulkhead/` each hold the policy (`rate-limiter.ts`, `bulkhead.ts`) and
   its `config.ts` (config and deps types, validation).
+- `src/compose/` holds `compose.ts` (`compose`, standalone: it does not import the registry).
+  `src/registry/` holds `registry.ts` (`createRegistry`, the instance store and `pipeline`),
+  `builder.ts` (`RegistryBuilder`, snapshotted when `build` returns), `policy-table.ts` (the one
+  factory table typed `satisfies { [K in PolicyKind]: ... }`), `defaults.ts` (`builtInDefaults`),
+  `default-registry.ts` (`defaultRegistry`, state only in the `Symbol.for` slot on `globalThis`) and
+  `types.ts`. ADR-0029 records the decisions.
 - `src/config-validation.ts` is internal and not exported: the shared `reject(label, name, key,
   constraint, value)` that throws `ResilienceConfigError`, `isIntegerAtLeastOne`, `isDuration` and
   `DURATION_CONSTRAINT`.
