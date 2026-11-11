@@ -214,3 +214,14 @@ Resilience primitives. Entry points: `.` (re-exports `./bulkhead`, `./circuit-br
 - Each queue entry's wait sleep has its own `AbortController`. It is aborted (the rejection swallowed)
   and the caller-signal listener removed when the entry is granted or leaves the queue.
 - Event `bulkhead-rejected` carries `kind`, `name`, `at` and `reason`.
+
+## Compose and pipeline (`src/compose/`, `src/registry/registry.ts`)
+
+- Every policy but retry builds its own `{ attempt: 1, signal }`, so `compose` re-threads by hand: each
+  layer's `ctx.signal` becomes the next layer's `options.signal`, and the operation receives the
+  innermost signal and the attempt of the nearest enclosing policy reporting one above 1. Nesting
+  `outer.execute(() => inner.execute(op))` by hand loses both.
+- `pipeline(name)` nests in the fixed order retry > circuitBreaker > rateLimiter > timeout > bulkhead.
+  The timeout sits inside the breaker so the breaker sees an unaborted signal plus an
+  `OperationTimeoutError` and counts a failure; a timeout outside it would abort the breaker's signal
+  and the breaker would ignore the call.
