@@ -1,14 +1,15 @@
 import type { BulkheadConfig, BulkheadPolicy } from "../bulkhead";
 import type { CircuitBreakerConfig, CircuitBreakerPolicy } from "../circuit-breaker";
 import { isResilienceConfigError, ResilienceConfigError } from "../errors";
+import { compose } from "../compose";
 import { createEmitter } from "../listenable";
 import type { RateLimiterConfig, RateLimiterPolicy } from "../rate-limiter";
 import type { RetryConfig, RetryPolicy } from "../retry";
 import type { TimeoutConfig, TimeoutPolicy } from "../timeout";
-import type { Listenable } from "../types";
+import type { Listenable, Policy } from "../types";
 import { createBuilder, type RegistryBuilder, type RegistrySettings } from "./builder";
 import { builtInDefaults } from "./defaults";
-import { createPolicy, mergeConfig, requireName } from "./policy-table";
+import { createPolicy, mergeConfig, requireKind, requireName } from "./policy-table";
 import type { ConfigOf, PolicyKind, PolicyOf, ResilienceEvent } from "./types";
 
 /**
@@ -30,7 +31,34 @@ export interface ResilienceRegistry {
   rateLimiter(name: string, override?: Partial<RateLimiterConfig>): RateLimiterPolicy;
   timeout(name: string, override?: Partial<TimeoutConfig>): TimeoutPolicy;
   bulkhead(name: string, override?: Partial<BulkheadConfig>): BulkheadPolicy;
+  /**
+   * Composes the policies called `name` into one {@link Policy} named `name`, outermost first in
+   * the fixed order retry > circuitBreaker > rateLimiter > timeout > bulkhead, whatever order
+   * `options.kinds` lists them in. Without `kinds`, the pipeline takes every kind that has a
+   * `configure` entry for `name` or an instance called `name`; a kind-level `defaults` entry does
+   * not count.
+   *
+   * The pipeline reuses each existing instance and creates the missing ones from their effective
+   * config, with no override. It creates all of them before caching any, so when one fails none is
+   * cached. An instance it creates is then an existing instance like any other: a later override
+   * on it throws. Each call returns a new composed policy over the cached instances; the composed
+   * policy carries no `events`, which reach {@link ResilienceRegistry.events} as for any instance.
+   *
+   * Throws a {@link ResilienceConfigError} for an empty `name`, for an empty `kinds`, one that
+   * repeats a kind or names an unknown one, and when `kinds` is omitted and no kind has a
+   * `configure` entry or an instance called `name`.
+   */
+  pipeline(name: string, options?: PipelineOptions): Policy;
 }
+
+/** Options for {@link ResilienceRegistry.pipeline}. */
+export interface PipelineOptions {
+  /** The kinds to compose, in any order; defaults to those configured or created for the name. */
+  readonly kinds?: readonly PolicyKind[];
+}
+
+/** The nesting order of a pipeline, outermost first. */
+const PIPELINE_ORDER: readonly PolicyKind[] = ["retry", "circuitBreaker", "rateLimiter", "timeout", "bulkhead"];
 
 type InstancesByKind = { [K in PolicyKind]: Map<string, PolicyOf<K>> };
 
@@ -105,6 +133,55 @@ export function createPolicyStore(settings: RegistrySettings): PolicyStore {
   return store;
 }
 
+function pipelineKinds(store: PolicyStore, name: string, kinds: readonly PolicyKind[] | undefined): PolicyKind[] {
+  if (kinds === undefined) {
+    const found = PIPELINE_ORDER.filter(
+      (kind) => store.settings.configuredOf(kind, name) !== undefined || store.existing(kind, name) !== undefined,
+    );
+    if (found.length === 0) {
+      throw new ResilienceConfigError(`The pipeline "${name}" has no kinds: no policy called "${name}" is configured or created`);
+    }
+    return found;
+  }
+  if (kinds.length === 0) {
+    throw new ResilienceConfigError(`The pipeline "${name}" needs at least one kind`);
+  }
+  for (const kind of kinds) {
+    requireKind(kind);
+  }
+  if (new Set(kinds).size !== kinds.length) {
+    throw new ResilienceConfigError(`The pipeline "${name}" lists a kind more than once: ${kinds.join(", ")}`);
+  }
+  return PIPELINE_ORDER.filter((kind) => kinds.includes(kind));
+}
+
+/**
+ * The instance of `kind` called `name`, in two steps: the existing instance, or one built now
+ * without caching, then a commit that caches a built one and returns the instance either way.
+ */
+function prepare<K extends PolicyKind>(store: PolicyStore, kind: K, name: string): () => PolicyOf<K> {
+  const found = store.existing(kind, name);
+  if (found !== undefined) {
+    return () => found;
+  }
+  const policy = store.build(kind, name, undefined);
+  return () => {
+    store.adopt(kind, name, policy);
+    return policy;
+  };
+}
+
+/** Builds every missing instance before adopting any, so a failing one leaves none cached. */
+function createPipeline(store: PolicyStore, name: string, options: PipelineOptions | undefined): Policy {
+  if (name === "") {
+    throw new ResilienceConfigError("A registry pipeline needs a non-empty name");
+  }
+  const kinds = pipelineKinds(store, name, options?.kinds);
+  const commits = kinds.map((kind) => prepare(store, kind, name));
+  const composed = compose(...commits.map((commit): Policy => commit()));
+  return { name, execute: composed.execute };
+}
+
 /**
  * Creates a {@link ResilienceRegistry}, configured by `build` when given. `build` receives a
  * {@link RegistryBuilder} and runs once, synchronously; its return value is ignored, and the
@@ -121,5 +198,6 @@ export function createRegistry(build?: (builder: RegistryBuilder) => unknown): R
     rateLimiter: (name, override) => store.getOrCreate("rateLimiter", name, override),
     timeout: (name, override) => store.getOrCreate("timeout", name, override),
     bulkhead: (name, override) => store.getOrCreate("bulkhead", name, override),
+    pipeline: (name, options) => createPipeline(store, name, options),
   };
 }
