@@ -1,6 +1,8 @@
 ---
-about: "every resilience policy except retry builds its own ctx {attempt: 1, signal}, so compose/pipeline must re-thread the outer attempt and signal by hand; no ADR covers it"
+about: "every resilience policy except retry builds its own ctx {attempt: 1, signal}, so compose/pipeline must re-thread the outer attempt and signal by hand; ADR-0029 decision 6 records how"
 saw:
+  - source/core/packages/resilience/src/compose/compose.ts
+  - docs/adr/0029-resilience-registry-and-composition.md
   - source/core/packages/resilience/src/types.ts
   - source/core/packages/resilience/src/retry/retry.ts
   - source/core/packages/resilience/src/timeout/timeout.ts
@@ -18,4 +20,4 @@ Interactions that the fixed order retry > cb > rl > timeout > bulkhead relies on
 - retry default shouldRetry (retry.ts `defaultShouldRetry`) declines CircuitOpen/RateLimitExceeded/BulkheadFull but retries OperationTimeoutError; retry rethrows the last error as the same object.
 - retry aborts: `signal.throwIfAborted()` after each failed attempt and sleeps on the caller's signal.
 - bulkhead innermost: a timeout abort while queued leaves the queue with signal.reason; a granted waiter whose signal aborts still runs op and holds the permit until it settles (see candidate 20261107-bulkhead-leave-is-idempotent...).
-Not found: no ADR or test of nesting policies yet (docs/adr has none for resilience; grep -il adr in resilience/src hits only bulkhead).
+`src/compose/compose.ts` `runLayer` does this re-threading, and `src/compose/compose.test.ts` covers retry > breaker attempts, nested retries (1, 2, 2, 3), abort propagation and timeout-inside-breaker; ADR-0029 decisions 6 and 7 record the rule and the fixed order.

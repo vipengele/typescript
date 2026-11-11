@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "notes": {
+    "async-context-carrier-lives-in-globalthis-symbol-slot": {
+      "count": 1,
+      "first": "2026-11-11T05:30:15.195355044Z",
+      "last": "2026-11-11T05:30:15.195355044Z"
+    },
+    "level-tables-are-replaced-never-mutated": {
+      "count": 1,
+      "first": "2026-11-11T05:30:15.202488611Z",
+      "last": "2026-11-11T05:30:15.202488611Z"
+    },
+    "umbrella-reexports-names-individually": {
+      "count": 1,
+      "first": "2026-11-11T05:30:15.210199293Z",
+      "last": "2026-11-11T05:30:15.210199293Z"
+    }
+  }
+}
