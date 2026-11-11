@@ -5,6 +5,7 @@ export default defineConfig({
     "src/index.ts",
     "src/bulkhead/index.ts",
     "src/circuit-breaker/index.ts",
+    "src/compose/index.ts",
     "src/errors/index.ts",
     "src/rate-limiter/index.ts",
     "src/retry/index.ts",

@@ -1,5 +1,6 @@
 export * from "./bulkhead";
 export * from "./circuit-breaker";
+export * from "./compose";
 export * from "./errors";
 export * from "./rate-limiter";
 export * from "./retry";
