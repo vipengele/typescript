@@ -106,7 +106,12 @@ Error Event, Scope, Breadcrumb, Transport) before naming things.
     turn it off and an `"unload-budget"` `DropReason` for what does not fit, ADR-0023) included — implements.
   - `packages/resilience` — `@vipengele/ts-core-resilience`: resilience policies, each a tree-shakeable
     sub-path (`./retry`, `./timeout`, `./circuit-breaker`, `./rate-limiter` with `createRateLimiter`,
-    `./bulkhead` with `createBulkhead`) re-exported from the root. `./errors` holds the
+    `./bulkhead` with `createBulkhead`) re-exported from the root. `./compose`'s `compose(...policies)` nests
+    policies into one, first outermost; `./registry`'s `createRegistry` holds one named instance per kind
+    and name, from layered config (`builtInDefaults` ← `defaults` ← `configure` ← creating-call
+    override), with `events` over every policy it created and `pipeline(name)` composing a name's policies
+    in a fixed order; `defaultRegistry` is the realm-shared one behind a `Symbol.for` `globalThis` slot
+    (ADR-0029). `./errors` holds the
     `ResilienceError` family (`CircuitOpenError`, `RateLimitExceededError`, `BulkheadFullError`,
     `OperationTimeoutError`, `ResilienceConfigError`), each with a `resilience.<kind>` `code`, a
     type-guard and, for the first three, detail fields passed as a `details` constructor argument.

@@ -42,6 +42,10 @@
       "types": "./dist/circuit-breaker/index.d.ts",
       "default": "./dist/circuit-breaker/index.js"
     },
+    "./compose": {
+      "types": "./dist/compose/index.d.ts",
+      "default": "./dist/compose/index.js"
+    },
     "./errors": {
       "types": "./dist/errors/index.d.ts",
       "default": "./dist/errors/index.js"
@@ -49,6 +53,10 @@
     "./rate-limiter": {
       "types": "./dist/rate-limiter/index.d.ts",
       "default": "./dist/rate-limiter/index.js"
+    },
+    "./registry": {
+      "types": "./dist/registry/index.d.ts",
+      "default": "./dist/registry/index.js"
     },
     "./retry": {
       "types": "./dist/retry/index.d.ts",
