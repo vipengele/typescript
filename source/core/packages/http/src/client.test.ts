@@ -249,11 +249,13 @@ describe("snapshots and extend", () => {
     expect(new Headers(calls[1]?.init.headers).get("x-a")).toBe("1");
   });
 
-  it("extend passes the raw injected fetch on without wrapping it twice", async () => {
+  it("an extended client sends through the injected fetch, once per request", async () => {
     const { fetch, calls } = fakeFetch();
     const client = HttpClient.builder().fetch(fetch).build();
     await client.extend().build().get("https://h.test/").send();
     expect(calls).toHaveLength(1);
+    expect(calls[0]?.url).toBe("https://h.test/");
+    expect(calls[0]?.init.method).toBe("GET");
   });
 
   it("extend without an injected fetch still reads globalThis.fetch at dispatch", async () => {
