@@ -110,6 +110,12 @@ Error Event, Scope, Breadcrumb, Transport) before naming things.
     `ResilienceError` family (`CircuitOpenError`, `RateLimitExceededError`, `BulkheadFullError`,
     `OperationTimeoutError`, `ResilienceConfigError`), each with a `resilience.<kind>` `code`, a
     type-guard and, for the first three, detail fields passed as a `details` constructor argument.
+  - `packages/http` — `@vipengele/ts-core-http`: an HTTP client over `fetch`. `HttpClient.builder()`
+    configures a client, whose immutable request builders end in the terminals `send`, `exchange`,
+    `json`, `text` and `void`; an ordered chain of filters (`filter`, the `Order` bands, lower is
+    outermost, a tie only when every filter at that order sets `allowsOrderTie`) wraps dispatch,
+    which guards one-shot bodies. `HttpStatusError` and `HttpConfigError` come from `./errors`, each
+    with an `http.<kind>` `code` and a guard (ADR-0029).
 - `source/ts/` — `@vipengele/ts`, the framework's batteries-included umbrella package
   (`packages/ts/`, nested so `release.yml`'s publish-order globbing sees it). Its name is a
   deliberate exception to the `@vipengele/ts-<project>-<package>` convention (ADR-0003). It

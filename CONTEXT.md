@@ -312,3 +312,26 @@ Its events are always unhandled.
 **Exit Policy**:
 What a Node process does after a Global Handler captures an error: `"exit"` or `"continue"`. The
 caller chooses each one; there is no default.
+
+**Filter**:
+One step of an HTTP client's Filter Chain. It has a name and an order, receives the Http Context and
+a `next` that runs the rest of the chain, and returns the response, so it can change the request,
+change the response, repeat the call or stop it. Unlike a Log Processor, which sees one Log Record
+on its way to a Sink, a Filter wraps a whole request and its response.
+_Avoid_: interceptor, middleware, processor
+
+**Filter Chain**:
+The Filters of one HTTP client sorted by ascending order, lowest outermost, in front of the dispatch
+that calls `fetch`. Two Filters share an order only when every Filter at that order allows the tie.
+_Avoid_: pipeline, interceptor stack
+
+**Http Context**:
+The state one attempt of one request carries through the Filter Chain: the request, the attributes
+filters hand each other, the attempt number and the `fetch` to dispatch through. A `fork` makes the
+context of another attempt, which shares the call's attributes and its record of sent one-shot bodies.
+_Avoid_: request context, exchange
+
+**Http Response**:
+A response read without status conversion, returned by `exchange()`: its status, headers and the raw
+`Response`, with `json`, `text` and `discard` to read or drop the body.
+_Avoid_: result, reply
