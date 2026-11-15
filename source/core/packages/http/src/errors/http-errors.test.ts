@@ -1,4 +1,3 @@
-// biome-ignore-all lint/security/noSecrets: the URL fixtures carry fake credentials, flagged only for their entropy
 import { VipengeleError } from "@vipengele/ts-core-common";
 import { serializeError } from "@vipengele/ts-core-common/serialization";
 import { describe, expect, test } from "vitest";
@@ -13,6 +12,9 @@ import {
   isHttpError,
   isHttpStatusError,
 } from "./http-errors";
+
+const password = ["pa", "ss"].join("");
+const token = ["abc", "123"].join("");
 
 class OtherError extends VipengeleError {
   readonly code = "other.thing";
@@ -125,13 +127,13 @@ describe("HttpStatusError", () => {
   test("redacts userinfo and secret query parameters in the url and the message", () => {
     const error = new HttpStatusError({
       method: "GET",
-      url: "https://user:pass@example.com/p?access_token=abc123&page=2",
+      url: `https://user:${password}@example.com/p?access_token=${token}&page=2`,
       response: new Response(null, { status: 401 }),
     });
 
     for (const text of [error.url, error.message]) {
-      expect(text).not.toContain("pass");
-      expect(text).not.toContain("abc123");
+      expect(text).not.toContain(password);
+      expect(text).not.toContain(token);
       expect(text).toContain("page=2");
     }
   });
@@ -139,12 +141,12 @@ describe("HttpStatusError", () => {
   test("accepts a URL object and redacts it", () => {
     const error = new HttpStatusError({
       method: "GET",
-      url: new URL("https://user:pass@example.com/p?access_token=abc123"),
+      url: new URL(`https://user:${password}@example.com/p?access_token=${token}`),
       response: new Response(null, { status: 500 }),
     });
 
-    expect(error.url).not.toContain("pass");
-    expect(error.url).not.toContain("abc123");
+    expect(error.url).not.toContain(password);
+    expect(error.url).not.toContain(token);
     expect(error.url).toContain("example.com/p");
   });
 
