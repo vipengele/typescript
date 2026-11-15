@@ -1,18 +1,35 @@
 import { type HttpBody, isOneShotBody, toReadableStream } from "./body";
 import type { Terminal } from "./chain";
-import { type HttpContext, type HttpFetch, markSent, wasSent } from "./context";
+import { type HttpContext, type HttpFetch, type HttpRequest, markSent, wasSent } from "./context";
 import { HttpConfigError } from "./errors/http-errors";
 
 /** `RequestInit` with the `duplex` member a streaming request body needs, absent from the DOM lib. */
 type DispatchInit = RequestInit & { duplex?: "half" };
 
 /**
+ * The request object dispatch sent for each response its `fetch` produced.
+ *
+ * A module-level map rather than a `globalThis` slot: it is written by `dispatch` and read by the
+ * request builder, and both always come from the same copy of the package.
+ */
+const dispatchedRequests = new WeakMap<Response, HttpRequest>();
+
+/**
+ * The request object dispatch sent for `response`, or `undefined` when dispatch did not produce it
+ * (a filter built or cached it). A filter that mutates that object after dispatch is reflected here.
+ */
+export function dispatchedRequest(response: Response): HttpRequest | undefined {
+  return dispatchedRequests.get(response);
+}
+
+/**
  * The fetch a client dispatches through: `injected`, or the realm's `fetch`.
  *
- * Either is wrapped so it is called as a plain function, with `this` undefined: a native `fetch`
- * called as a method of anything but `window` throws "Illegal invocation" in browsers. The default
- * reads `globalThis.fetch` on every call, so a `fetch` installed or stubbed after the client is
- * built is the one used.
+ * A native `fetch` called as a method of anything but `window` (or `globalThis`) throws "Illegal
+ * invocation" in browsers. An injected `fetch` is therefore called as a plain function, with `this`
+ * undefined, so a native `fetch` passed in detached is never invoked as a method of some other
+ * object. The default calls `globalThis.fetch` as a method of `globalThis`, read on every call, so a
+ * `fetch` installed or stubbed after the client is built is the one used.
  */
 export function resolveFetch(injected?: HttpFetch): HttpFetch {
   if (injected !== undefined) {
@@ -31,7 +48,8 @@ export function resolveFetch(injected?: HttpFetch): HttpFetch {
  * `duplex: "half"`, and a second dispatch of the same object rejects with {@link HttpConfigError}
  * without calling `fetch`, whether it comes from a fork of the same call, another terminal call on
  * the same builder, a derived builder or another client. A rejection from `fetch` propagates
- * unchanged; nothing throws synchronously.
+ * unchanged; nothing throws synchronously. The response is recorded against `ctx.request`, read
+ * back through {@link dispatchedRequest}.
  */
 export const dispatch: Terminal = async (ctx: HttpContext): Promise<Response> => {
   const { url, method, headers, body, signal } = ctx.request;
@@ -54,5 +72,7 @@ export const dispatch: Terminal = async (ctx: HttpContext): Promise<Response> =>
       init.body = body as Exclude<HttpBody, AsyncIterable<Uint8Array>>;
     }
   }
-  return ctx.fetch(url.href, init);
+  const response = await ctx.fetch(url.href, init);
+  dispatchedRequests.set(response, ctx.request);
+  return response;
 };

@@ -413,6 +413,38 @@ describe("terminal status matrix", () => {
     const { get } = setup({ filters: [rewrite], respond: () => new Response(null, { status: 503 }) });
     await expect(get().text()).rejects.toMatchObject({ url: "https://h.test/moved", method: "GET", status: 503 });
   });
+
+  test("the status error carries the URL and method of the forked request that produced the response", async () => {
+    const forkTo = filter({
+      name: "fork-to",
+      order: 100,
+      handle: (ctx, next) => {
+        const forked = ctx.fork();
+        forked.request.url.pathname = "/elsewhere";
+        forked.request.method = "PUT";
+        return next(forked);
+      },
+    });
+    const respond = () => new Response("missing", { status: 404 });
+    const { get } = setup({ filters: [forkTo], respond });
+    const reported = { url: "https://h.test/elsewhere", method: "PUT", status: 404 };
+    await expect(get().json()).rejects.toMatchObject(reported);
+    await expect(get().text()).rejects.toMatchObject(reported);
+    await expect(get().void()).rejects.toMatchObject(reported);
+    const throwing = setup({ filters: [forkTo], respond, throwOnError: true });
+    await expect(throwing.get().send()).rejects.toMatchObject(reported);
+  });
+
+  test("the status error carries the root request when a filter answers without dispatching", async () => {
+    const answer = filter({
+      name: "answer",
+      order: 100,
+      handle: () => Promise.resolve(new Response(null, { status: 410 })),
+    });
+    const { get, calls } = setup({ filters: [answer] });
+    await expect(get().text()).rejects.toMatchObject({ url: "https://h.test/api/x", method: "GET", status: 410 });
+    expect(calls).toHaveLength(0);
+  });
 });
 
 describe("json<T>() decoding", () => {
@@ -424,6 +456,21 @@ describe("json<T>() decoding", () => {
   ])("resolves undefined for %s", async (_, method, respond) => {
     const { config } = setup({ respond });
     await expect(createRequestBuilder(config, method, "/x").json()).resolves.toBeUndefined();
+  });
+
+  test("applies the HEAD rule to the method a forked request was dispatched with", async () => {
+    const asHead = filter({
+      name: "as-head",
+      order: 100,
+      handle: (ctx, next) => {
+        const forked = ctx.fork();
+        forked.request.method = "HEAD";
+        return next(forked);
+      },
+    });
+    const { get } = setup({ filters: [asHead], respond: () => new Response('{"a":1}') });
+    await expect(get().json()).resolves.toBeUndefined();
+    await expect((await get().exchange()).json()).resolves.toBeUndefined();
   });
 
   test("rejects invalid JSON with the parser's SyntaxError", async () => {

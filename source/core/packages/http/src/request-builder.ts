@@ -1,6 +1,7 @@
 import type { HttpBody } from "./body";
 import type { ClientConfig } from "./client-config";
 import { createRootContext, type HttpRequest } from "./context";
+import { dispatchedRequest } from "./dispatch";
 import { HttpConfigError, HttpStatusError } from "./errors/http-errors";
 import { cancelBody, decodeJson, type HttpResponse, toHttpResponse } from "./http-response";
 import { resolveUrl } from "./url";
@@ -77,7 +78,7 @@ interface BuilderState {
   readonly attributes: ReadonlyMap<string | symbol, unknown>;
 }
 
-/** The request a terminal sent and the response the chain produced for it. */
+/** The request that produced the response, and the response the chain resolved with. */
 interface Exchanged {
   readonly request: HttpRequest;
   readonly response: Response;
@@ -181,7 +182,9 @@ class Builder implements RequestBuilder {
   /**
    * Builds the request and runs it through the client's chain. Client headers come first and the
    * request's own replace them; `content-type` and, when `acceptJson` is set, `accept` default to
-   * JSON only when absent. Every call gets its own URL, headers and attributes.
+   * JSON only when absent. Every call gets its own URL, headers and attributes. The request
+   * reported is the one dispatch sent for the response, which a filter may have forked and
+   * rewritten; a response dispatch never produced (a filter built or cached it) reports the root.
    */
   async #exchange(acceptJson: boolean): Promise<Exchanged> {
     const { config, method, url, body, jsonBody, signal, attributes } = this.#state;
@@ -197,7 +200,7 @@ class Builder implements RequestBuilder {
     }
     const request: HttpRequest = { url: new URL(url.href), method, headers, body, signal };
     const response = await config.chain(createRootContext(request, config.fetch, new Map(attributes)));
-    return { request, response };
+    return { request: dispatchedRequest(response) ?? request, response };
   }
 }
 

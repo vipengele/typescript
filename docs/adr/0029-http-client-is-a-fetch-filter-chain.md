@@ -10,8 +10,10 @@ guarded.
 
 1. **`fetch` is the only transport.** The package dispatches through the realm's `fetch`, or one
    injected with `fetch(...)` on the builder. The default reads `globalThis.fetch` at each send, so
-   a stub installed after the client is built is the one used, and it is called as a plain function
-   because a native `fetch` called as a method of anything but `window` throws "Illegal invocation".
+   a stub installed after the client is built is the one used, and it is called as a method of
+   `globalThis`; an injected `fetch` is called as a plain function, `this` undefined, so a native
+   `fetch` passed in detached is never invoked as a method of some other object. A native `fetch`
+   called as a method of anything but `window` throws "Illegal invocation".
    *Rejected: axios, or an adapter layer over several transports.* axios is a runtime dependency,
    uses XHR in the browser and brings an interceptor model that would duplicate the filter chain.
    An adapter layer reimplements `fetch`'s semantics per transport for no caller the platform does

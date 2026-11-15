@@ -34,8 +34,12 @@ The decisions are in ADR-0029.
 - `dispatch.ts` calls `ctx.fetch(url.href, init)` and guards one-shot bodies (an async iterable goes
   through `toReadableStream` in `body.ts`, `duplex: "half"`, and any second dispatch of the same
   object — from a fork, another terminal call, a derived builder or another client — rejects with
-  `HttpConfigError` before `fetch` is called). `resolveFetch` wraps the injected or global `fetch`
-  so it is called as a plain function and reads `globalThis.fetch` at each call.
+  `HttpConfigError` before `fetch` is called). `resolveFetch` calls an injected `fetch` as a plain
+  function (`this` undefined) and the default as `globalThis.fetch(...)`, a method of `globalThis`,
+  read at each call. `dispatch` records the request object it sent for each response in a
+  module-level `WeakMap`, read through `dispatchedRequest`, so a status error and the empty-body rule
+  describe the request that produced the response (a forked one included), or the root request when
+  a filter answered without dispatching.
 - `url.ts` holds `resolveUrl`, the `baseUrl` join. A resolved URL with a username or password, from
   the input or the base, throws `HttpConfigError` with the URL passed through `redactUrl`.
   `http-response.ts` holds `HttpResponse` and the empty-body rule (204, 205, `HEAD`, zero-length

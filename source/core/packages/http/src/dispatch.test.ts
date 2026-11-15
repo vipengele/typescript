@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { HttpBody } from "./body";
 import { createRootContext, type HttpFetch, type HttpRequest } from "./context";
-import { dispatch, resolveFetch } from "./dispatch";
+import { dispatch, dispatchedRequest, resolveFetch } from "./dispatch";
 import { isHttpConfigError } from "./errors/http-errors";
 
 type Call = { input: string; init: RequestInit & { duplex?: "half" } };
@@ -204,6 +204,21 @@ describe("dispatch", () => {
   });
 });
 
+describe("dispatchedRequest", () => {
+  test("returns the request dispatch sent for a response it produced", async () => {
+    const { fetch } = recordingFetch();
+    const ctx = createRootContext(makeRequest(), fetch);
+
+    const response = await dispatch(ctx);
+
+    expect(dispatchedRequest(response)).toBe(ctx.request);
+  });
+
+  test("returns undefined for a response dispatch did not produce", () => {
+    expect(dispatchedRequest(new Response("ok"))).toBeUndefined();
+  });
+});
+
 describe("resolveFetch", () => {
   test("calls an injected fetch as a plain function, with this undefined", async () => {
     const receivers: unknown[] = [];
@@ -237,5 +252,18 @@ describe("resolveFetch", () => {
 
     expect(calls).toHaveLength(1);
     expect(calls[0]?.input).toBe("https://example.com/upload?x=1");
+  });
+
+  test("calls globalThis.fetch as a method of globalThis", async () => {
+    const receivers: unknown[] = [];
+    vi.stubGlobal("fetch", function (this: unknown) {
+      receivers.push(this);
+      return Promise.resolve(new Response("ok"));
+    });
+
+    await resolveFetch()("https://example.com/", {});
+
+    expect(receivers).toHaveLength(1);
+    expect(receivers[0]).toBe(globalThis);
   });
 });
