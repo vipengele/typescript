@@ -9,6 +9,8 @@ Resilience primitives for the browser and Node: timeouts, retries, circuit break
 | `@vipengele/ts-core-resilience/retry` | `createRetry`, the backoff strategies and the `RetryPolicy` and its events |
 | `@vipengele/ts-core-resilience/rate-limiter` | `createRateLimiter`, the `RateLimiterPolicy`, its config, deps and events |
 | `@vipengele/ts-core-resilience/bulkhead` | `createBulkhead`, the `BulkheadPolicy`, its config, deps and events |
+| `@vipengele/ts-core-resilience/compose` | `compose`, which nests policies into one |
+| `@vipengele/ts-core-resilience/registry` | `createRegistry`, `defaultRegistry`, `builtInDefaults` and the registry types |
 | `@vipengele/ts-core-resilience/errors` | The errors the package raises, with their guards |
 | `@vipengele/ts-core-resilience` | All of the above |
 
@@ -340,18 +342,130 @@ A `BulkheadRejectedEvent` carries `name`, `at` and the `reason`, `"full"` or `"w
 
 ## Timeout and retry together
 
-Policies compose by nesting calls. A timeout inside the retry's operation bounds each attempt, and the
-default `shouldRetry` retries the resulting `OperationTimeoutError`:
+A timeout inside the retry's operation bounds each attempt, and the default `shouldRetry` retries the
+resulting `OperationTimeoutError`. `compose` nests the policies for you:
 
 ```ts
+import { compose } from "@vipengele/ts-core-resilience/compose";
+
 const perAttempt = createTimeout("profile.attempt", { durationMs: 2_000 });
 
+const guarded = compose(retry, perAttempt);
+
+const body = await guarded.execute(({ signal }) => fetch("https://example.com/profile", { signal }).then((r) => r.text()));
+```
+
+Nesting the calls by hand is the same thing:
+
+```ts
 const body = await retry.execute((ctx) =>
   perAttempt.execute(({ signal }) => fetch("https://example.com/profile", { signal }).then((r) => r.text()), {
     signal: ctx.signal,
   }),
 );
 ```
+
+A registry builds the same nesting from configuration:
+
+```ts
+import { createRegistry } from "@vipengele/ts-core-resilience/registry";
+
+const registry = createRegistry((b) =>
+  b
+    .configure("retry", "profile", { maxAttempts: 4 })
+    .configure("timeout", "profile", { durationMs: 2_000 }),
+);
+
+const body = await registry
+  .pipeline("profile")
+  .execute(({ signal }) => fetch("https://example.com/profile", { signal }).then((r) => r.text()));
+```
+
+## `./compose`
+
+`compose(...policies)` returns one `Policy` with the first policy outermost; no policies throws a
+`ResilienceConfigError`. The result is always a fresh wrapper named with the policies' names joined by
+`" > "` (`compose(p)` is a wrapper named `p.name`), and it has no `events`: each policy keeps its own.
+
+`options.signal` goes to the outermost policy, and each layer hands its own signal to the next as the
+caller's signal, so an abort reaches the operation through every layer. The next layer's `execute` is
+called synchronously, so a breaker, limiter or bulkhead admits in the same tick as the composed call.
+The operation receives the innermost policy's signal and the attempt of the nearest enclosing policy
+that reports an attempt above 1, else 1. Under nested retries that attempt is neither unique nor
+monotonic (2, 2, 3).
+
+`./compose` does not import the registry.
+
+## `./registry`
+
+```ts
+import { createRegistry } from "@vipengele/ts-core-resilience/registry";
+
+const registry = createRegistry((b) =>
+  b
+    .defaults("timeout", { durationMs: 5_000 })
+    .configure("circuitBreaker", "profile.api", { slidingWindow: { type: "count", size: 20 }, minimumCalls: 10 })
+    .clock(clock)
+    .scheduler(scheduler),
+);
+
+const breaker = registry.circuitBreaker("profile.api");
+const retry = registry.retry("profile.api", { maxAttempts: 5 });
+
+registry.events.on((event) => console.warn(event.kind, event.name));
+```
+
+`registry.retry`, `circuitBreaker`, `rateLimiter`, `timeout` and `bulkhead` return the policy of that
+kind called `name`, creating it on first use; there is one instance per kind and name, and policies of
+different kinds may share a name. A name that is empty throws a `ResilienceConfigError`.
+
+- **Layers** — a policy's config is the built-in defaults, then each `defaults(kind, config)` layer,
+  then each `configure(kind, name, config)` layer, then the override passed to the creating call. Each
+  step is a shallow merge in call order: a nested object such as `slidingWindow` is replaced whole, and
+  a field set to `undefined` is skipped, so it cannot unset an inherited one. `fromConfig(layer)` adds a
+  `RegistryBuilderLayer` (`{ defaults?, configure? }`) the same way.
+- **Validation** — the factories validate. A `ResilienceConfigError` from one is rethrown as a
+  `ResilienceConfigError` naming the kind, the name and the layer order, with the original as `cause`.
+- **Overrides** — any override other than `undefined` for an existing kind and name throws, whatever it
+  holds. A call without one returns the existing instance. An instance a pipeline created counts as
+  existing.
+- **Builder** — `createRegistry(build?)` ignores `build`'s return value. The builder's `defaults`,
+  `configure`, `fromConfig`, `clock` and `scheduler` chain, and any use after `build` returns throws.
+- **`events`** — a `Listenable<ResilienceEvent>`, the union of the five policies' events, covering
+  every policy the registry created, whenever the listener was added.
+
+### `pipeline`
+
+`registry.pipeline(name, { kinds? })` composes the policies called `name` into one policy named `name`,
+outermost first in the fixed order retry, circuit breaker, rate limiter, timeout, bulkhead, whatever
+order `kinds` lists. Without `kinds` it takes every kind that has a `configure` entry for `name` or an
+existing instance called `name`; a `defaults` entry does not count, and a name with neither throws. An
+empty, duplicated or unknown `kinds` throws. Missing instances are created from their effective config
+with no override, all or none. Each call returns a new composed policy over the shared instances.
+
+### `builtInDefaults`
+
+Deep-frozen, resilience4j's numbers: retry `{ maxAttempts: 3, backoff: fixedBackoff(500) }`; circuit
+breaker `{ failureRateThreshold: 50, slidingWindow: { type: "count", size: 100 }, minimumCalls: 100,
+waitDurationInOpenMs: 60000, permittedCallsInHalfOpen: 10 }`; rate limiter `{ limitForPeriod: 50,
+refreshPeriodMs: 500, maxWaitMs: 5000 }`; timeout `{ durationMs: 1000 }`; bulkhead
+`{ maxConcurrent: 25 }`, with no queue and no wait.
+
+### `defaultRegistry`
+
+```ts
+import { defaultRegistry } from "@vipengele/ts-core-resilience/registry";
+
+defaultRegistry((b) => b.configure("timeout", "profile", { durationMs: 2_000 }));
+
+const timeout = defaultRegistry().timeout("profile");
+```
+
+One registry per realm, held at `globalThis[Symbol.for("vipengele.resilience.registry.v1")]` and
+created by the first call, so every resolved copy of the package shares it. It runs on the system clock
+and scheduler: `clock()` and `scheduler()` throw in its builder. A first `build` that throws leaves
+nothing created, and a `defaultRegistry` call from inside that `build` throws. Once it exists, a call with `build` throws and a call without returns it. A test that
+needs its own clock or configuration uses `createRegistry`.
 
 ## Errors
 
