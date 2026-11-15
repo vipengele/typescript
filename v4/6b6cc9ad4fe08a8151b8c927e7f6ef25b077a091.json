@@ -1,0 +1,27 @@
+{
+  "core-common": {
+    "covered": 1250,
+    "total": 1250,
+    "producer": "vitest 5.0.0, @vitest/coverage-v8 5.0.0"
+  },
+  "core-http": {
+    "covered": 213,
+    "total": 213,
+    "producer": "vitest 5.0.0, @vitest/coverage-v8 5.0.0"
+  },
+  "core-observability": {
+    "covered": 3261,
+    "total": 3261,
+    "producer": "vitest 5.0.0, @vitest/coverage-v8 5.0.0"
+  },
+  "core-redaction": {
+    "covered": 462,
+    "total": 462,
+    "producer": "vitest 5.0.0, @vitest/coverage-v8 5.0.0"
+  },
+  "core-resilience": {
+    "covered": 620,
+    "total": 620,
+    "producer": "vitest 5.0.0, @vitest/coverage-v8 5.0.0"
+  }
+}
