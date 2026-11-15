@@ -1,0 +1,158 @@
+import { describe, expect, it } from "vitest";
+import { isHttpConfigError } from "./errors/http-errors";
+import { resolveUrl } from "./url";
+
+const base = new URL("https://api.example.com/v1");
+const slashBase = new URL("https://api.example.com/v1/");
+
+describe("resolveUrl absolute input", () => {
+  it.each([
+    ["https URL", "https://example.org/a?b=1#c", "https://example.org/a?b=1#c"],
+    ["custom scheme", "foo+bar://host/path", "foo+bar://host/path"],
+    ["uppercase scheme", "HTTPS://example.org/a", "https://example.org/a"],
+  ])("uses a %s as it is, ignoring the base", (_name, input, expected) => {
+    expect(resolveUrl(input, base).href).toBe(expected);
+    expect(resolveUrl(input).href).toBe(expected);
+  });
+
+  it("returns a fresh copy of a URL object", () => {
+    const input = new URL("https://example.org/a");
+    const resolved = resolveUrl(input, base);
+    expect(resolved).not.toBe(input);
+    expect(resolved.href).toBe(input.href);
+    resolved.pathname = "/changed";
+    expect(input.pathname).toBe("/a");
+  });
+
+  it("throws a config error for an absolute string that does not parse", () => {
+    try {
+      resolveUrl("https://");
+      expect.unreachable();
+    } catch (error) {
+      expect(isHttpConfigError(error)).toBe(true);
+    }
+  });
+
+  it("redacts secrets in the message of an unparseable URL and attaches no cause", () => {
+    const password = ["pa", "ss"].join("");
+    const token = ["ab", "c"].join("");
+    try {
+      resolveUrl(`https://user:${password}@h.test:99999/x?access_token=${token}`);
+      expect.unreachable();
+    } catch (error) {
+      expect(isHttpConfigError(error)).toBe(true);
+      expect((error as Error).message).not.toContain(password);
+      expect((error as Error).message).not.toContain(token);
+      expect((error as Error).cause).toBeUndefined();
+    }
+  });
+});
+
+describe("resolveUrl relative input", () => {
+  it.each([
+    [base, "/orders/42"],
+    [base, "orders/42"],
+    [slashBase, "/orders/42"],
+    [slashBase, "orders/42"],
+  ])("joins %s and %s with exactly one slash", (baseUrl, path) => {
+    expect(resolveUrl(path, baseUrl).href).toBe("https://api.example.com/v1/orders/42");
+  });
+
+  it("joins to a base with an empty path", () => {
+    expect(resolveUrl("orders", new URL("https://api.example.com")).href).toBe("https://api.example.com/orders");
+  });
+
+  it("keeps the path's query and hash", () => {
+    expect(resolveUrl("/orders?id=1#top", base).href).toBe(new URL("v1/orders?id=1#top", base.origin).href);
+  });
+
+  it("drops the base's query and hash", () => {
+    const withQuery = new URL("https://h.test/v1?k=1#f");
+    expect(resolveUrl("orders", withQuery).href).toBe("https://h.test/v1/orders");
+  });
+
+  it("keeps the base's port", () => {
+    expect(resolveUrl("/x", new URL("http://localhost:8080/v1")).href).toBe("http://localhost:8080/v1/x");
+  });
+  it("lets .. climb above the base path", () => {
+    expect(resolveUrl("../x", base).href).toBe("https://api.example.com/x");
+    expect(resolveUrl("../../x", base).href).toBe("https://api.example.com/x");
+  });
+
+  it("treats a string without :// as relative", () => {
+    expect(resolveUrl("localhost:3000/x", base).href).toBe("https://api.example.com/v1/localhost:3000/x");
+  });
+
+  it("does not change the base", () => {
+    const original = new URL("https://h.test/v1?k=1#f");
+    resolveUrl("orders", original);
+    expect(original.href).toBe("https://h.test/v1?k=1#f");
+  });
+});
+
+describe("resolveUrl errors", () => {
+  it("throws a config error for a protocol-relative URL", () => {
+    expect(() => resolveUrl("//host/x", base)).toThrow(expect.objectContaining({ code: "http.config" }));
+    try {
+      resolveUrl("//host/x", base);
+    } catch (error) {
+      expect(isHttpConfigError(error)).toBe(true);
+    }
+  });
+
+  it("throws a config error for a relative path without a base", () => {
+    try {
+      resolveUrl("/orders");
+      expect.unreachable();
+    } catch (error) {
+      expect(isHttpConfigError(error)).toBe(true);
+    }
+  });
+});
+
+describe("resolveUrl error messages", () => {
+  const token = ["ab", "c"].join("");
+
+  it("redacts secrets in a protocol-relative input", () => {
+    expect(() => resolveUrl(`//h.test/x?access_token=${token}`, base)).toThrow(
+      expect.objectContaining({ message: expect.not.stringContaining(token) }),
+    );
+  });
+
+  it("redacts secrets in a relative input without a baseUrl", () => {
+    expect(() => resolveUrl(`/x?access_token=${token}`)).toThrow(expect.objectContaining({ message: expect.not.stringContaining(token) }));
+  });
+});
+
+describe("resolveUrl credentials", () => {
+  const password = ["pa", "ss"].join("");
+  const token = ["ab", "c"].join("");
+  const credentialed = `https://user:${password}@h.test/v1?access_token=${token}`;
+
+  function refusal(run: () => unknown): Error {
+    try {
+      run();
+    } catch (error) {
+      return error as Error;
+    }
+    return expect.unreachable();
+  }
+
+  it.each([
+    ["in the base", () => resolveUrl("/x", new URL(credentialed))],
+    ["in an absolute string", () => resolveUrl(credentialed, base)],
+    ["in a URL object", () => resolveUrl(new URL(credentialed), base)],
+    ["as a username alone", () => resolveUrl("https://user@h.test/x")],
+  ])("rejects userinfo %s with a redacted message and no cause", (_name, run) => {
+    const error = refusal(run);
+    expect(isHttpConfigError(error)).toBe(true);
+    expect(error.message).toContain("carries credentials");
+    expect(error.message).not.toContain(password);
+    expect(error.message).not.toContain(token);
+    expect(error.cause).toBeUndefined();
+  });
+
+  it("rejects a password with an empty username", () => {
+    expect(isHttpConfigError(refusal(() => resolveUrl(`https://:${password}@h.test/x`)))).toBe(true);
+  });
+});

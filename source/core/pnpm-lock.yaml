@@ -196,6 +196,15 @@ importers:
 
   packages/common: {}
 
+  packages/http:
+    dependencies:
+      '@vipengele/ts-core-common':
+        specifier: workspace:*
+        version: link:../common
+      '@vipengele/ts-core-redaction':
+        specifier: workspace:*
+        version: link:../redaction
+
   packages/observability:
     dependencies:
       '@vipengele/ts-core-common':
