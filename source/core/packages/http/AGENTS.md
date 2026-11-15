@@ -26,14 +26,19 @@ The decisions are in ADR-0029.
 - `filter.ts` holds `Filter`, `filter()` (validates and freezes), `Next` and `Order`. `chain.ts` holds
   `sortFilters` (ascending by `order`, registration order among ties, a tie needs `allowsOrderTie` on
   every filter at that order), `compose` and `compileChain`.
-- `context.ts` holds `HttpContext`. `fork()` copies the URL and headers and shares the body, signal,
-  attributes and the sent-state, a `WeakMap` from context to the call's `WeakSet` of sent one-shot
-  bodies. `replayable` is read live from `request.body`.
+- `context.ts` holds `HttpContext`. `fork()` copies the URL and headers and shares the body, signal
+  and attributes. `replayable` is read live from `request.body`. `markSent(body)`/`wasSent(body)`
+  read the realm-wide record of dispatched one-shot bodies: one `WeakSet` on `globalThis` under
+  `Symbol.for("vipengele:http:sent-one-shot-bodies")`, created on first access and shared by every
+  resolved copy of the package.
 - `dispatch.ts` calls `ctx.fetch(url.href, init)` and guards one-shot bodies (an async iterable goes
-  through `toReadableStream` in `body.ts`, `duplex: "half"`, a second dispatch rejects with
-  `HttpConfigError`). `resolveFetch` wraps the injected or global `fetch` so it is called as a plain
-  function and reads `globalThis.fetch` at each call.
-- `url.ts` holds `resolveUrl`, the `baseUrl` join. `http-response.ts` holds `HttpResponse` and the
-  empty-body rule (204, 205, `HEAD`, zero-length body gives `undefined`).
+  through `toReadableStream` in `body.ts`, `duplex: "half"`, and any second dispatch of the same
+  object — from a fork, another terminal call, a derived builder or another client — rejects with
+  `HttpConfigError` before `fetch` is called). `resolveFetch` wraps the injected or global `fetch`
+  so it is called as a plain function and reads `globalThis.fetch` at each call.
+- `url.ts` holds `resolveUrl`, the `baseUrl` join. A resolved URL with a username or password, from
+  the input or the base, throws `HttpConfigError` with the URL passed through `redactUrl`.
+  `http-response.ts` holds `HttpResponse` and the empty-body rule (204, 205, `HEAD`, zero-length
+  body gives `undefined`).
 - Dependencies are `@vipengele/ts-core-common` and `@vipengele/ts-core-redaction` only, resolved through
   their built `dist/`. The package does not depend on `@vipengele/ts-core-observability` (ADR-0029).

@@ -71,11 +71,9 @@ describe("resolveUrl relative input", () => {
     expect(resolveUrl("orders", withQuery).href).toBe("https://h.test/v1/orders");
   });
 
-  it("keeps the base's userinfo and port", () => {
-    const withAuth = new URL("http://user:pw@localhost:8080/v1");
-    expect(resolveUrl("/x", withAuth).href).toBe("http://user:pw@localhost:8080/v1/x");
+  it("keeps the base's port", () => {
+    expect(resolveUrl("/x", new URL("http://localhost:8080/v1")).href).toBe("http://localhost:8080/v1/x");
   });
-
   it("lets .. climb above the base path", () => {
     expect(resolveUrl("../x", base).href).toBe("https://api.example.com/x");
     expect(resolveUrl("../../x", base).href).toBe("https://api.example.com/x");
@@ -123,5 +121,38 @@ describe("resolveUrl error messages", () => {
 
   it("redacts secrets in a relative input without a baseUrl", () => {
     expect(() => resolveUrl(`/x?access_token=${token}`)).toThrow(expect.objectContaining({ message: expect.not.stringContaining(token) }));
+  });
+});
+
+describe("resolveUrl credentials", () => {
+  const password = ["pa", "ss"].join("");
+  const token = ["ab", "c"].join("");
+  const credentialed = `https://user:${password}@h.test/v1?access_token=${token}`;
+
+  function refusal(run: () => unknown): Error {
+    try {
+      run();
+    } catch (error) {
+      return error as Error;
+    }
+    return expect.unreachable();
+  }
+
+  it.each([
+    ["in the base", () => resolveUrl("/x", new URL(credentialed))],
+    ["in an absolute string", () => resolveUrl(credentialed, base)],
+    ["in a URL object", () => resolveUrl(new URL(credentialed), base)],
+    ["as a username alone", () => resolveUrl("https://user@h.test/x")],
+  ])("rejects userinfo %s with a redacted message and no cause", (_name, run) => {
+    const error = refusal(run);
+    expect(isHttpConfigError(error)).toBe(true);
+    expect(error.message).toContain("carries credentials");
+    expect(error.message).not.toContain(password);
+    expect(error.message).not.toContain(token);
+    expect(error.cause).toBeUndefined();
+  });
+
+  it("rejects a password with an empty username", () => {
+    expect(isHttpConfigError(refusal(() => resolveUrl(`https://:${password}@h.test/x`)))).toBe(true);
   });
 });

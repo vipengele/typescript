@@ -328,7 +328,8 @@ _Avoid_: pipeline, interceptor stack
 **Http Context**:
 The state one attempt of one request carries through the Filter Chain: the request, the attributes
 filters hand each other, the attempt number and the `fetch` to dispatch through. A `fork` makes the
-context of another attempt, which shares the call's attributes and its record of sent one-shot bodies.
+context of another attempt, which shares the call's attributes. Which one-shot bodies have been sent
+is recorded realm-wide, not per context, so no call, attempt or builder can send the same one twice.
 _Avoid_: request context, exchange
 
 **Http Response**:

@@ -89,8 +89,10 @@ attempt, with `attempt` one higher.
 A `ReadableStream` or an async iterable body can be sent once. `ctx.replayable` is `false` for one,
 and `isOneShotBody(body)` answers the same question. An async iterable is wrapped in a
 `ReadableStream` at dispatch, in both runtimes, and sent with `duplex: "half"`. The record of sent
-bodies is shared by every attempt of one call, so a second dispatch of the same object rejects with an
-`HttpConfigError` before `fetch` is called; a filter that retries must supply a fresh body.
+bodies is realm-wide, shared by every attempt, terminal call, request builder and client, so a second
+dispatch of the same object rejects with an `HttpConfigError` before `fetch` is called — whether it
+comes from a retry, a second `send()` on the same builder or a derived one. A filter that retries, or
+a caller that sends again, must supply a fresh body.
 
 Streaming request bodies are limited by the platform, and the package does not work around it:
 Chromium needs HTTP/2 or later, and Firefox and Safari do not support them.
@@ -102,6 +104,11 @@ base path with exactly one `/`; the base's query and hash are dropped and the in
 `..` segments are resolved after the join, so `client.get("../x")` can climb above the base path; this
 is documented and not prevented. A protocol-relative `//host` and a relative input with no `baseUrl`
 throw an `HttpConfigError` when the request is started.
+
+A URL carrying credentials (`https://user:pass@host`) is refused with an `HttpConfigError`, whether it
+is the `baseUrl` (refused by `.baseUrl(...)` itself) or an absolute request URL (refused when the
+request is started); the message carries the URL through `redactUrl`. `fetch` rejects such a URL with
+a `TypeError` that quotes it, password included. Send credentials in a header, from an auth filter.
 
 ## Errors
 

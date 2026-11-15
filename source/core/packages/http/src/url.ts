@@ -12,6 +12,16 @@ function parse(href: string): URL {
   }
 }
 
+/** Refuses a URL with userinfo: `fetch` rejects it with a `TypeError` whose message holds the password. */
+function withoutCredentials(url: URL): URL {
+  if (url.username !== "" || url.password !== "") {
+    throw new HttpConfigError(
+      `URL ${JSON.stringify(redactUrl(url.href))} carries credentials; send them in a header (e.g. an auth filter) instead`,
+    );
+  }
+  return url;
+}
+
 /**
  * Resolves `input` to a fresh URL the caller may mutate.
  *
@@ -22,15 +32,16 @@ function parse(href: string): URL {
  * above the base path. A string without `://`, such as `localhost:3000/x`, is relative.
  *
  * @throws HttpConfigError for a protocol-relative `//host/x`, for a relative `input` without a
- *   `baseUrl`, and for a string that does not parse as a URL. Each message carries the input through
+ *   `baseUrl`, for a string that does not parse as a URL, and for a resolved URL that carries a
+ *   username or password, from `input` or from `baseUrl`. Each message carries the input through
  *   `redactUrl` and the error has no `cause`, since the platform `TypeError` holds the raw string.
  */
 export function resolveUrl(input: string | URL, baseUrl?: URL): URL {
   if (typeof input !== "string") {
-    return new URL(input.href);
+    return withoutCredentials(new URL(input.href));
   }
   if (ABSOLUTE_URL.test(input)) {
-    return parse(input);
+    return withoutCredentials(parse(input));
   }
   if (input.startsWith("//")) {
     throw new HttpConfigError(`Protocol-relative URL ${JSON.stringify(redactUrl(input))} is not supported; give an absolute URL or a path`);
@@ -41,5 +52,5 @@ export function resolveUrl(input: string | URL, baseUrl?: URL): URL {
   const base = new URL(baseUrl.href);
   base.search = "";
   base.hash = "";
-  return parse(`${base.href.replace(/\/$/, "")}/${input.replace(/^\//, "")}`);
+  return withoutCredentials(parse(`${base.href.replace(/\/$/, "")}/${input.replace(/^\//, "")}`));
 }

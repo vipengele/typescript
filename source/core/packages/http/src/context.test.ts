@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { createRootContext, type HttpContext, type HttpFetch, type HttpRequest, markSent, wasSent } from "./context";
+import { createRootContext, type HttpFetch, type HttpRequest, markSent, wasSent } from "./context";
 
 const stubFetch: HttpFetch = async () => new Response("ok");
 
@@ -96,50 +96,42 @@ describe("fork", () => {
 });
 
 describe("sent-state", () => {
-  test("records a sent body for the call", () => {
-    const body = new ReadableStream();
-    const ctx = createRootContext(makeRequest({ body }), stubFetch);
+  const slot = Symbol.for("vipengele:http:sent-one-shot-bodies");
 
-    expect(wasSent(ctx, body)).toBe(false);
-    markSent(ctx, body);
-    expect(wasSent(ctx, body)).toBe(true);
+  test("records a sent body", () => {
+    const body = new ReadableStream();
+
+    expect(wasSent(body)).toBe(false);
+    markSent(body);
+    expect(wasSent(body)).toBe(true);
   });
 
-  test("is shared by every fork of one call", () => {
+  test("is one realm-wide record behind a Symbol.for slot on globalThis", () => {
     const body = new ReadableStream();
-    const root = createRootContext(makeRequest({ body }), stubFetch);
-    const fork = root.fork();
-    const grandchild = fork.fork();
+    markSent(body);
 
-    markSent(fork, body);
-
-    expect(wasSent(root, body)).toBe(true);
-    expect(wasSent(grandchild, body)).toBe(true);
+    const record = (globalThis as unknown as Record<symbol, WeakSet<object>>)[slot];
+    expect(record).toBeInstanceOf(WeakSet);
+    expect(record?.has(body)).toBe(true);
   });
 
-  test("is separate for separate calls", () => {
-    const body = new ReadableStream();
-    const first = createRootContext(makeRequest({ body }), stubFetch);
-    const second = createRootContext(makeRequest({ body }), stubFetch);
-
-    markSent(first, body);
-
-    expect(wasSent(second, body)).toBe(false);
+  test("creates the slot on first access when it is absent", () => {
+    const registry = globalThis as unknown as Record<symbol, unknown>;
+    const existing = registry[slot];
+    Reflect.deleteProperty(globalThis, slot);
+    try {
+      const body = new ReadableStream();
+      expect(wasSent(body)).toBe(false);
+      expect(registry[slot]).toBeInstanceOf(WeakSet);
+      markSent(body);
+      expect(wasSent(body)).toBe(true);
+    } finally {
+      registry[slot] = existing;
+    }
   });
 
-  test("is absent for a context not built by createRootContext", () => {
-    const body = new ReadableStream();
-    const foreign: HttpContext = {
-      request: makeRequest({ body }),
-      attributes: new Map(),
-      attempt: 1,
-      fetch: stubFetch,
-      replayable: false,
-      fork: () => foreign,
-    };
-
-    markSent(foreign, body);
-
-    expect(wasSent(foreign, body)).toBe(false);
+  test("leaves bodies it was not given unrecorded", () => {
+    markSent(new ReadableStream());
+    expect(wasSent(new ReadableStream())).toBe(false);
   });
 });

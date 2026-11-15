@@ -146,6 +146,17 @@ describe("dispatch", () => {
     expect(calls).toHaveLength(1);
   });
 
+  test.each(oneShot)("rejects another call's dispatch of the %s a separate call sent", async (_name, make) => {
+    const { calls, fetch } = recordingFetch();
+    const body = make();
+
+    await dispatch(createRootContext(makeRequest({ body }), fetch));
+    const error = await dispatch(createRootContext(makeRequest({ body }), fetch)).catch((e: unknown) => e);
+
+    expect(isHttpConfigError(error)).toBe(true);
+    expect(calls).toHaveLength(1);
+  });
+
   test("sends a fresh stream a filter puts on a fork after the first was sent", async () => {
     const { calls, fetch } = recordingFetch();
     const ctx = createRootContext(makeRequest({ body: streamOf(bytes) }), fetch);

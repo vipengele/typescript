@@ -76,25 +76,37 @@ guarded.
      base is a boundary, and the path comes from the caller's own code.
    - A protocol-relative `//host` input and a relative input without a `baseUrl` raise
      `HttpConfigError` synchronously, when the request is started.
+   - A resolved URL with a username or password, from the input or from `baseUrl`, raises
+     `HttpConfigError` with the URL passed through `redactUrl`: `HttpClientBuilder.baseUrl` refuses
+     a credentialed base at once, and a request to a credentialed absolute URL is refused when it is
+     started. undici and Chromium reject a credentialed URL in `fetch` with a `TypeError` whose
+     message quotes the whole URL, password included.
    *Rejected: `new URL(input, base)`.* A leading `/` in the input would replace the base path
    rather than extend it, and the base's trailing slash would change the result.
+   *Rejected: stripping the userinfo into an `Authorization` header.* It is authentication applied
+   outside the filter chain, invisible to the filters that order, replace or observe auth.
 
-7. **A one-shot body is sent at most once per logical call.**
+7. **A one-shot body is sent at most once in the realm.**
    - A `ReadableStream` or an async iterable is consumed by its first send. `HttpContext.replayable`
      reports whether the current body can be sent again, read live from `request.body` so a filter
      that swaps the body sees the change.
    - An async iterable is wrapped in a `ReadableStream` at dispatch, in both runtimes: a browser
      `fetch` given an async iterable stringifies it to `"[object Object]"` without failing.
    - A one-shot body is sent with `duplex: "half"`.
-   - The sent-state belongs to the logical call and is shared by every `fork` of its context. A
-     second dispatch of the same one-shot object, by any attempt, rejects with `HttpConfigError`
-     before `fetch` is called, so a retry filter that forgets to supply a fresh body fails loudly
-     instead of sending an empty or closed stream.
+   - The record of dispatched one-shot bodies is realm-wide: one `WeakSet` on `globalThis` behind
+     `Symbol.for("vipengele:http:sent-one-shot-bodies")`, shared by every resolved copy of the
+     package. A second dispatch of the same one-shot object — by another attempt, another terminal
+     call on the same request builder, a derived builder or another client — rejects with
+     `HttpConfigError` before `fetch` is called, so a caller or retry filter that forgets to supply a
+     fresh body fails loudly instead of sending an empty body or handing `fetch` a locked stream.
    - Streaming request bodies are limited by the platform: Chromium needs HTTP/2 or later, and
      Firefox and Safari do not support them. The package documents this and does not work around
      it, for instance by buffering, since buffering would defeat the reason to stream.
    *Rejected: buffering one-shot bodies so every body is replayable.* It removes the streaming
    upload the caller asked for and holds an unbounded body in memory.
+   *Rejected: a record of sent bodies per logical call.* The body object outlives the call: a
+   request builder is reusable, so a second terminal call would re-send an exhausted iterator as an
+   empty body without any error.
 
 ## Consequences
 

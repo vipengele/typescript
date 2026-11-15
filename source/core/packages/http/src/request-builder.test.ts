@@ -208,6 +208,54 @@ describe("request body", () => {
     expect(sentHeaders().get("content-type")).toBe("application/json");
   });
 
+  const payload = new Uint8Array([1, 2, 3, 4, 5]);
+  const oneShot: [string, () => ReadableStream<Uint8Array> | AsyncIterable<Uint8Array>][] = [
+    [
+      "async generator",
+      () =>
+        (async function* () {
+          yield payload.slice(0, 2);
+          yield payload.slice(2);
+        })(),
+    ],
+    [
+      "ReadableStream",
+      () =>
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(payload.slice());
+            controller.close();
+          },
+        }),
+    ],
+  ];
+
+  test.each(oneShot)("a second terminal call with the same %s body rejects with HttpConfigError without calling fetch", async (_, make) => {
+    const { get, calls, call } = setup();
+    const builder = get().body(make());
+
+    await builder.send();
+    expect(new Uint8Array(await new Response(call().init.body).arrayBuffer())).toEqual(payload);
+
+    const error = await builder.send().catch((e: unknown) => e);
+    expect(isHttpConfigError(error)).toBe(true);
+    expect(calls).toHaveLength(1);
+  });
+
+  test.each(oneShot)("a derived builder reusing a sent %s body is refused", async (_, make) => {
+    const { get, calls } = setup();
+    const builder = get().body(make());
+
+    await builder.send();
+    const error = await builder
+      .header("x-retry", "1")
+      .send()
+      .catch((e: unknown) => e);
+
+    expect(isHttpConfigError(error)).toBe(true);
+    expect(calls).toHaveLength(1);
+  });
+
   test("json(undefined) throws HttpConfigError synchronously", () => {
     const builder = setup().get();
     let thrown: unknown;

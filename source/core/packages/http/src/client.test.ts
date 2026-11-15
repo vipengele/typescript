@@ -84,6 +84,17 @@ describe("baseUrl", () => {
     expect(() => HttpClient.builder().baseUrl(value)).toThrow(expect.objectContaining({ code: "http.config" }));
   });
 
+  it("throws HttpConfigError synchronously for a base with userinfo", () => {
+    const password = ["pa", "ss"].join("");
+    try {
+      HttpClient.builder().baseUrl(`https://user:${password}@h.test/api`);
+      expect.unreachable();
+    } catch (error) {
+      expect(isHttpConfigError(error)).toBe(true);
+      expect((error as Error).message).not.toContain(password);
+    }
+  });
+
   it("throws synchronously for a relative url without a baseUrl", () => {
     const client = HttpClient.builder().build();
     try {

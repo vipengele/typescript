@@ -1,7 +1,6 @@
 import { type HttpBody, isOneShotBody, toReadableStream } from "./body";
 import type { Terminal } from "./chain";
-import type { HttpContext, HttpFetch } from "./context";
-import { markSent, wasSent } from "./context";
+import { type HttpContext, type HttpFetch, markSent, wasSent } from "./context";
 import { HttpConfigError } from "./errors/http-errors";
 
 /** `RequestInit` with the `duplex` member a streaming request body needs, absent from the DOM lib. */
@@ -27,10 +26,11 @@ export function resolveFetch(injected?: HttpFetch): HttpFetch {
  *
  * The URL goes as its `href` and no `Request` is built. `body` and `signal` are set on the init
  * only when the request carries them, so a request without a body has no `body` key. A replayable
- * body is passed as it is. A one-shot body is recorded as sent for the whole logical call, reaches
+ * body is passed as it is. A one-shot body is recorded as sent in a realm-wide record, reaches
  * `fetch` as a `ReadableStream` (an async iterable is wrapped, a stream passed as it is) with
- * `duplex: "half"`, and a second dispatch of the same object by any attempt of the call rejects
- * with {@link HttpConfigError} without calling `fetch`. A rejection from `fetch` propagates
+ * `duplex: "half"`, and a second dispatch of the same object rejects with {@link HttpConfigError}
+ * without calling `fetch`, whether it comes from a fork of the same call, another terminal call on
+ * the same builder, a derived builder or another client. A rejection from `fetch` propagates
  * unchanged; nothing throws synchronously.
  */
 export const dispatch: Terminal = async (ctx: HttpContext): Promise<Response> => {
@@ -42,12 +42,12 @@ export const dispatch: Terminal = async (ctx: HttpContext): Promise<Response> =>
   if (body !== undefined && body !== null) {
     if (isOneShotBody(body)) {
       const oneShot = body as ReadableStream<Uint8Array> | AsyncIterable<Uint8Array>;
-      if (wasSent(ctx, oneShot)) {
+      if (wasSent(oneShot)) {
         throw new HttpConfigError(
           `${method} ${url.origin}${url.pathname}: a one-shot body cannot be sent twice; a filter that retries must supply a fresh body`,
         );
       }
-      markSent(ctx, oneShot);
+      markSent(oneShot);
       init.body = oneShot instanceof ReadableStream ? oneShot : toReadableStream(oneShot);
       init.duplex = "half";
     } else {

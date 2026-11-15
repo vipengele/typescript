@@ -25,18 +25,31 @@ export interface HttpContext {
   /** Whether the request's current body can be sent again, read from `request.body` on each access. */
   readonly replayable: boolean;
   /**
-   * A context for another attempt: its own copy of the URL and headers, the same body, signal,
-   * attributes and sent-state, and `attempt` one higher.
+   * A context for another attempt: its own copy of the URL and headers, the same body, signal and
+   * attributes, and `attempt` one higher.
    */
   fork(): HttpContext;
 }
 
 /**
- * The one-shot bodies each logical call has dispatched, keyed by every context of that call.
+ * The `globalThis` slot holding every one-shot body dispatched in the realm.
  *
- * Every fork of a call registers the same set, so a body sent by one attempt is seen as sent by all.
+ * A one-shot body can be read once, whichever call, builder or client sends it, so the record of
+ * sent bodies is realm-wide: one `WeakSet` behind a `Symbol.for` key that every resolved copy of the
+ * package reads and writes. A per-call record would let a second call re-send an exhausted iterator
+ * as an empty body, or hand `fetch` a locked stream.
  */
-const sentBodies = new WeakMap<HttpContext, WeakSet<object>>();
+const SENT_ONE_SHOT_BODIES = Symbol.for("vipengele:http:sent-one-shot-bodies");
+
+function sentOneShotBodies(): WeakSet<object> {
+  const registry = globalThis as unknown as Record<symbol, WeakSet<object> | undefined>;
+  let sent = registry[SENT_ONE_SHOT_BODIES];
+  if (sent === undefined) {
+    sent = new WeakSet();
+    registry[SENT_ONE_SHOT_BODIES] = sent;
+  }
+  return sent;
+}
 
 class Context implements HttpContext {
   readonly request: HttpRequest;
@@ -44,12 +57,11 @@ class Context implements HttpContext {
   readonly attempt: number;
   readonly fetch: HttpFetch;
 
-  constructor(request: HttpRequest, fetch: HttpFetch, attributes: Map<string | symbol, unknown>, attempt: number, sent: WeakSet<object>) {
+  constructor(request: HttpRequest, fetch: HttpFetch, attributes: Map<string | symbol, unknown>, attempt: number) {
     this.request = request;
     this.fetch = fetch;
     this.attributes = attributes;
     this.attempt = attempt;
-    sentBodies.set(this, sent);
   }
 
   get replayable(): boolean {
@@ -59,30 +71,25 @@ class Context implements HttpContext {
   fork(): HttpContext {
     const { url, method, headers, body, signal } = this.request;
     const request: HttpRequest = { url: new URL(url.href), method, headers: new Headers(headers), body, signal };
-    return new Context(request, this.fetch, this.attributes, this.attempt + 1, sentBodies.get(this) as WeakSet<object>);
+    return new Context(request, this.fetch, this.attributes, this.attempt + 1);
   }
 }
 
-/** Creates the root context of a logical call: attempt 1, with nothing yet sent. */
+/** Creates the root context of a logical call: attempt 1. */
 export function createRootContext(
   request: HttpRequest,
   fetch: HttpFetch,
   attributes: Map<string | symbol, unknown> = new Map(),
 ): HttpContext {
-  return new Context(request, fetch, attributes, 1, new WeakSet());
+  return new Context(request, fetch, attributes, 1);
 }
 
-/**
- * Records `body` as dispatched for the logical call `ctx` belongs to.
- *
- * A context not built by {@link createRootContext} or a `fork` of one has no sent-state, and the
- * call is a no-op for it.
- */
-export function markSent(ctx: HttpContext, body: object): void {
-  sentBodies.get(ctx)?.add(body);
+/** Records the one-shot `body` as dispatched, for every call in the realm. */
+export function markSent(body: object): void {
+  sentOneShotBodies().add(body);
 }
 
-/** Whether `body` was already dispatched by any attempt of the logical call `ctx` belongs to. */
-export function wasSent(ctx: HttpContext, body: object): boolean {
-  return sentBodies.get(ctx)?.has(body) ?? false;
+/** Whether the one-shot `body` was already dispatched by any call in the realm. */
+export function wasSent(body: object): boolean {
+  return sentOneShotBodies().has(body);
 }
