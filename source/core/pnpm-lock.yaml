@@ -196,6 +196,18 @@ importers:
 
   packages/common: {}
 
+  packages/http:
+    dependencies:
+      '@vipengele/ts-core-common':
+        specifier: workspace:*
+        version: link:../common
+      '@vipengele/ts-core-redaction':
+        specifier: workspace:*
+        version: link:../redaction
+      '@vipengele/ts-core-resilience':
+        specifier: workspace:*
+        version: link:../resilience
+
   packages/observability:
     dependencies:
       '@vipengele/ts-core-common':
@@ -2330,7 +2342,7 @@ snapshots:
     dependencies:
       nanoid: 3.3.19
       picocolors: 1.1.1
-      source-map-js: 1.2.1
+      source-map-js: 1.2.2
 
   readdirp@4.1.2: {}
 
