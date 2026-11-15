@@ -24,13 +24,26 @@ describe("resolveUrl absolute input", () => {
     expect(input.pathname).toBe("/a");
   });
 
-  it("throws a config error with a cause for an absolute string that does not parse", () => {
+  it("throws a config error for an absolute string that does not parse", () => {
     try {
       resolveUrl("https://");
       expect.unreachable();
     } catch (error) {
       expect(isHttpConfigError(error)).toBe(true);
-      expect((error as Error).cause).toBeInstanceOf(TypeError);
+    }
+  });
+
+  it("redacts secrets in the message of an unparseable URL and attaches no cause", () => {
+    const password = ["pa", "ss"].join("");
+    const token = ["ab", "c"].join("");
+    try {
+      resolveUrl(`https://user:${password}@h.test:99999/x?access_token=${token}`);
+      expect.unreachable();
+    } catch (error) {
+      expect(isHttpConfigError(error)).toBe(true);
+      expect((error as Error).message).not.toContain(password);
+      expect((error as Error).message).not.toContain(token);
+      expect((error as Error).cause).toBeUndefined();
     }
   });
 });
@@ -96,5 +109,19 @@ describe("resolveUrl errors", () => {
     } catch (error) {
       expect(isHttpConfigError(error)).toBe(true);
     }
+  });
+});
+
+describe("resolveUrl error messages", () => {
+  const token = ["ab", "c"].join("");
+
+  it("redacts secrets in a protocol-relative input", () => {
+    expect(() => resolveUrl(`//h.test/x?access_token=${token}`, base)).toThrow(
+      expect.objectContaining({ message: expect.not.stringContaining(token) }),
+    );
+  });
+
+  it("redacts secrets in a relative input without a baseUrl", () => {
+    expect(() => resolveUrl(`/x?access_token=${token}`)).toThrow(expect.objectContaining({ message: expect.not.stringContaining(token) }));
   });
 });

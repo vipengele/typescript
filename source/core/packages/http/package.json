@@ -1,7 +1,7 @@
 {
   "name": "@vipengele/ts-core-http",
   "version": "0.2.1",
-  "description": "HTTP client primitives for the browser and Node, built on fetch with redaction and resilience policies.",
+  "description": "HTTP client primitives for the browser and Node, built on fetch with URL redaction.",
   "keywords": [
     "vipengele",
     "typescript",
@@ -48,7 +48,6 @@
   },
   "dependencies": {
     "@vipengele/ts-core-common": "workspace:*",
-    "@vipengele/ts-core-redaction": "workspace:*",
-    "@vipengele/ts-core-resilience": "workspace:*"
+    "@vipengele/ts-core-redaction": "workspace:*"
   }
 }

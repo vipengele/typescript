@@ -56,7 +56,10 @@ the request again. A header set on the request wins over a client header of the 
 
 `json()` and `HttpResponse#json()` resolve `undefined` for an empty body: status 204 or 205, a `HEAD`
 request or a zero-length body. The status conversion happens once, after the filter chain returns,
-so a filter always sees the response. A failing response's body is left unread. `HttpStatusError`
+so a filter always sees the response. A failing response's body is left unread. A caller who catches
+`HttpStatusError` owns `error.response` and should read or cancel its body (`await
+error.response.body?.cancel()`): in Node an unread body holds its connection until garbage
+collection, so a run of failing responses can exhaust the pool. `HttpStatusError`
 redacts its `url` with `redactUrl` and keeps `response` non-enumerable.
 
 ## Filters and `Order`

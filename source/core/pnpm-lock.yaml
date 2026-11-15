@@ -204,9 +204,6 @@ importers:
       '@vipengele/ts-core-redaction':
         specifier: workspace:*
         version: link:../redaction
-      '@vipengele/ts-core-resilience':
-        specifier: workspace:*
-        version: link:../resilience
 
   packages/observability:
     dependencies:

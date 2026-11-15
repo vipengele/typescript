@@ -58,7 +58,9 @@ guarded.
    - The conversion runs once, after the chain returns, at the outermost edge. A filter in the
      chain always sees the response, so a retry filter can inspect a 503 and an auth filter a 401
      without catching anything. The converted error leaves the body unread and the package never
-     cancels it.
+     cancels it. A caller who catches `HttpStatusError` owns `error.response` and should read or
+     cancel its body (`await error.response.body?.cancel()`): in Node an unread body holds its
+     connection until garbage collection, so a run of failing responses can exhaust the pool.
    - `HttpStatusError.url` is passed through `redactUrl` before it is stored, so userinfo and
      secret query parameters never reach a log line, and its `response` is non-enumerable so
      serializing or logging the error does not walk into the response.
