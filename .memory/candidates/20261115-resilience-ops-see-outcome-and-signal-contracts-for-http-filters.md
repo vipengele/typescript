@@ -8,7 +8,7 @@ saw:
   - source/core/packages/resilience/src/rate-limiter/rate-limiter.ts
   - source/core/packages/resilience/src/bulkhead/bulkhead.ts
 ---
-Found while planning http B2-B4. Read directly, all verified in this checkout.
+Read directly, all verified in this checkout. Line numbers are approximate. `RetryPolicy.execute` also takes per-call `shouldRetry`/`retryAfter` (`RetryExecuteOptions`) and `CircuitBreakerPolicy.execute` a per-call `isFailure` (`CircuitBreakerExecuteOptions`), which replace the configured ones for that call; a per-call `retryAfter` returning `undefined` falls back to backoff, never to the configured `retryAfter`.
 
 - `Outcome<T> = {ok:true,value}|{ok:false,error}` exists (types.ts:14). `retry.shouldRetry(outcome, attempt)` and `retryAfter(outcome, attempt)` (retry.ts:150,155) and breaker `isFailure(outcome)` (circuit-breaker.ts:94) all see it, so a successful 503 `Response` can be retried/counted as failure with `outcome.ok && outcome.value.status >= 500`. Default shouldRetry never retries an ok outcome (retry.ts:218-224). On exhaustion with an ok outcome retry returns the value (settle, retry.ts:252-257,276), it does not throw; an error outcome rethrows the very value thrown.
 - Default retry also retries any error except CircuitOpen/RateLimitExceeded/BulkheadFull (retry.ts:223), so an http filter must veto HttpConfigError itself (a one-shot body re-send raises one).
