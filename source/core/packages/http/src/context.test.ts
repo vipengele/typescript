@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { createRootContext, type HttpFetch, type HttpRequest, markSent, wasSent } from "./context";
+import { createAttemptContext, createRootContext, type HttpContext, type HttpFetch, type HttpRequest, markSent, wasSent } from "./context";
 
 const stubFetch: HttpFetch = async () => new Response("ok");
 
@@ -92,6 +92,62 @@ describe("fork", () => {
     const root = createRootContext(makeRequest({ body: "a" }), stubFetch);
     root.fork().request.body = "b";
     expect(root.request.body).toBe("a");
+  });
+});
+
+describe("createAttemptContext", () => {
+  test("gives the attempt number it is given", () => {
+    const root = createRootContext(makeRequest(), stubFetch);
+
+    expect(createAttemptContext(root, 1).attempt).toBe(1);
+    expect(createAttemptContext(root, 4).attempt).toBe(4);
+  });
+
+  test("copies the url and headers and keeps the body, signal, fetch and attributes", () => {
+    const body = new ReadableStream();
+    const signal = new AbortController().signal;
+    const root = createRootContext(makeRequest({ body, signal }), stubFetch);
+    const attempt = createAttemptContext(root, 2);
+
+    expect(attempt.request.url).not.toBe(root.request.url);
+    expect(attempt.request.url.href).toBe(root.request.url.href);
+    expect(attempt.request.headers).not.toBe(root.request.headers);
+    expect(attempt.request.method).toBe("POST");
+    expect(attempt.request.body).toBe(body);
+    expect(attempt.request.signal).toBe(signal);
+    expect(attempt.fetch).toBe(stubFetch);
+    expect(attempt.attributes).toBe(root.attributes);
+
+    attempt.request.headers.set("x-two", "2");
+    attempt.request.url.searchParams.set("x", "2");
+    expect(root.request.headers.has("x-two")).toBe(false);
+    expect(root.request.url.href).toBe("https://example.com/a?x=1");
+  });
+
+  test("builds a full context from a hand-made HttpContext", () => {
+    const attributes = new Map<string | symbol, unknown>();
+    const body = new ReadableStream();
+    const source: HttpContext = {
+      request: makeRequest({ body }),
+      attributes,
+      attempt: 7,
+      fetch: stubFetch,
+      replayable: false,
+      fork() {
+        throw new Error("not called");
+      },
+    };
+    const attempt = createAttemptContext(source, 2);
+
+    expect(attempt.attempt).toBe(2);
+    expect(attempt.request.url.href).toBe("https://example.com/a?x=1");
+    expect(attempt.request.headers.get("x-one")).toBe("1");
+    expect(attempt.attributes).toBe(attributes);
+    expect(attempt.fetch).toBe(stubFetch);
+    expect(attempt.replayable).toBe(false);
+    attempt.request.body = "buffered";
+    expect(attempt.replayable).toBe(true);
+    expect(attempt.fork().attempt).toBe(3);
   });
 });
 
