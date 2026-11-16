@@ -2,7 +2,8 @@
 
 HTTP client over `fetch`. Entry points: `.` (everything, errors included) and `./errors`. Run commands
 from `source/core` (`pnpm build`, `pnpm type-check`, `pnpm test`, `pnpm lint`, `pnpm format:check`).
-The decisions are in ADR-0029.
+The decisions are in ADR-0029 (`0029-http-client-is-a-fetch-filter-chain.md`) and, for the resilience
+filters, ADR-0030 (`0030-http-resilience-filters.md`).
 
 ## Errors (`src/errors/http-errors.ts`)
 
@@ -26,8 +27,10 @@ The decisions are in ADR-0029.
 - `filter.ts` holds `Filter`, `filter()` (validates and freezes), `Next` and `Order`. `chain.ts` holds
   `sortFilters` (ascending by `order`, registration order among ties, a tie needs `allowsOrderTie` on
   every filter at that order), `compose` and `compileChain`.
-- `context.ts` holds `HttpContext`. `fork()` copies the URL and headers and shares the body, signal
-  and attributes. `replayable` is read live from `request.body`. `markSent(body)`/`wasSent(body)`
+- `context.ts` holds `HttpContext`. `attempt` is 1 for the root context and one more per `fork()`;
+  under the retry filter it is the retry policy's attempt number. `fork()` copies the URL and headers
+  and shares the body, signal and attributes. The internal `createAttemptContext(source, attempt)` makes
+  the same copy for a given attempt number from `source`'s public fields only. `replayable` is read live from `request.body`. `markSent(body)`/`wasSent(body)`
   read the realm-wide record of dispatched one-shot bodies: one `WeakSet` on `globalThis` under
   `Symbol.for("vipengele:http:sent-one-shot-bodies")`, created on first access and shared by every
   resolved copy of the package.
@@ -44,5 +47,16 @@ The decisions are in ADR-0029.
   the input or the base, throws `HttpConfigError` with the URL passed through `redactUrl`.
   `http-response.ts` holds `HttpResponse` and the empty-body rule (204, 205, `HEAD`, zero-length
   body gives `undefined`).
-- Dependencies are `@vipengele/ts-core-common` and `@vipengele/ts-core-redaction` only, resolved through
-  their built `dist/`. The package does not depend on `@vipengele/ts-core-observability` (ADR-0029).
+- `src/resilience/` holds the resilience filters (ADR-0030), exported from the root only:
+  - `predicates.ts`: `defaultIsFailure`, `defaultRetryPredicate`, `RetryNonIdempotent` and
+    `HttpResilienceAttributes` (`Symbol.for` keys).
+  - `retry-filter.ts`: `retryFilter`, a fresh `createAttemptContext` per attempt from the untouched base,
+    cancelling discarded responses and recording the attempts.
+  - `circuit-breaker-filter.ts`: `circuitBreakerFilter`, per-call `isFailure`, records the circuit state.
+  - `rate-limiter-filter.ts`: `rateLimiterFilter`.
+  - `timeout-filter.ts`: `timeoutFilter`, sets the received context's signal and cancels a late response.
+  - `bulkhead-filter.ts`: `bulkheadFilter`.
+  - `resilience-filters.ts`: `resilienceFilters`, which reads `registry.kinds()` once; `builder.resilience()`
+    in `client.ts` replaces the set.
+- Dependencies are `@vipengele/ts-core-common`, `@vipengele/ts-core-redaction` and
+  `@vipengele/ts-core-resilience`, resolved through their built `dist/`. The package does not depend on `@vipengele/ts-core-observability` (ADR-0029).

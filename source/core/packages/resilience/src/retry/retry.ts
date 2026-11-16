@@ -28,6 +28,23 @@ export interface RetryConfig {
   readonly retryAfter?: (outcome: Outcome<unknown>, attempt: number) => number | undefined;
 }
 
+/**
+ * Per-call options for {@link RetryPolicy.execute}. A predicate given here replaces the configured
+ * one for this call only; `maxAttempts` and `backoff` stay owned by the {@link RetryConfig}.
+ */
+export interface RetryExecuteOptions extends ExecuteOptions {
+  /**
+   * Whether `outcome` of attempt number `attempt` warrants another attempt, in place of the
+   * configured `shouldRetry` (or its default) for this call.
+   */
+  readonly shouldRetry?: (outcome: Outcome<unknown>, attempt: number) => boolean;
+  /**
+   * The delay before the next attempt, in place of the configured `retryAfter` for this call;
+   * `undefined` falls back to `backoff`, never to the configured `retryAfter`.
+   */
+  readonly retryAfter?: (outcome: Outcome<unknown>, attempt: number) => number | undefined;
+}
+
 export interface RetryDeps {
   /** Stamps each {@link RetryEvent}'s `at`; defaults to `systemClock`. */
   readonly clock?: Clock;
@@ -61,6 +78,11 @@ export type RetryEvent = RetryAttemptEvent | RetryExhaustedEvent;
 
 export interface RetryPolicy extends Policy {
   readonly events: Listenable<RetryEvent>;
+  /**
+   * Runs `op` under the policy. `options.shouldRetry` and `options.retryAfter`, when given, replace
+   * the configured ones for this call.
+   */
+  execute<T>(op: (ctx: ExecutionContext) => Promise<T> | T, options?: RetryExecuteOptions): Promise<T>;
 }
 
 interface RetrySettings {
@@ -154,6 +176,18 @@ async function run<T>(settings: RetrySettings, op: (ctx: ExecutionContext) => Pr
   }
 }
 
+/** The settings one call runs under: the configured ones, with the call's own predicates in their place. */
+function settingsFor(settings: RetrySettings, options: RetryExecuteOptions | undefined): RetrySettings {
+  if (options === undefined || (options.shouldRetry === undefined && options.retryAfter === undefined)) {
+    return settings;
+  }
+  return {
+    ...settings,
+    shouldRetry: options.shouldRetry ?? settings.shouldRetry,
+    retryAfter: options.retryAfter ?? settings.retryAfter,
+  };
+}
+
 /**
  * Creates a {@link RetryPolicy} that runs an operation up to `config.maxAttempts` times, waiting
  * the backoff (or `retryAfter`'s delay) between attempts. A final error is rethrown as the very
@@ -176,8 +210,8 @@ export function createRetry(name: string, config: RetryConfig, deps: RetryDeps =
   return {
     name,
     events: settings.emitter.listenable,
-    execute<T>(op: (ctx: ExecutionContext) => Promise<T> | T, options?: ExecuteOptions): Promise<T> {
-      return run(settings, op, options?.signal ?? new AbortController().signal);
+    execute<T>(op: (ctx: ExecutionContext) => Promise<T> | T, options?: RetryExecuteOptions): Promise<T> {
+      return run(settingsFor(settings, options), op, options?.signal ?? new AbortController().signal);
     },
   };
 }

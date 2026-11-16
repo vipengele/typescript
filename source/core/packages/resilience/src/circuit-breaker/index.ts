@@ -3,6 +3,7 @@ export {
   type CircuitBreakerConfig,
   type CircuitBreakerDeps,
   type CircuitBreakerEvent,
+  type CircuitBreakerExecuteOptions,
   type CircuitBreakerMetrics,
   type CircuitBreakerPolicy,
   type CircuitCallNotPermittedEvent,

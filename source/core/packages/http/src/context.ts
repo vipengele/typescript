@@ -18,7 +18,10 @@ export interface HttpContext {
   readonly request: HttpRequest;
   /** Values filters hand each other, shared by every fork of the call. */
   readonly attributes: Map<string | symbol, unknown>;
-  /** The attempt number: 1 for the root context, one more for each `fork`. */
+  /**
+   * The attempt number: 1 for the root context, one more for each `fork`. Under the retry filter
+   * each attempt's context carries the retry policy's attempt number, 1 to n.
+   */
   readonly attempt: number;
   /** The function dispatch sends the request through. */
   readonly fetch: HttpFetch;
@@ -69,10 +72,21 @@ class Context implements HttpContext {
   }
 
   fork(): HttpContext {
-    const { url, method, headers, body, signal } = this.request;
-    const request: HttpRequest = { url: new URL(url.href), method, headers: new Headers(headers), body, signal };
-    return new Context(request, this.fetch, this.attributes, this.attempt + 1);
+    return createAttemptContext(this, this.attempt + 1);
   }
+}
+
+/**
+ * A context for attempt number `attempt` of `source`'s call: its own copy of the URL and headers,
+ * the same body, signal, attributes and fetch.
+ *
+ * Reads only the public {@link HttpContext} fields, so `source` may come from another resolved copy
+ * of the package or be any object implementing the interface.
+ */
+export function createAttemptContext(source: HttpContext, attempt: number): HttpContext {
+  const { url, method, headers, body, signal } = source.request;
+  const request: HttpRequest = { url: new URL(url.href), method, headers: new Headers(headers), body, signal };
+  return new Context(request, source.fetch, source.attributes, attempt);
 }
 
 /** Creates the root context of a logical call: attempt 1. */

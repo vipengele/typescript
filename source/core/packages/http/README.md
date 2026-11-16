@@ -81,8 +81,54 @@ the same context, `next(ctx)` with another, and calling it again reruns everythi
 
 Adding a filter with the name of an existing one replaces it in place; `removeFilter(name)` removes
 one. Two filters may share an order only when every filter at that order sets `allowsOrderTie`;
-`build()` throws an `HttpConfigError` naming both otherwise. `ctx.fork()` makes the context of another
-attempt, with `attempt` one higher.
+`build()` throws an `HttpConfigError` naming both otherwise. `ctx.attempt` is 1 for the root context
+and one more for each `ctx.fork()`; under the retry filter each attempt's context carries the retry
+policy's attempt number instead.
+
+## Resilience
+
+The five resilience filters wrap the policies of `@vipengele/ts-core-resilience` at their `Order`
+bands, so a chain of them nests the way the registry's pipeline does. `builder.resilience(registry,
+name)` adds those the registry configures or holds for `name`:
+
+```ts
+import { HttpClient } from "@vipengele/ts-core-http";
+import { createRegistry } from "@vipengele/ts-core-resilience";
+
+const registry = createRegistry((builder) =>
+  builder.configure("retry", "api", { maxAttempts: 4 }).configure("timeout", "api", { durationMs: 2_000 }),
+);
+
+const client = HttpClient.builder().baseUrl("https://api.example.com").resilience(registry, "api").build();
+```
+
+The kinds are read and the policies resolved once, when `resilience()` runs. A later call replaces
+the whole set. Without a registry, add the filters one by one: `retryFilter(policy)`,
+`circuitBreakerFilter(policy)`, `rateLimiterFilter(policy)`, `timeoutFilter(policy)` and
+`bulkheadFilter(policy)`, or `resilienceFilters(registry, name, { kinds })` for an array to pass to
+`filter(...)`.
+
+- A failure is a thrown error, a status of 500 or above, 408 or 429 (`defaultIsFailure`). Pass
+  `isFailure` to replace the rule for the retry and the circuit breaker. A failing status is still a
+  `Response`: when the attempts run out the last one is returned, and the terminal converts it.
+- The retry repeats only an idempotent method (`GET`, `HEAD`, `OPTIONS`, `TRACE`, `PUT`, `DELETE`).
+  For another, set the `RetryNonIdempotent` attribute to `true` (`.attribute(RetryNonIdempotent,
+  true)`) or send an `Idempotency-Key` header. It never retries a refusal (`CircuitOpenError`,
+  `RateLimitExceededError`, `BulkheadFullError`), an `HttpConfigError`, a one-shot body, an aborted
+  signal; it does retry an `OperationTimeoutError`. `defaultRetryPredicate(base, options)` builds the
+  predicates if you drive a `RetryPolicy` yourself.
+- `Retry-After`, in delta-seconds or as an HTTP-date, replaces the backoff for that wait. A delay
+  above `maxRetryAfterMs` (30 000 by default) ends the retries and the caller gets that `Response`
+  with its header. `clock` sets the time an HTTP-date is measured from.
+- Each attempt runs on its own context, so `ctx.attempt` is the policy's attempt number and a
+  mutation a filter makes does not reach the next attempt. The timeout filter bounds one attempt
+  under the retry and the whole call without it.
+- A `Response` that is discarded (a retried attempt's, one arriving after a timeout) has its body
+  cancelled; one that is returned keeps it.
+- The filters record state on the call's attributes under `HttpResilienceAttributes.attempts` (the
+  attempts made) and `HttpResilienceAttributes.circuitState`, which a filter further out can read.
+
+The decisions are in `docs/adr/0030-http-resilience-filters.md`.
 
 ## One-shot bodies
 

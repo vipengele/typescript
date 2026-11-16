@@ -48,6 +48,7 @@
   },
   "dependencies": {
     "@vipengele/ts-core-common": "workspace:*",
-    "@vipengele/ts-core-redaction": "workspace:*"
+    "@vipengele/ts-core-redaction": "workspace:*",
+    "@vipengele/ts-core-resilience": "workspace:*"
   }
 }

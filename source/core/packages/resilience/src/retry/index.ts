@@ -13,6 +13,7 @@ export {
   type RetryConfig,
   type RetryDeps,
   type RetryEvent,
+  type RetryExecuteOptions,
   type RetryExhaustedEvent,
   type RetryPolicy,
 } from "./retry";
