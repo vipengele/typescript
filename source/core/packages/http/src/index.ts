@@ -5,3 +5,4 @@ export { type Filter, filter, type Next, Order } from "./filter";
 export type { HttpResponse } from "./http-response";
 export type { RequestBuilder } from "./request-builder";
 export { HttpClient, type HttpClientBuilder } from "./client";
+export * from "./resilience";
