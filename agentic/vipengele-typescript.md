@@ -111,7 +111,10 @@ Error Event, Scope, Breadcrumb, Transport) before naming things.
     and name, from layered config (`builtInDefaults` ← `defaults` ← `configure` ← creating-call
     override), with `events` over every policy it created and `pipeline(name)` composing a name's policies
     in a fixed order; `defaultRegistry` is the realm-shared one behind a `Symbol.for` `globalThis` slot
-    (ADR-0029). `./errors` holds the
+    (ADR-0029); `registry.kinds(name)` lists the kinds configured or held for a name, and
+    `RetryPolicy.execute` takes per-call `shouldRetry`/`retryAfter` (`RetryExecuteOptions`) and
+    `CircuitBreakerPolicy.execute` a per-call `isFailure` (`CircuitBreakerExecuteOptions`), which win
+    over the policy's own. `./errors` holds the
     `ResilienceError` family (`CircuitOpenError`, `RateLimitExceededError`, `BulkheadFullError`,
     `OperationTimeoutError`, `ResilienceConfigError`), each with a `resilience.<kind>` `code`, a
     type-guard and, for the first three, detail fields passed as a `details` constructor argument.
@@ -120,7 +123,14 @@ Error Event, Scope, Breadcrumb, Transport) before naming things.
     `json`, `text` and `void`; an ordered chain of filters (`filter`, the `Order` bands, lower is
     outermost, a tie only when every filter at that order sets `allowsOrderTie`) wraps dispatch,
     which guards one-shot bodies. `HttpStatusError` and `HttpConfigError` come from `./errors`, each
-    with an `http.<kind>` `code` and a guard (ADR-0029).
+    with an `http.<kind>` `code` and a guard (ADR-0029). The resilience filters (`retryFilter`,
+    `circuitBreakerFilter`, `rateLimiterFilter`, `timeoutFilter`, `bulkheadFilter`) wrap the policies of
+    `@vipengele/ts-core-resilience` at the `Order` bands; `resilienceFilters` and
+    `HttpClient.builder().resilience(registry, name)` build them from a registry's `kinds()`, each retry
+    attempt runs on a fresh context, `defaultIsFailure` (thrown, 5xx, 408, 429) and `defaultRetryPredicate`
+    decide what to retry (an idempotent method, or the `RetryNonIdempotent` attribute or an
+    `Idempotency-Key` header; `Retry-After` honoured up to `maxRetryAfterMs`), and
+    `HttpResilienceAttributes` names the attributes they record (ADR-0030).
 - `source/ts/` — `@vipengele/ts`, the framework's batteries-included umbrella package
   (`packages/ts/`, nested so `release.yml`'s publish-order globbing sees it). Its name is a
   deliberate exception to the `@vipengele/ts-<project>-<package>` convention (ADR-0003). It

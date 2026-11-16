@@ -18,7 +18,10 @@ export interface HttpContext {
   readonly request: HttpRequest;
   /** Values filters hand each other, shared by every fork of the call. */
   readonly attributes: Map<string | symbol, unknown>;
-  /** The attempt number: 1 for the root context, one more for each `fork`. */
+  /**
+   * The attempt number: 1 for the root context, one more for each `fork`. Under the retry filter
+   * each attempt's context carries the retry policy's attempt number, 1 to n.
+   */
   readonly attempt: number;
   /** The function dispatch sends the request through. */
   readonly fetch: HttpFetch;
