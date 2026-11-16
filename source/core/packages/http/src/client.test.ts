@@ -1,3 +1,4 @@
+import { createRegistry, fixedBackoff, isBulkheadFullError, type ResilienceRegistry } from "@vipengele/ts-core-resilience";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { HttpClient } from "./client";
 import type { HttpFetch } from "./context";
@@ -264,6 +265,91 @@ describe("snapshots and extend", () => {
     vi.stubGlobal("fetch", stub);
     await client.get("https://h.test/").send();
     expect(stub).toHaveBeenCalledOnce();
+  });
+});
+
+describe("resilience", () => {
+  /** "api" holds a three-attempt retry with no backoff and a one-call bulkhead. */
+  function registry(): ResilienceRegistry {
+    return createRegistry((b) =>
+      b.configure("retry", "api", { maxAttempts: 3, backoff: fixedBackoff(0) }).configure("bulkhead", "api", { maxConcurrent: 1 }),
+    );
+  }
+
+  /** A fetch that never settles, so a call holds its bulkhead permit. */
+  const hangingFetch: HttpFetch = () => new Promise<never>(() => {});
+
+  async function refusesSecondCall(client: HttpClient): Promise<boolean> {
+    void client.get("https://h.test/").send();
+    const error = await client
+      .get("https://h.test/")
+      .send()
+      .catch((caught: unknown) => caught);
+    return isBulkheadFullError(error);
+  }
+
+  it("adds the registry's filters for the name", async () => {
+    const { fetch, calls } = fakeFetch(503);
+    const client = HttpClient.builder()
+      .fetch(fetch)
+      .resilience(registry(), "api", { kinds: ["retry"] })
+      .build();
+    expect((await client.get("https://h.test/").send()).status).toBe(503);
+    expect(calls).toHaveLength(3);
+  });
+
+  it("a second call replaces the whole set, even with other kinds", async () => {
+    const shared = registry();
+    const { fetch, calls } = fakeFetch(503);
+    const client = HttpClient.builder()
+      .fetch(fetch)
+      .resilience(shared, "api", { kinds: ["retry"] })
+      .resilience(shared, "api", { kinds: ["bulkhead"] })
+      .build();
+    expect((await client.get("https://h.test/").send()).status).toBe(503);
+    expect(calls).toHaveLength(1);
+    expect(await refusesSecondCall(client.extend().fetch(hangingFetch).build())).toBe(true);
+  });
+
+  it("removes a filter of the same name added by hand, and keeps every other filter", async () => {
+    const { fetch } = fakeFetch();
+    const log: string[] = [];
+    const client = HttpClient.builder()
+      .fetch(fetch)
+      .filter(recorder("retry", Order.RETRY, log), recorder("other", Order.AUTH, log))
+      .resilience(registry(), "api", { kinds: ["bulkhead"] })
+      .build();
+    await client.get("https://h.test/").send();
+    expect(log).toEqual(["other"]);
+  });
+
+  it("replaces the whole set through extend, leaving the original's", async () => {
+    const shared = registry();
+    const { fetch, calls } = fakeFetch(503);
+    const original = HttpClient.builder()
+      .fetch(fetch)
+      .resilience(shared, "api", { kinds: ["retry"] })
+      .build();
+    const extended = original
+      .extend()
+      .resilience(shared, "api", { kinds: ["bulkhead"] })
+      .build();
+    await extended.get("https://h.test/").send();
+    expect(calls).toHaveLength(1);
+    await original.get("https://h.test/").send();
+    expect(calls).toHaveLength(4);
+    expect(await refusesSecondCall(extended.extend().fetch(hangingFetch).build())).toBe(true);
+  });
+
+  it("leaves the builder unchanged when the set cannot be built", async () => {
+    const shared = registry();
+    const { fetch, calls } = fakeFetch(503);
+    const builder = HttpClient.builder()
+      .fetch(fetch)
+      .resilience(shared, "api", { kinds: ["retry"] });
+    expect(() => builder.resilience(shared, "missing")).toThrow(expect.toSatisfy(isHttpConfigError));
+    await builder.build().get("https://h.test/").send();
+    expect(calls).toHaveLength(3);
   });
 });
 

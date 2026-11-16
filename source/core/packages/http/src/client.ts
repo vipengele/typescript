@@ -1,3 +1,4 @@
+import type { ResilienceRegistry } from "@vipengele/ts-core-resilience";
 import { compileChain } from "./chain";
 import type { ClientConfig } from "./client-config";
 import type { HttpFetch } from "./context";
@@ -5,6 +6,7 @@ import { dispatch, resolveFetch } from "./dispatch";
 import { HttpConfigError } from "./errors/http-errors";
 import type { Filter } from "./filter";
 import { createRequestBuilder, type RequestBuilder } from "./request-builder";
+import { RESILIENCE_FILTER_NAMES, type ResilienceFilterOptions, resilienceFilters } from "./resilience/resilience-filters";
 import { resolveUrl } from "./url";
 
 /** What a client keeps beyond its {@link ClientConfig}, so `extend` can seed a builder from it. */
@@ -88,6 +90,22 @@ export class HttpClientBuilder {
     }
     this.#filters.splice(index, 1);
     return this;
+  }
+
+  /**
+   * Replaces the resilience filters with those {@link resilienceFilters} builds from `registry`'s
+   * policies called `name`. Every filter named `"retry"`, `"circuit-breaker"`, `"rate-limiter"`,
+   * `"timeout"` or `"bulkhead"` is removed first, so a later call replaces the whole set even when it
+   * covers other kinds. The set is built before anything is removed: when it throws, the builder is
+   * unchanged.
+   *
+   * @throws HttpConfigError when no kind is configured or created for `name`.
+   * @throws ResilienceConfigError, as the registry raises it, for an invalid name, kinds or config.
+   */
+  resilience(registry: ResilienceRegistry, name: string, options?: ResilienceFilterOptions): this {
+    const added = resilienceFilters(registry, name, options);
+    this.#filters = this.#filters.filter((existing) => !RESILIENCE_FILTER_NAMES.includes(existing.name));
+    return this.filter(...added);
   }
 
   /** Sets whether `send` raises an `HttpStatusError` for a failing status; off by default. */

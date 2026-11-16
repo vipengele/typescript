@@ -9,5 +9,6 @@ export {
   RetryNonIdempotent,
 } from "./predicates";
 export { rateLimiterFilter } from "./rate-limiter-filter";
+export { type ResilienceFilterOptions, resilienceFilters } from "./resilience-filters";
 export { retryFilter } from "./retry-filter";
 export { timeoutFilter } from "./timeout-filter";
