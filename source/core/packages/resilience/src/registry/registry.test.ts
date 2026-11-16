@@ -181,3 +181,70 @@ describe("events", () => {
     expect(events.map(({ kind }) => kind)).toEqual(["rate-limit-exceeded"]);
   });
 });
+
+describe("kinds", () => {
+  test("lists the kinds with a configure entry in pipeline order", () => {
+    const registry = createRegistry((b) =>
+      b.configure("bulkhead", "api", { maxConcurrent: 2 }).configure("retry", "api", { maxAttempts: 2 }),
+    );
+
+    expect(registry.kinds("api")).toEqual(["retry", "bulkhead"]);
+  });
+
+  test("lists the kinds with an existing instance in pipeline order", () => {
+    const registry = createRegistry();
+    registry.timeout("api");
+    registry.circuitBreaker("api");
+    registry.timeout("other");
+
+    expect(registry.kinds("api")).toEqual(["circuitBreaker", "timeout"]);
+  });
+
+  test("combines configured kinds and existing instances", () => {
+    const registry = createRegistry((b) => b.configure("rateLimiter", "api", { limitForPeriod: 1 }));
+    registry.retry("api");
+
+    expect(registry.kinds("api")).toEqual(["retry", "rateLimiter"]);
+  });
+
+  test("a defaults entry alone does not count", () => {
+    const registry = createRegistry((b) => b.defaults("timeout", { durationMs: 5 }));
+
+    expect(registry.kinds("api")).toEqual([]);
+  });
+
+  test("returns an empty list when nothing is configured and creates nothing", () => {
+    const registry = createRegistry();
+
+    expect(registry.kinds("api")).toEqual([]);
+    expect(registry.kinds("api")).toEqual([]);
+    expect(() => registry.pipeline("api")).toThrow(/has no kinds/);
+  });
+
+  test("returns explicit kinds in pipeline order without creating them", () => {
+    const registry = createRegistry();
+
+    expect(registry.kinds("api", { kinds: ["bulkhead", "retry"] })).toEqual(["retry", "bulkhead"]);
+    expect(registry.kinds("api")).toEqual([]);
+  });
+
+  test("rejects an empty, duplicated or unknown explicit kinds", () => {
+    const registry = createRegistry();
+
+    expect(isResilienceConfigError(errorOf(() => registry.kinds("api", { kinds: [] })))).toBe(true);
+    expect(isResilienceConfigError(errorOf(() => registry.kinds("api", { kinds: ["retry", "retry"] })))).toBe(true);
+    expect(isResilienceConfigError(errorOf(() => registry.kinds("api", { kinds: ["nope" as PolicyKind] })))).toBe(true);
+  });
+
+  test("throws a ResilienceConfigError for an empty name", () => {
+    expect(isResilienceConfigError(errorOf(() => createRegistry().kinds("")))).toBe(true);
+  });
+
+  test("pipeline composes the kinds it reports", () => {
+    const registry = createRegistry((b) => b.configure("timeout", "api", { durationMs: 10 }));
+
+    expect(registry.kinds("api")).toEqual(["timeout"]);
+    registry.pipeline("api");
+    expect(registry.kinds("api")).toEqual(["timeout"]);
+  });
+});

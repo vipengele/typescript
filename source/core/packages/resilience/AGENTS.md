@@ -225,3 +225,8 @@ Resilience primitives. Entry points: `.` (re-exports `./bulkhead`, `./circuit-br
   The timeout sits inside the breaker so the breaker sees an unaborted signal plus an
   `OperationTimeoutError` and counts a failure; a timeout outside it would abort the breaker's signal
   and the breaker would ignore the call.
+- `kinds(name, options?)` is the function `pipeline` uses to choose and validate its kinds: explicit
+  `options.kinds` are validated (empty, duplicate, unknown throw) and returned in pipeline order; without
+  them it returns the kinds with a `configure` entry or an existing instance for `name` in pipeline order,
+  `[]` when there is none (`defaults` alone do not count), and creates nothing. An empty `name` throws.
+  `pipeline` calls it and throws its own `has no kinds` error on `[]`.

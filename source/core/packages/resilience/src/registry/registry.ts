@@ -49,9 +49,19 @@ export interface ResilienceRegistry {
    * `configure` entry or an instance called `name`.
    */
   pipeline(name: string, options?: PipelineOptions): Policy;
+  /**
+   * The kinds {@link ResilienceRegistry.pipeline} composes for `name`, in pipeline order, creating
+   * nothing. With `options.kinds`, those kinds; without, every kind that has a `configure` entry
+   * for `name` or an instance called `name`, `[]` when there is none: a kind-level `defaults` entry
+   * does not count.
+   *
+   * Throws a {@link ResilienceConfigError} for an empty `name`, and for an empty `options.kinds`,
+   * one that repeats a kind or names an unknown one.
+   */
+  kinds(name: string, options?: PipelineOptions): PolicyKind[];
 }
 
-/** Options for {@link ResilienceRegistry.pipeline}. */
+/** Options for {@link ResilienceRegistry.pipeline} and {@link ResilienceRegistry.kinds}. */
 export interface PipelineOptions {
   /** The kinds to compose, in any order; defaults to those configured or created for the name. */
   readonly kinds?: readonly PolicyKind[];
@@ -133,15 +143,15 @@ export function createPolicyStore(settings: RegistrySettings): PolicyStore {
   return store;
 }
 
-function pipelineKinds(store: PolicyStore, name: string, kinds: readonly PolicyKind[] | undefined): PolicyKind[] {
+function chooseKinds(store: PolicyStore, name: string, options: PipelineOptions | undefined): PolicyKind[] {
+  if (name === "") {
+    throw new ResilienceConfigError("A registry pipeline needs a non-empty name");
+  }
+  const kinds = options?.kinds;
   if (kinds === undefined) {
-    const found = PIPELINE_ORDER.filter(
+    return PIPELINE_ORDER.filter(
       (kind) => store.settings.configuredOf(kind, name) !== undefined || store.existing(kind, name) !== undefined,
     );
-    if (found.length === 0) {
-      throw new ResilienceConfigError(`The pipeline "${name}" has no kinds: no policy called "${name}" is configured or created`);
-    }
-    return found;
   }
   if (kinds.length === 0) {
     throw new ResilienceConfigError(`The pipeline "${name}" needs at least one kind`);
@@ -173,10 +183,10 @@ function prepare<K extends PolicyKind>(store: PolicyStore, kind: K, name: string
 
 /** Builds every missing instance before adopting any, so a failing one leaves none cached. */
 function createPipeline(store: PolicyStore, name: string, options: PipelineOptions | undefined): Policy {
-  if (name === "") {
-    throw new ResilienceConfigError("A registry pipeline needs a non-empty name");
+  const kinds = chooseKinds(store, name, options);
+  if (kinds.length === 0) {
+    throw new ResilienceConfigError(`The pipeline "${name}" has no kinds: no policy called "${name}" is configured or created`);
   }
-  const kinds = pipelineKinds(store, name, options?.kinds);
   const commits = kinds.map((kind) => prepare(store, kind, name));
   const composed = compose(...commits.map((commit): Policy => commit()));
   return { name, execute: composed.execute };
@@ -199,5 +209,6 @@ export function createRegistry(build?: (builder: RegistryBuilder) => unknown): R
     timeout: (name, override) => store.getOrCreate("timeout", name, override),
     bulkhead: (name, override) => store.getOrCreate("bulkhead", name, override),
     pipeline: (name, options) => createPipeline(store, name, options),
+    kinds: (name, options) => chooseKinds(store, name, options),
   };
 }

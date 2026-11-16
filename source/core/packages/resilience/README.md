@@ -443,6 +443,11 @@ existing instance called `name`; a `defaults` entry does not count, and a name w
 empty, duplicated or unknown `kinds` throws. Missing instances are created from their effective config
 with no override, all or none. Each call returns a new composed policy over the shared instances.
 
+`registry.kinds(name, { kinds? })` returns the kinds `pipeline` would compose, in pipeline order, and
+creates nothing. Without `kinds` it lists those with a `configure` entry or an existing instance called
+`name`, and `[]` when there is none (a `defaults` entry does not count). Explicit `kinds` are validated
+as in `pipeline`, and an empty `name` throws a `ResilienceConfigError`.
+
 ### `builtInDefaults`
 
 Deep-frozen, resilience4j's numbers: retry `{ maxAttempts: 3, backoff: fixedBackoff(500) }`; circuit
