@@ -1,5 +1,5 @@
 import { createManualTime, type ManualTime } from "@vipengele/ts-core-common/testing";
-import { describe, expect, test, vi } from "vitest";
+import { describe, expect, expectTypeOf, test, vi } from "vitest";
 import {
   BulkheadFullError,
   CircuitOpenError,
@@ -8,8 +8,18 @@ import {
   RateLimitExceededError,
   ResilienceConfigError,
 } from "../errors";
-import type { ExecutionContext, Outcome } from "../types";
-import { createRetry, exponentialBackoff, fixedBackoff, type RetryConfig, type RetryEvent, withJitter } from "./index";
+import type { RetryExecuteOptions as RootRetryExecuteOptions } from "../index";
+import type { ExecuteOptions, ExecutionContext, Outcome, Policy } from "../types";
+import {
+  createRetry,
+  exponentialBackoff,
+  fixedBackoff,
+  type RetryConfig,
+  type RetryEvent,
+  type RetryExecuteOptions,
+  type RetryPolicy,
+  withJitter,
+} from "./index";
 
 const START = 1_000;
 const MAX_DELAY_MS = 2_147_483_647;
@@ -489,5 +499,93 @@ describe("default dependencies", () => {
 
     expect(events).toHaveLength(1);
     expect(events[0]?.at).toBeGreaterThanOrEqual(before);
+  });
+});
+
+describe("per-call options", () => {
+  test("a per-call shouldRetry replaces the configured one and its approved attempt emits a retry event", async () => {
+    const configured = vi.fn(() => false);
+    const perCall = vi.fn((outcome: Outcome<unknown>, _attempt: number) => outcome.ok && outcome.value !== "ready");
+    const { time, policy, events } = setup({ shouldRetry: configured });
+    const result = policy.execute(({ attempt }) => (attempt === 2 ? "ready" : "pending"), { shouldRetry: perCall });
+
+    await step(time, 100);
+
+    await expect(result).resolves.toBe("ready");
+    expect(configured).not.toHaveBeenCalled();
+    expect(perCall.mock.calls).toEqual([
+      [{ ok: true, value: "pending" }, 1],
+      [{ ok: true, value: "ready" }, 2],
+    ]);
+    expect(events).toEqual([
+      { kind: "retry", name: "fetch-user", at: START, attempt: 1, delayMs: 100, outcome: { ok: true, value: "pending" } },
+    ]);
+  });
+
+  test("a per-call shouldRetry may decline an error the default would retry", async () => {
+    const failure = new Error("fatal");
+    const { time, policy, events } = setup();
+
+    await expect(policy.execute(() => Promise.reject(failure), { shouldRetry: () => false })).rejects.toBe(failure);
+    expect(time.pendingSleeps).toBe(0);
+    expect(events).toEqual([]);
+  });
+
+  test("a per-call shouldRetry keeps the configured retryAfter and maxAttempts", async () => {
+    const { time, policy, events } = setup({ maxAttempts: 2, retryAfter: () => 40 });
+    const result = policy.execute(() => "pending", { shouldRetry: (outcome) => outcome.ok });
+
+    await step(time, 40);
+
+    await expect(result).resolves.toBe("pending");
+    expect(events.map((event) => event.kind)).toEqual(["retry", "retry-exhausted"]);
+    expect(delaysOf(events)).toEqual([40]);
+  });
+
+  test("a per-call retryAfter replaces the configured one and keeps the configured shouldRetry", async () => {
+    const configured = vi.fn(() => 750);
+    const perCall = vi.fn(() => 25);
+    const { time, policy, events } = setup({ retryAfter: configured });
+    const result = policy.execute(failingTimes([new Error("a")], "ok"), { retryAfter: perCall });
+
+    await step(time, 25);
+
+    await expect(result).resolves.toBe("ok");
+    expect(configured).not.toHaveBeenCalled();
+    expect(perCall).toHaveBeenCalledWith({ ok: false, error: expect.any(Error) }, 1);
+    expect(delaysOf(events)).toEqual([25]);
+  });
+
+  test("a per-call retryAfter of undefined falls back to the backoff, not the configured retryAfter", async () => {
+    const configured = vi.fn(() => 750);
+    const { time, policy, events } = setup({ retryAfter: configured });
+    const result = policy.execute(failingTimes([new Error("a")], "ok"), { retryAfter: () => undefined });
+
+    await step(time, 100);
+
+    await expect(result).resolves.toBe("ok");
+    expect(configured).not.toHaveBeenCalled();
+    expect(delaysOf(events)).toEqual([100]);
+  });
+
+  test("options carrying only a signal leave the configured predicates in place", async () => {
+    const shouldRetry = vi.fn((outcome: Outcome<unknown>) => !outcome.ok);
+    const retryAfter = vi.fn(() => 60);
+    const { time, policy, events } = setup({ shouldRetry, retryAfter });
+    const result = policy.execute(failingTimes([new Error("a")], "ok"), { signal: new AbortController().signal });
+
+    await step(time, 60);
+
+    await expect(result).resolves.toBe("ok");
+    expect(shouldRetry).toHaveBeenCalledTimes(2);
+    expect(delaysOf(events)).toEqual([60]);
+  });
+
+  test("the option type is exported from the sub-path and the root, and the policy stays a Policy", () => {
+    expectTypeOf<RootRetryExecuteOptions>().toEqualTypeOf<RetryExecuteOptions>();
+    expectTypeOf<RetryExecuteOptions>().toMatchTypeOf<ExecuteOptions>();
+    expectTypeOf<RetryExecuteOptions["shouldRetry"]>().toEqualTypeOf<RetryConfig["shouldRetry"]>();
+    expectTypeOf<RetryExecuteOptions["retryAfter"]>().toEqualTypeOf<RetryConfig["retryAfter"]>();
+    expectTypeOf<RetryPolicy>().toMatchTypeOf<Policy>();
   });
 });

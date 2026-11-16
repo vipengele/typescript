@@ -66,8 +66,23 @@ export interface CircuitCallNotPermittedEvent {
 
 export type CircuitBreakerEvent = CircuitStateChangedEvent | CircuitCallNotPermittedEvent;
 
+/**
+ * Per-call options for {@link CircuitBreakerPolicy.execute}. The window, thresholds and waits stay
+ * owned by the {@link CircuitBreakerConfig}.
+ */
+export interface CircuitBreakerExecuteOptions extends ExecuteOptions {
+  /**
+   * Whether `outcome` counts as a failure, in place of the configured `isFailure` (or its default)
+   * for this call. A throwing `isFailure` classifies the outcome as a failure. An outcome the
+   * circuit ignores — a caller abort, a refusal from another policy — is never classified.
+   */
+  isFailure?(outcome: Outcome<unknown>): boolean;
+}
+
 export interface CircuitBreakerPolicy extends Policy {
   readonly events: Listenable<CircuitBreakerEvent>;
+  /** Runs `op` under the circuit. `options.isFailure`, when given, replaces the configured one for this call. */
+  execute<T>(op: (ctx: ExecutionContext) => Promise<T> | T, options?: CircuitBreakerExecuteOptions): Promise<T>;
   /**
    * The circuit's state as of now. Reading it never transitions and never emits: an open circuit
    * whose wait has elapsed reads `"half-open"`, and a half-open one past `maxWaitInHalfOpenMs`
@@ -84,6 +99,8 @@ export interface CircuitBreakerPolicy extends Policy {
 
 type RefusingState = Exclude<CircuitState, "closed">;
 
+type IsFailure = (outcome: Outcome<unknown>) => boolean;
+
 interface Breaker {
   readonly name: string;
   readonly failureRateThreshold: number;
@@ -91,7 +108,7 @@ interface Breaker {
   readonly waitDurationInOpenMs: number;
   readonly permittedCallsInHalfOpen: number;
   readonly maxWaitInHalfOpenMs: number | undefined;
-  readonly isFailure: (outcome: Outcome<unknown>) => boolean;
+  readonly isFailure: IsFailure;
   readonly clock: Clock;
   readonly emitter: Emitter<CircuitBreakerEvent>;
   /** The closed state's sliding window. */
@@ -235,13 +252,13 @@ function ignore(breaker: Breaker): void {
 }
 
 /**
- * Asks the configured `isFailure` how to classify `outcome`. A throwing `isFailure` classifies it
- * as a failure: the outcome is still recorded, so a half-open probe releases its permit, and the
- * throw never replaces the operation's own value or error.
+ * Asks `isFailure` — the call's own or the configured one — how to classify `outcome`. A throwing
+ * `isFailure` classifies it as a failure: the outcome is still recorded, so a half-open probe
+ * releases its permit, and the throw never replaces the operation's own value or error.
  */
-function classify(breaker: Breaker, outcome: Outcome<unknown>): boolean {
+function classify(isFailure: IsFailure, outcome: Outcome<unknown>): boolean {
   try {
-    return breaker.isFailure(outcome);
+    return isFailure(outcome);
   } catch {
     return true;
   }
@@ -252,7 +269,7 @@ function classify(breaker: Breaker, outcome: Outcome<unknown>): boolean {
  * so a call admitted before a transition never counts toward the state after it. A current
  * generation means the circuit is still in the closed or half-open state that admitted the call.
  */
-function complete(breaker: Breaker, generation: number, outcome: Outcome<unknown>, signal: AbortSignal): void {
+function complete(breaker: Breaker, generation: number, outcome: Outcome<unknown>, signal: AbortSignal, isFailure: IsFailure): void {
   if (generation !== breaker.generation) {
     return;
   }
@@ -260,7 +277,7 @@ function complete(breaker: Breaker, generation: number, outcome: Outcome<unknown
     ignore(breaker);
     return;
   }
-  const failed = classify(breaker, outcome);
+  const failed = classify(isFailure, outcome);
   if (breaker.state === "half-open") {
     recordProbe(breaker, failed);
   } else {
@@ -289,11 +306,16 @@ function settle<T>(outcome: Outcome<T>): T {
  * Everything up to running `op` happens before the first `await`, so calls made in one
  * synchronous burst are admitted one after another against the permits each leaves behind.
  */
-async function run<T>(breaker: Breaker, op: (ctx: ExecutionContext) => Promise<T> | T, signal: AbortSignal): Promise<T> {
+async function run<T>(
+  breaker: Breaker,
+  op: (ctx: ExecutionContext) => Promise<T> | T,
+  signal: AbortSignal,
+  isFailure: IsFailure,
+): Promise<T> {
   signal.throwIfAborted();
   const generation = admit(breaker);
   const outcome = await attemptOnce(op, { attempt: 1, signal });
-  complete(breaker, generation, outcome, signal);
+  complete(breaker, generation, outcome, signal, isFailure);
   return settle(outcome);
 }
 
@@ -358,7 +380,8 @@ function createBreaker(name: string, config: CircuitBreakerConfig, clock: Clock)
  * an open circuit refuses calls with a {@link CircuitOpenError} for `waitDurationInOpenMs`, then
  * admits `permittedCallsInHalfOpen` probes whose failure rate closes it again or reopens it. The
  * operation's own value or error always reaches the caller unchanged, even when `isFailure` throws;
- * a throwing `isFailure` classifies that outcome as a failure. Throws a
+ * a throwing `isFailure` classifies that outcome as a failure. A call's own `isFailure` replaces the
+ * configured one for that call. Throws a
  * `ResilienceConfigError` for an empty `name` or a `config` outside its documented ranges.
  */
 export function createCircuitBreaker(name: string, config: CircuitBreakerConfig, deps: CircuitBreakerDeps = {}): CircuitBreakerPolicy {
@@ -381,8 +404,8 @@ export function createCircuitBreaker(name: string, config: CircuitBreakerConfig,
         transition(breaker, "forced-open", "forced-open", breaker.clock());
       }
     },
-    execute<T>(op: (ctx: ExecutionContext) => Promise<T> | T, options?: ExecuteOptions): Promise<T> {
-      return run(breaker, op, options?.signal ?? new AbortController().signal);
+    execute<T>(op: (ctx: ExecutionContext) => Promise<T> | T, options?: CircuitBreakerExecuteOptions): Promise<T> {
+      return run(breaker, op, options?.signal ?? new AbortController().signal, options?.isFailure?.bind(options) ?? breaker.isFailure);
     },
   };
 }

@@ -1,10 +1,13 @@
 import { createManualTime, type ManualTime } from "@vipengele/ts-core-common/testing";
-import { describe, expect, test, vi } from "vitest";
+import { describe, expect, expectTypeOf, test, vi } from "vitest";
 import { BulkheadFullError, CircuitOpenError, isCircuitOpenError, isResilienceConfigError, RateLimitExceededError } from "../errors";
-import type { Outcome } from "../types";
+import type { CircuitBreakerExecuteOptions as RootCircuitBreakerExecuteOptions } from "../index";
+import type { ExecuteOptions, Outcome, Policy } from "../types";
+import type { CircuitBreakerExecuteOptions as SubPathCircuitBreakerExecuteOptions } from "./index";
 import {
   type CircuitBreakerConfig,
   type CircuitBreakerEvent,
+  type CircuitBreakerExecuteOptions,
   type CircuitBreakerPolicy,
   type CircuitStateChangedEvent,
   createCircuitBreaker,
@@ -833,5 +836,111 @@ describe("default dependencies", () => {
 
     expect(events[0]?.at).toBeGreaterThanOrEqual(before);
     expect(breaker.state).toBe("forced-open");
+  });
+});
+
+describe("per-call isFailure", () => {
+  test("replaces the configured isFailure, and failedCalls counts the outcomes it flags", async () => {
+    const configured = vi.fn(() => false);
+    const seen: Array<Outcome<unknown>> = [];
+    const { breaker } = setup({ isFailure: configured });
+    const isFailure = (outcome: Outcome<unknown>): boolean => {
+      seen.push(outcome);
+      return outcome.ok && outcome.value === "degraded";
+    };
+
+    await expect(breaker.execute(() => "degraded", { isFailure })).resolves.toBe("degraded");
+    await expect(breaker.execute(() => "fine", { isFailure })).resolves.toBe("fine");
+
+    expect(configured).not.toHaveBeenCalled();
+    expect(seen).toEqual([
+      { ok: true, value: "degraded" },
+      { ok: true, value: "fine" },
+    ]);
+    expect(breaker.metrics).toMatchObject({ bufferedCalls: 2, failedCalls: 1, successfulCalls: 1 });
+  });
+
+  test("may count an error as a success where the default would count a failure", async () => {
+    const { breaker } = setup({ minimumCalls: 1 });
+
+    await expect(rejectionOf(breaker.execute(() => Promise.reject(new Error("down")), { isFailure: () => false }))).resolves.toBeInstanceOf(
+      Error,
+    );
+
+    expect(breaker.state).toBe("closed");
+    expect(breaker.metrics).toMatchObject({ bufferedCalls: 1, failedCalls: 0, successfulCalls: 1 });
+  });
+
+  test("is called with its options object as this", async () => {
+    const { breaker } = setup();
+    const options = {
+      flagged: "degraded",
+      isFailure(this: { flagged: string }, outcome: Outcome<unknown>): boolean {
+        return outcome.ok && outcome.value === this.flagged;
+      },
+    };
+
+    await breaker.execute(() => "degraded", options);
+
+    expect(breaker.metrics).toMatchObject({ bufferedCalls: 1, failedCalls: 1 });
+  });
+
+  test("a throwing per-call isFailure counts the outcome as a failure and the caller still gets the operation's value", async () => {
+    const { breaker, events } = setup({ minimumCalls: 1, isFailure: () => false });
+    const isFailure = (): boolean => {
+      throw new Error("classifier broke");
+    };
+
+    await expect(breaker.execute(() => "fine", { isFailure })).resolves.toBe("fine");
+
+    expect(breaker.state).toBe("open");
+    expect(stateChanges(events).at(-1)).toMatchObject({ from: "closed", to: "open", reason: "failure-rate" });
+  });
+
+  test("classifies a half-open probe", async () => {
+    const harness = setup();
+    const { breaker, events } = harness;
+    await openAndWait(harness);
+
+    await breaker.execute(() => "degraded", { isFailure: () => true });
+    expect(breaker.metrics).toMatchObject({ bufferedCalls: 1, failedCalls: 1 });
+    await breaker.execute(() => "degraded", { isFailure: () => true });
+
+    expect(stateChanges(events).at(-1)).toMatchObject({ from: "half-open", to: "open", reason: "half-open-failed" });
+  });
+
+  test("is never asked about an outcome the circuit ignores", async () => {
+    const { breaker } = setup();
+    const controller = new AbortController();
+    const isFailure = vi.fn(() => true);
+
+    await breaker.execute(
+      () => {
+        controller.abort();
+        return "late";
+      },
+      { signal: controller.signal, isFailure },
+    );
+
+    expect(isFailure).not.toHaveBeenCalled();
+    expect(breaker.metrics).toMatchObject({ bufferedCalls: 0, ignoredCalls: 1 });
+  });
+
+  test("options carrying only a signal leave the configured isFailure in place", async () => {
+    const isFailure = vi.fn(() => true);
+    const { breaker } = setup({ isFailure });
+
+    await breaker.execute(() => "ok", { signal: new AbortController().signal });
+
+    expect(isFailure).toHaveBeenCalledWith({ ok: true, value: "ok" });
+    expect(breaker.metrics).toMatchObject({ bufferedCalls: 1, failedCalls: 1 });
+  });
+
+  test("the option type is exported from the sub-path and the root, and the policy stays a Policy", () => {
+    expectTypeOf<RootCircuitBreakerExecuteOptions>().toEqualTypeOf<CircuitBreakerExecuteOptions>();
+    expectTypeOf<SubPathCircuitBreakerExecuteOptions>().toEqualTypeOf<CircuitBreakerExecuteOptions>();
+    expectTypeOf<CircuitBreakerExecuteOptions>().toMatchTypeOf<ExecuteOptions>();
+    expectTypeOf<CircuitBreakerExecuteOptions["isFailure"]>().toEqualTypeOf<CircuitBreakerConfig["isFailure"]>();
+    expectTypeOf<CircuitBreakerPolicy>().toMatchTypeOf<Policy>();
   });
 });

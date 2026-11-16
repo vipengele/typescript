@@ -105,6 +105,12 @@ Resilience primitives. Entry points: `.` (re-exports `./bulkhead`, `./circuit-br
   emitted before each sleep with the sanitised delay; `retry-exhausted` (`attempts`, `outcome`)
   only when `shouldRetry` wanted another attempt and none was left. A stop because `shouldRetry`
   declined emits nothing.
+- `execute(op, options?: RetryExecuteOptions)`: `RetryExecuteOptions` extends `ExecuteOptions` with
+  optional `shouldRetry` and `retryAfter` of the config's signatures. `settingsFor` swaps a given
+  one into the settings for that call only; a missing one keeps the configured one. A per-call
+  `retryAfter` returning `undefined` falls back to `backoff`, never to the configured `retryAfter`.
+  `maxAttempts` and `backoff` stay config-only. `RetryPolicy` redeclares `execute` with the wider
+  options, which keeps it assignable to `Policy` (the extra fields are all optional).
 - The loop is split into small helpers (`attemptOnce`, `delayFor`, `sanitizeDelay`, `settle`)
   to keep each function's cyclomatic complexity well under lydite's CRAP gate of 30.
 
@@ -130,7 +136,11 @@ Resilience primitives. Entry points: `.` (re-exports `./bulkhead`, `./circuit-br
   ignored call is not recorded, releases its half-open permit and increments `ignoredCalls`.
   Otherwise `isFailure(outcome)` decides, default `!outcome.ok`; a custom one sees `ok: true`
   outcomes. An `isFailure` that throws classifies the outcome as a failure, and the caller still gets
-  the op's own value or error. A synchronous throw from `op` is an `ok: false` outcome. A pre-aborted
+  the op's own value or error. `execute(op, options?: CircuitBreakerExecuteOptions)` takes a per-call
+  `isFailure` (bound to its options object) that replaces the configured one for that call, under
+  the same throw rule; an ignored outcome reaches neither. `CircuitBreakerPolicy` redeclares
+  `execute` with the wider options and stays assignable to `Policy`. A synchronous throw from `op`
+  is an `ok: false` outcome. A pre-aborted
   caller signal rejects with its reason before admission and is not counted.
 - Every transition increments a generation and each admitted call captures it. An outcome whose
   generation is not current is recorded nowhere, though its value or error still reaches the caller.

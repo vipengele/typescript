@@ -86,6 +86,17 @@ is rethrown as the very value `op` threw.
   `undefined` to fall back to it.
 - **Abort** — `execute(op, { signal })` checks the signal before the first attempt and after each
   failed one, and cuts the wait between attempts short. Each rejects with the signal's reason.
+- **Per call** — `execute(op, { shouldRetry, retryAfter })` takes either predicate for that call
+  alone (`RetryExecuteOptions`); one given there replaces the configured one, and one left out keeps
+  it. A per-call `retryAfter` returning `undefined` falls back to `backoff`, not to the configured
+  `retryAfter`. `maxAttempts` and `backoff` always come from the config, and the `retry` and
+  `retry-exhausted` events follow whichever `shouldRetry` the call runs under.
+
+```ts
+const response = await retry.execute(({ signal }) => fetch("https://example.com/profile", { signal }), {
+  shouldRetry: (outcome) => !outcome.ok || (outcome.value instanceof Response && outcome.value.status >= 500),
+});
+```
 
 ```ts
 const controller = new AbortController();
@@ -150,6 +161,17 @@ Config, validated at creation (a bad value throws `ResilienceConfigError`):
 - **`isFailure(outcome)`** — decides whether an outcome counts as a failure. The default is
   `!outcome.ok`; a custom one also sees `ok: true` outcomes. If it throws, the outcome counts as a
   failure and the caller still gets the operation's own value or error.
+
+`execute(op, { isFailure })` classifies that call's outcome with its own `isFailure`
+(`CircuitBreakerExecuteOptions`) in place of the configured one; a throwing per-call `isFailure`
+also counts the outcome as a failure, and an ignored outcome (see below) is never classified. The
+window, thresholds and waits always come from the config.
+
+```ts
+const response = await breaker.execute(({ signal }) => fetch("https://example.com/profile", { signal }), {
+  isFailure: (outcome) => !outcome.ok || (outcome.value instanceof Response && outcome.value.status >= 500),
+});
+```
 
 `deps` takes a `clock` (default `systemClock`); the breaker never sleeps, so it takes no scheduler.
 
