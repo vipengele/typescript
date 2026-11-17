@@ -2,8 +2,7 @@
 about: "the reporter flood test injects a fixed clock, so its rate limit cannot refill from wall time"
 saw:
   - source/core/packages/observability/src/errors/pipeline.test.ts
-targets:
-  - pipeline-flood-test-refills-from-wall-clock
+targets: pipeline-flood-test-refills-from-wall-clock
 verdict: stale
 ---
 The test "is delivered after a loop of handled errors floods the reporter"
