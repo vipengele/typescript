@@ -130,7 +130,11 @@ Error Event, Scope, Breadcrumb, Transport) before naming things.
     attempt runs on a fresh context, `defaultIsFailure` (thrown, 5xx, 408, 429) and `defaultRetryPredicate`
     decide what to retry (an idempotent method, or the `RetryNonIdempotent` attribute or an
     `Idempotency-Key` header; `Retry-After` honoured up to `maxRetryAfterMs`), and
-    `HttpResilienceAttributes` names the attributes they record (ADR-0030).
+    `HttpResilienceAttributes` names the attributes they record (ADR-0030). `oauth2Filter` (at
+    `Order.AUTH`, `HttpClient.builder().oauth2()`) sends a bearer token from an `OAuth2TokenSource`
+    (`clientCredentials` is the built-in one) kept in an `OAuth2TokenStore`, refreshes it single-flight
+    with a deadline and replays a 401 once, never a one-shot body; `OAuth2TokenRefusedError` and
+    `OAuth2TokenError` come from `./errors` with guards (ADR-0031).
 - `source/ts/` — `@vipengele/ts`, the framework's batteries-included umbrella package
   (`packages/ts/`, nested so `release.yml`'s publish-order globbing sees it). Its name is a
   deliberate exception to the `@vipengele/ts-<project>-<package>` convention (ADR-0003). It

@@ -336,3 +336,14 @@ _Avoid_: request context, exchange
 A response read without status conversion, returned by `exchange()`: its status, headers and the raw
 `Response`, with `json`, `text` and `discard` to read or drop the body.
 _Avoid_: result, reply
+
+**Token Source**:
+What acquires an OAuth2 access token for the HTTP client when it holds none it can use, such as by
+the client-credentials grant. It says when the token it returns stops being valid, and why a new one
+is wanted is passed to it.
+_Avoid_: token provider, token manager
+
+**Token Store**:
+Where the HTTP client keeps the access token it holds between requests. The default belongs to one
+filter; a caller can supply one to share a token or keep it elsewhere.
+_Avoid_: token cache

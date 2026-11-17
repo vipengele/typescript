@@ -5,8 +5,8 @@ chain of filters for cross-cutting behaviour, and typed errors.
 
 | Entry point | What it holds |
 |-------------|---------------|
-| `@vipengele/ts-core-http` | `HttpClient`, `filter`, `Order`, `isOneShotBody` and the types, plus the errors |
-| `@vipengele/ts-core-http/errors` | `HttpStatusError`, `HttpConfigError` and their guards |
+| `@vipengele/ts-core-http` | `HttpClient`, `filter`, `Order`, `oauth2Filter`, `clientCredentials`, `isOneShotBody` and the types, plus the errors |
+| `@vipengele/ts-core-http/errors` | `HttpStatusError`, `HttpConfigError`, `OAuth2TokenRefusedError`, `OAuth2TokenError` and their guards |
 
 ```sh
 pnpm add @vipengele/ts-core-http
@@ -19,30 +19,71 @@ no HTTP dependency; the decisions behind it are in
 ## Quick example
 
 ```ts
-import { HttpClient, filter, Order } from "@vipengele/ts-core-http";
+import { HttpClient, clientCredentials } from "@vipengele/ts-core-http";
 
-type PurchaseOrder = { id: string; sku: string };
+const client = HttpClient.builder()
+  .baseUrl("https://api.example.com")
+  .oauth2({
+    source: clientCredentials({
+      tokenUrl: "https://auth.example.com/token",
+      clientId: "my-client",
+      clientSecret: "my-secret",
+      scope: ["read"],
+    }),
+    authorize: (request) => request.url.origin === "https://api.example.com",
+  })
+  .build();
 
-declare function token(): string;
-
-const auth = filter({
-  name: "auth",
-  order: Order.AUTH,
-  handle(ctx, next) {
-    ctx.request.headers.set("authorization", `Bearer ${token()}`);
-    return next();
-  },
-});
-
-const client = HttpClient.builder().baseUrl("https://api.example.com/v1").filter(auth).build();
-
-const order = await client.get("/orders/42").json<PurchaseOrder>();
-const created = await client.post("/orders").json({ sku: "A-1" }).json<PurchaseOrder>();
+const result = await client.get("/things").json<{ ok: boolean }>();
 ```
 
 A request builder is immutable: `header`, `query`, `json(body)`, `body`, `signal` and `attribute`
 each return a new builder, and nothing is sent until a terminal is called. Each terminal call sends
 the request again. A header set on the request wins over a client header of the same name.
+
+## OAuth2
+
+`builder.oauth2(options)` adds `oauth2Filter(options)`, a filter named `"oauth2"` at `Order.AUTH`. It
+sends `Authorization: Bearer <token>`, keeps the token, refreshes it when it goes stale and recovers
+from a token the server rejects. The decisions are in
+`docs/adr/0031-oauth2-filter-single-flight-refresh-and-replay-once.md`.
+
+- `authorize(request)` chooses the requests that get a token and defaults to every one. Without a
+  check, a request to any host the client is pointed at carries the token, so compare the origin as
+  the example does. A request that already carries an `Authorization` header is passed through
+  untouched: the caller's header wins.
+- `clientCredentials({ tokenUrl, clientId, clientSecret, scope?, params?, authentication? })` is the
+  built-in token source for the client-credentials grant. `scope` is a string or an array joined with
+  spaces, `params` adds form parameters such as `audience`. The client authenticates with an
+  `Authorization: Basic` header by default (RFC 6749 section 2.3.1); `authentication: "body"` sends
+  `client_id` and `client_secret` as form parameters instead. A `tokenUrl` with userinfo or an empty
+  `clientId` throws an `HttpConfigError`. A response without `expires_in` gives a token valid until a
+  server rejects it; a `token_type` other than `Bearer` fails.
+- A custom source implements `OAuth2TokenSource` (`getToken({ fetch, signal, clock, reason })`,
+  resolving `{ accessToken, expiresAt? }` with `expiresAt` in epoch milliseconds on that `clock`), and
+  a custom store `OAuth2TokenStore` (`get()` and `set(token)`), passed as `source` and `store`. The
+  default store is in memory and belongs to one filter. The token request goes through the request's
+  own `fetch`, so no filter sees it.
+- A token turns stale `refreshSkewMs` before `expiresAt` (30 000 by default), at most half of the
+  lifetime left when the filter first sees it, so a short-lived token is not refreshed on every
+  request. One refresh runs at a time and every request that needs a token waits for it; a request
+  whose own signal aborts stops waiting without cancelling the refresh. A refresh is aborted after
+  `refreshTimeoutMs` (30 000 by default) and fails with an `OAuth2TokenError`; the next request
+  starts a new one. The `clock` and `scheduler` options replace `systemClock` and `systemScheduler`.
+- A 401 marks its token as rejected, cancels the response body, obtains a token (refreshing only
+  when the store still holds the rejected one) and sends the request again, once. A 401 to that
+  second request is returned as it is. A request whose body can be sent only once is not sent again:
+  its 401 is returned and the next request refreshes. The store is never cleared. The replay goes
+  through the retry filter again with a fresh budget.
+- The filters raise two errors, both reached through the root and `./errors`.
+  `OAuth2TokenRefusedError` (`status`, `error`) means the token endpoint answered 400 or 401;
+  `OAuth2TokenError` is every other failure and has a `cause` only for a thrown `fetch` error or an
+  error from a custom source. Their messages carry the redacted token URL and a status, never a
+  secret, a token or the endpoint's response; a token that is not a valid bearer token fails
+  without its value.
+
+Every client built from `extend()` of one client shares its filter, so it shares the token and the
+in-flight refresh.
 
 ## Terminals
 
@@ -154,7 +195,7 @@ throw an `HttpConfigError` when the request is started.
 A URL carrying credentials (`https://user:pass@host`) is refused with an `HttpConfigError`, whether it
 is the `baseUrl` (refused by `.baseUrl(...)` itself) or an absolute request URL (refused when the
 request is started); the message carries the URL through `redactUrl`. `fetch` rejects such a URL with
-a `TypeError` that quotes it, password included. Send credentials in a header, from an auth filter.
+a `TypeError` that quotes it, password included. Send credentials in a header, from an auth filter such as `oauth2Filter`.
 
 ## Errors
 
@@ -174,6 +215,8 @@ try {
 |-------|--------|-------|
 | `HttpStatusError` (`method`, `url`, `status`, `response`) | `http.status` | `isHttpStatusError` |
 | `HttpConfigError` | `http.config` | `isHttpConfigError` |
+| `OAuth2TokenRefusedError` (`status`, `error`) | `http.oauth2-token-refused` | `isOAuth2TokenRefusedError` |
+| `OAuth2TokenError` | `http.oauth2-token` | `isOAuth2TokenError` |
 | `HttpError` (the base) | any `http.*` | `isHttpError` |
 
 Guards match on `code`, never on class identity, so they hold across two resolved copies of the package.

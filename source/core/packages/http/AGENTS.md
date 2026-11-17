@@ -3,7 +3,8 @@
 HTTP client over `fetch`. Entry points: `.` (everything, errors included) and `./errors`. Run commands
 from `source/core` (`pnpm build`, `pnpm type-check`, `pnpm test`, `pnpm lint`, `pnpm format:check`).
 The decisions are in ADR-0029 (`0029-http-client-is-a-fetch-filter-chain.md`) and, for the resilience
-filters, ADR-0030 (`0030-http-resilience-filters.md`).
+filters, ADR-0030 (`0030-http-resilience-filters.md`) and, for the OAuth2 filter, ADR-0031
+(`0031-oauth2-filter-single-flight-refresh-and-replay-once.md`).
 
 ## Errors (`src/errors/http-errors.ts`)
 
@@ -58,5 +59,21 @@ filters, ADR-0030 (`0030-http-resilience-filters.md`).
   - `bulkhead-filter.ts`: `bulkheadFilter`.
   - `resilience-filters.ts`: `resilienceFilters`, which reads `registry.kinds()` once; `builder.resilience()`
     in `client.ts` replaces the set.
+- `src/auth/` holds the OAuth2 filter (ADR-0031), exported from the root only: `token.ts` (the
+  `OAuth2Token`, `OAuth2TokenRequest`, `OAuth2TokenSource` and `OAuth2TokenStore` types),
+  `client-credentials.ts` (`clientCredentials`) and `oauth2-filter.ts` (`oauth2Filter` at `Order.AUTH`;
+  `builder.oauth2()` in `client.ts` is `filter(oauth2Filter(options))`). `OAuth2TokenRefusedError`
+  (`http.oauth2-token-refused`) and `OAuth2TokenError` (`http.oauth2-token`) live in `errors/http-errors.ts`.
+  Invariants:
+  - The token request goes through the raw `ctx.fetch`, never `next`, so no filter sees it.
+  - No token value, secret or response content reaches an error message or its `cause`; a `cause` is
+    kept only for a thrown `fetch` error or an error from a custom source.
+  - A 401 refreshes only when `store.get()?.accessToken` still equals the rejected access token, a
+    string compare, never an object identity compare.
+  - The store is never cleared; a rejection is remembered in the filter.
+  - The single-flight promise is cleared in `finally`, and a failure is not cached.
+  - A replay happens at most once and never for a non-replayable body.
+  - The access token is checked against the `b64token` charset before `store.set` and before every
+    `headers.set`.
 - Dependencies are `@vipengele/ts-core-common`, `@vipengele/ts-core-redaction` and
   `@vipengele/ts-core-resilience`, resolved through their built `dist/`. The package does not depend on `@vipengele/ts-core-observability` (ADR-0029).
