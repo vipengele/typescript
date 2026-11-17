@@ -17,12 +17,16 @@ saw:
 - Errors: abstract `HttpError extends VipengeleError`; `code = "http.<kind>"` const exported
   (http-errors.ts:8,11); guard is `instanceof Error && code === CODE`; `isHttpError` matches the `http.` prefix
   so a new code needs no guard change; url redacted with redactUrl, `response` defined non-enumerable via
-  defineProperty (http-errors.ts:49-54). No existing error carries a reason/kind discriminant.
-- No logging, no console, no btoa, no URLSearchParams body building anywhere in http src (grep). No single-flight
-  helper exists in common/resilience (only observability's delivery `#inFlight` batch and breaker probes).
+  defineProperty (http-errors.ts:49-54). `OAuth2TokenError` takes a free-text `reason` that goes into the
+  message, so callers pass fixed phrases only, never response content or a token (http-errors.ts, the
+  OAuth2TokenErrorDetails doc comment).
+- No logging and no console anywhere in http src (grep). The only form body and base64 encoding is
+  `src/auth/client-credentials.ts` (URLSearchParams, TextEncoder + btoa). No single-flight helper exists in
+  common/resilience; `src/auth/oauth2-filter.ts` keeps its own `inFlight` promise, cleared in `finally`.
 - Exports: new src files go through src/index.ts (root barrel) and src/resilience/index.ts; no tsup/exports edit
   needed unless a NEW sub-path is added (package-exports.test.ts only compares exports keys with tsup entries).
 - Docs surfaces: AGENTS.md package layout, README.md, CONTEXT.md glossary (Filter/Http Context entries ~316-338),
-  docs/release-notes/vX.Y.Z.md, and a new ADR (latest is 0030; note two files share number 0029).
+  docs/release-notes/vX.Y.Z.md (written at release time), and a new ADR (two files share number 0029, so
+  number from the highest file in docs/adr/, e.g. 0031-oauth2-filter-single-flight-refresh-and-replay-once.md).
 - Module-level state exception: dispatch.ts:233 keeps a module-level WeakMap with a comment justifying it; the
   globalThis rule applies only to realm-wide shared state, so a per-filter token cache is closure state.
