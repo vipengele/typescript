@@ -471,11 +471,11 @@ describe("oauth2", () => {
       }
       return Response.json({ ok: true });
     };
+    vi.stubGlobal("fetch", fakeApiFetch);
 
     // README example start
     const client = HttpClient.builder()
       .baseUrl("https://api.example.com")
-      .fetch(fakeApiFetch)
       .oauth2({
         source: clientCredentials({
           tokenUrl: "https://auth.example.com/token",
