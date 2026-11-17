@@ -1,4 +1,5 @@
 import type { ResilienceRegistry } from "@vipengele/ts-core-resilience";
+import { type OAuth2Options, oauth2Filter, validateOAuth2Options } from "./auth/oauth2-filter";
 import { compileChain } from "./chain";
 import type { ClientConfig } from "./client-config";
 import type { HttpFetch } from "./context";
@@ -19,6 +20,35 @@ interface ClientSource {
 }
 
 /**
+ * An OAuth2 filter added without `authorize`, waiting in the builder's filter list for `build()` to
+ * bind it to the `baseUrl` origin. One filter is built per origin and reused by every later build,
+ * so the clients a builder builds share one token cache and one in-flight refresh.
+ */
+class DeferredOAuth2 {
+  readonly name = "oauth2";
+  readonly #options: OAuth2Options;
+  readonly #byOrigin = new Map<string, Filter>();
+
+  constructor(options: OAuth2Options) {
+    this.#options = options;
+  }
+
+  /** @throws HttpConfigError when `baseUrl` is undefined. */
+  bind(baseUrl: URL | undefined): Filter {
+    if (baseUrl === undefined) {
+      throw new HttpConfigError("oauth2 needs a baseUrl to authorize requests against; set a baseUrl or give authorize");
+    }
+    const { origin } = baseUrl;
+    let bound = this.#byOrigin.get(origin);
+    if (bound === undefined) {
+      bound = oauth2Filter({ ...this.#options, authorize: (request) => request.url.origin === origin });
+      this.#byOrigin.set(origin, bound);
+    }
+    return bound;
+  }
+}
+
+/**
  * Collects a client's configuration; `build` turns it into an {@link HttpClient}.
  *
  * Mutable: every method changes the builder and returns it. A built client holds a snapshot, so
@@ -27,7 +57,7 @@ interface ClientSource {
 export class HttpClientBuilder {
   #baseUrl: URL | undefined;
   #headers: Headers;
-  #filters: Filter[];
+  #filters: Array<Filter | DeferredOAuth2>;
   #fetch: HttpFetch | undefined;
   #throwOnError: boolean;
 
@@ -67,6 +97,10 @@ export class HttpClientBuilder {
    * place, keeping its position in the registration order.
    */
   filter(...filters: Filter[]): this {
+    return this.#add(filters);
+  }
+
+  #add(filters: ReadonlyArray<Filter | DeferredOAuth2>): this {
     for (const added of filters) {
       const index = this.#filters.findIndex((existing) => existing.name === added.name);
       if (index === -1) {
@@ -108,6 +142,32 @@ export class HttpClientBuilder {
     return this.filter(...added);
   }
 
+  /**
+   * Adds the OAuth2 filter {@link oauth2Filter} builds from `options`, replacing any filter named
+   * `"oauth2"`. `options` are validated before the builder changes: when they are invalid, the
+   * builder is unchanged.
+   *
+   * Without `authorize`, only a request whose URL has the `baseUrl`'s origin gets a token, so a
+   * request to an absolute URL on another host never carries it. The origin is the `baseUrl` set
+   * when {@link build} runs, whether `baseUrl` is called before or after this method; `build` throws
+   * when there is none. `authorize: () => true` sends the token with every request.
+   *
+   * {@link HttpClient.extend} shares the filter instance, so a client and its extension share one
+   * token cache and one in-flight refresh. This is intended: both act as the same OAuth2 client. The
+   * extension keeps the origin the client was built with, even when it is given another `baseUrl`;
+   * calling `oauth2` on it again binds a new filter to the new one.
+   *
+   * @throws HttpConfigError when `options` are invalid.
+   */
+  oauth2(options: OAuth2Options): this {
+    const { authorize } = options;
+    if (authorize === undefined) {
+      validateOAuth2Options(options);
+      return this.#add([new DeferredOAuth2(options)]);
+    }
+    return this.filter(oauth2Filter({ ...options, authorize }));
+  }
+
   /** Sets whether `send` raises an `HttpStatusError` for a failing status; off by default. */
   throwOnError(enabled = true): this {
     this.#throwOnError = enabled;
@@ -117,13 +177,15 @@ export class HttpClientBuilder {
   /**
    * Builds the client from a snapshot of this builder.
    *
-   * @throws HttpConfigError when filters share an order without every one of them allowing the tie.
+   * @throws HttpConfigError when filters share an order without every one of them allowing the tie,
+   *   or when {@link oauth2} was given no `authorize` and no `baseUrl` is set.
    */
   build(): HttpClient {
+    const baseUrl = this.#baseUrl;
     return new HttpClient({
-      baseUrl: this.#baseUrl,
+      baseUrl,
       headers: this.#headers,
-      filters: this.#filters,
+      filters: this.#filters.map((entry) => (entry instanceof DeferredOAuth2 ? entry.bind(baseUrl) : entry)),
       fetch: this.#fetch,
       throwOnError: this.#throwOnError,
     });

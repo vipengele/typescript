@@ -1012,13 +1012,16 @@ describe("deduplication", () => {
 
     it("is delivered after a loop of handled errors floods the reporter", async () => {
       let crash: IntegrationHost | undefined;
+      // A fixed clock keeps the rate limit's token bucket from refilling while the loop runs.
       const { transport, reporter } = aDedupingReporter((b) =>
-        b.add({
-          name: "crash",
-          setup: (host) => {
-            crash = host;
-          },
-        }),
+        b
+          .clock(() => 1)
+          .add({
+            name: "crash",
+            setup: (host) => {
+              crash = host;
+            },
+          }),
       );
 
       for (let index = 0; index < 500; index += 1) {
