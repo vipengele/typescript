@@ -30,7 +30,6 @@ const client = HttpClient.builder()
       clientSecret: "my-secret",
       scope: ["read"],
     }),
-    authorize: (request) => request.url.origin === "https://api.example.com",
   })
   .build();
 
@@ -43,15 +42,19 @@ the request again. A header set on the request wins over a client header of the 
 
 ## OAuth2
 
-`builder.oauth2(options)` adds `oauth2Filter(options)`, a filter named `"oauth2"` at `Order.AUTH`. It
+`builder.oauth2(options)` adds an `oauth2Filter`, a filter named `"oauth2"` at `Order.AUTH`. It
 sends `Authorization: Bearer <token>`, keeps the token, refreshes it when it goes stale and recovers
 from a token the server rejects. The decisions are in
 `docs/adr/0031-oauth2-filter-single-flight-refresh-and-replay-once.md`.
 
-- `authorize(request)` chooses the requests that get a token and defaults to every one. Without a
-  check, a request to any host the client is pointed at carries the token, so compare the origin as
-  the example does. A request that already carries an `Authorization` header is passed through
-  untouched: the caller's header wins.
+- `authorize(request)` chooses the requests that get a token. Through `builder.oauth2()` it is
+  optional and defaults to the requests whose URL has the `baseUrl`'s origin, so a request to an
+  absolute URL on another host goes without the token. The `baseUrl` is read when `build()` runs, so
+  `.baseUrl()` may come before or after `.oauth2()`; `build()` throws an `HttpConfigError` when
+  neither a `baseUrl` nor `authorize` is given. `oauth2Filter(options)` used on its own knows no
+  `baseUrl` and requires `authorize`. `authorize: () => true` sends the token with every request. A
+  request that already carries an `Authorization` header is passed through untouched: the caller's
+  header wins.
 - `clientCredentials({ tokenUrl, clientId, clientSecret, scope?, params?, authentication? })` is the
   built-in token source for the client-credentials grant. `scope` is a string or an array joined with
   spaces, `params` adds form parameters such as `audience`. The client authenticates with an
@@ -83,7 +86,8 @@ from a token the server rejects. The decisions are in
   without its value.
 
 Every client built from `extend()` of one client shares its filter, so it shares the token and the
-in-flight refresh.
+in-flight refresh. The shared filter keeps the origin the first client was built with, even when the
+extension sets another `baseUrl`; calling `.oauth2()` on the extension builds a new filter for it.
 
 ## Terminals
 

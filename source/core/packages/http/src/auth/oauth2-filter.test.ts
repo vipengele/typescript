@@ -82,7 +82,7 @@ function setup(answers: Answer[], options: Partial<OAuth2FilterOptions> = {}, re
   const time = createManualTime(START);
   const source = scriptedSource(...answers);
   const { fetch, calls } = api(reply);
-  const oauth2 = oauth2Filter({ source, clock: time.clock, scheduler: time.scheduler, ...options });
+  const oauth2 = oauth2Filter({ source, clock: time.clock, scheduler: time.scheduler, authorize: () => true, ...options });
   return { time, source, calls, oauth2, send: chainOf(fetch, oauth2) };
 }
 
@@ -260,7 +260,7 @@ describe("oauth2Filter tokens", () => {
     const source = scriptedSource({ accessToken: "a" });
     const { fetch, calls } = api();
 
-    await chainOf(fetch, oauth2Filter({ source }))();
+    await chainOf(fetch, oauth2Filter({ source, authorize: () => true }))();
 
     expect(authorizations(calls)).toEqual(["Bearer a"]);
   });
@@ -433,7 +433,9 @@ describe("oauth2Filter custom sources", () => {
     const { fetch } = api();
     const time = createManualTime(START);
 
-    const error = await failureOf(() => chainOf(fetch, oauth2Filter({ source, clock: time.clock, scheduler: time.scheduler }))());
+    const error = await failureOf(() =>
+      chainOf(fetch, oauth2Filter({ source, clock: time.clock, scheduler: time.scheduler, authorize: () => true }))(),
+    );
 
     expect(isOAuth2TokenError(error)).toBe(true);
     expect((error as Error).cause).toBe(thrown);
@@ -516,7 +518,7 @@ describe("oauth2Filter composition", () => {
     );
     const source = clientCredentials({ tokenUrl: TOKEN_URL, clientId: "id", clientSecret: "secret" });
 
-    await chainOf(fetch, oauth2Filter({ source, clock: time.clock, scheduler: time.scheduler }), downstream)();
+    await chainOf(fetch, oauth2Filter({ source, clock: time.clock, scheduler: time.scheduler, authorize: () => true }), downstream)();
 
     expect(seen).toEqual([API_URL]);
     expect(calls.map((call) => call.input)).toEqual([TOKEN_URL, API_URL]);
@@ -530,7 +532,7 @@ describe("oauth2Filter composition", () => {
     const source = scriptedSource({ accessToken: "a" }, { accessToken: "b" });
     const statuses = [503, 401, 503, 200];
     const { fetch, calls } = api((_call, index) => new Response(`body ${index}`, { status: statuses[index] }));
-    const run = compose([oauth2Filter({ source, clock: time.clock, scheduler: time.scheduler }), retry], dispatch);
+    const run = compose([oauth2Filter({ source, clock: time.clock, scheduler: time.scheduler, authorize: () => true }), retry], dispatch);
     const attributes = new Map<string | symbol, unknown>();
 
     const pending = run(createRootContext({ url: new URL(API_URL), method: "GET", headers: new Headers() }, fetch, attributes));
@@ -556,8 +558,10 @@ describe("oauth2Filter options", () => {
     ["a zero refreshTimeoutMs", { refreshTimeoutMs: 0 }],
     ["a negative refreshTimeoutMs", { refreshTimeoutMs: -5 }],
     ["a non-finite refreshTimeoutMs", { refreshTimeoutMs: Number.POSITIVE_INFINITY }],
+    ["a missing authorize", { authorize: undefined }],
+    ["an authorize that is not a function", { authorize: true }],
   ])("rejects %s with an HttpConfigError", (_name, overrides) => {
-    const options = { source: scriptedSource({ accessToken: "a" }), ...overrides } as OAuth2FilterOptions;
+    const options = { source: scriptedSource({ accessToken: "a" }), authorize: () => true, ...overrides } as OAuth2FilterOptions;
 
     let error: unknown;
     try {

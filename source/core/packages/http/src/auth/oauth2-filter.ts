@@ -18,8 +18,20 @@ export type OAuth2FilterOptions = {
   readonly refreshSkewMs?: number;
   /** How long one refresh may take before it is aborted and fails. Defaults to 30 000 ms. */
   readonly refreshTimeoutMs?: number;
-  /** Whether `request` gets a token; defaults to every request. */
-  readonly authorize?: (request: HttpRequest) => boolean;
+  /**
+   * Whether `request` gets a token. Required: the filter knows no `baseUrl` to default to, and a
+   * filter that authorized every request would send the token to any absolute URL. `() => true`
+   * authorizes every request explicitly.
+   */
+  readonly authorize: (request: HttpRequest) => boolean;
+};
+
+/**
+ * Options for `HttpClientBuilder.oauth2`: {@link OAuth2FilterOptions} with `authorize` optional.
+ * Without one, only a request whose URL has the client's `baseUrl` origin gets a token.
+ */
+export type OAuth2Options = Omit<OAuth2FilterOptions, "authorize"> & {
+  readonly authorize?: OAuth2FilterOptions["authorize"];
 };
 
 const DEFAULT_REFRESH_SKEW_MS = 30_000;
@@ -49,8 +61,12 @@ function inMemoryStore(): OAuth2TokenStore {
   };
 }
 
-function validateOptions(options: OAuth2FilterOptions): void {
-  const { source, refreshSkewMs, refreshTimeoutMs } = options;
+/**
+ * @internal Checks every option but `authorize`, so the builder can refuse bad options before it
+ * knows the `baseUrl` the default `authorize` binds to.
+ */
+export function validateOAuth2Options(options: OAuth2Options): void {
+  const { source, refreshSkewMs, refreshTimeoutMs, authorize } = options;
   if (typeof source?.getToken !== "function") {
     throw new HttpConfigError("oauth2Filter needs a source with a getToken method");
   }
@@ -59,6 +75,9 @@ function validateOptions(options: OAuth2FilterOptions): void {
   }
   if (refreshTimeoutMs !== undefined && !(Number.isFinite(refreshTimeoutMs) && refreshTimeoutMs > 0)) {
     throw new HttpConfigError(`oauth2Filter needs a finite refreshTimeoutMs above zero, got ${String(refreshTimeoutMs)}`);
+  }
+  if (authorize !== undefined && typeof authorize !== "function") {
+    throw new HttpConfigError("oauth2Filter needs authorize to be a function");
   }
 }
 
@@ -127,10 +146,13 @@ function raceSignal<T>(promise: Promise<T>, signal: AbortSignal | undefined): Pr
  * Every client sharing the filter instance shares its token and its in-flight refresh.
  *
  * @throws HttpConfigError when `source` has no `getToken` method, `refreshSkewMs` is negative or not
- *   finite, or `refreshTimeoutMs` is not a finite number above zero.
+ *   finite, `refreshTimeoutMs` is not a finite number above zero, or `authorize` is not a function.
  */
 export function oauth2Filter(options: OAuth2FilterOptions): Filter {
-  validateOptions(options);
+  validateOAuth2Options(options);
+  if (options.authorize === undefined) {
+    throw new HttpConfigError("oauth2Filter needs an authorize function; give () => true to send the token with every request");
+  }
   const {
     source,
     store = inMemoryStore(),
@@ -138,7 +160,7 @@ export function oauth2Filter(options: OAuth2FilterOptions): Filter {
     scheduler = systemScheduler,
     refreshSkewMs = DEFAULT_REFRESH_SKEW_MS,
     refreshTimeoutMs = DEFAULT_REFRESH_TIMEOUT_MS,
-    authorize = () => true,
+    authorize,
   } = options;
 
   /** The access token the filter last saw and when it turns stale. */

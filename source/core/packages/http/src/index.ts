@@ -2,6 +2,7 @@ export {
   type ClientCredentialsOptions,
   clientCredentials,
   type OAuth2FilterOptions,
+  type OAuth2Options,
   type OAuth2Token,
   type OAuth2TokenRequest,
   type OAuth2TokenSource,

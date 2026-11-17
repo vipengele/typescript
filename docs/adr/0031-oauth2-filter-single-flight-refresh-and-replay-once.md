@@ -84,24 +84,44 @@ for it, and a failure must not put a secret or a token into a message, a `cause`
    *Rejected: a result union from the filter.* A filter returns a `Response`; a second return shape
    would change `Filter` for every caller.
 
-10. **`authorize` chooses the requests that get a token.** It takes the `HttpRequest` and defaults to
-    every request. A request that already carries `Authorization` passes through untouched, so the
-    caller's header wins. The filter sets `Authorization` on the context it receives. The retry filter
+10. **`authorize` chooses the requests that get a token, and the default is the `baseUrl` origin.**
+    It takes the `HttpRequest`. Through `HttpClientBuilder.oauth2(options)` it is optional: without
+    it, a request gets a token only when its `url.origin` equals the origin of the client's
+    `baseUrl`. The builder binds that origin in `build()`, so `.baseUrl()` may be called before or
+    after `.oauth2()`, and `build()` throws `HttpConfigError` when `authorize` is omitted and no
+    `baseUrl` is set. `oauth2Filter(options)` on its own knows no `baseUrl`, so `authorize` is
+    required there (`OAuth2FilterOptions`; the builder takes `OAuth2Options`, where it is optional)
+    and a missing one throws `HttpConfigError`. `authorize: () => true` is the explicit opt-in to a
+    token on every request. A request that already carries `Authorization` passes through untouched,
+    so the caller's header wins. The filter sets `Authorization` on the context it receives. The retry filter
     sits inside `AUTH` and forks each attempt, so a replay or a retry carries the header; a custom
     filter ordered before `AUTH` that calls `next(ctx)` again sees the header as caller-set and passes
     it through.
+    *Rejected: authorizing every request by default.* A client given an absolute URL bypasses
+    `baseUrl`, so a default that accepts every request sends the bearer token to any host the URL
+    names; leaking a token must take a decision the caller writes down.
+    *Rejected: binding the origin when `.oauth2()` is called.* It would make the call order of
+    `.baseUrl()` and `.oauth2()` matter, and silently leave a client without a token, or with the
+    wrong origin, when `.baseUrl()` comes second.
 
 11. **The token request goes through the context's raw `fetch`.** No filter, the OAuth2 filter
     included, sees it, so it cannot recurse or be retried by a policy meant for API calls.
 
-12. **`HttpClientBuilder.oauth2(options)` is `filter(oauth2Filter(options))`.** Bad options throw
-    `HttpConfigError` before the builder changes. `extend()` shares the filter instance, so clients
-    extended from one share a token cache and one in-flight refresh; that is intended.
+12. **`HttpClientBuilder.oauth2(options)` adds an `oauth2Filter` under the name `"oauth2"`.** Bad
+    options throw `HttpConfigError` before the builder changes. With `authorize` given, it is
+    `filter(oauth2Filter(options))`. Without it, the builder holds the validated options in the
+    filter's place and `build()` builds the filter bound to the `baseUrl` origin, one instance per
+    origin per `.oauth2()` call, so repeated builds with the same origin share it. A built client
+    holds the bound instance, and `extend()` shares it, so clients extended from one share a token
+    cache and one in-flight refresh; that is intended. The extension keeps the origin the client was
+    built with even when it sets another `baseUrl`, so a token never follows a changed `baseUrl`
+    without a new `.oauth2()` call.
 
 ## Consequences
 
-- `HttpClient.builder().oauth2({ source: clientCredentials({ ... }) })` gives a client that acquires,
-  caches and refreshes a bearer token, and recovers from one rejected token without the caller.
+- `HttpClient.builder().baseUrl(url).oauth2({ source: clientCredentials({ ... }) })` gives a client
+  that acquires, caches and refreshes a bearer token, sends it only to the `baseUrl` origin, and
+  recovers from one rejected token without the caller.
 - A replayed call costs the breaker, limiter and bulkhead a second pass and starts a new retry budget.
 - A caller with a rotating or shared token supplies an `OAuth2TokenStore`; one with another grant
   supplies an `OAuth2TokenSource`.

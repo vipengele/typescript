@@ -62,7 +62,10 @@ filters, ADR-0030 (`0030-http-resilience-filters.md`) and, for the OAuth2 filter
 - `src/auth/` holds the OAuth2 filter (ADR-0031), exported from the root only: `token.ts` (the
   `OAuth2Token`, `OAuth2TokenRequest`, `OAuth2TokenSource` and `OAuth2TokenStore` types),
   `client-credentials.ts` (`clientCredentials`) and `oauth2-filter.ts` (`oauth2Filter` at `Order.AUTH`;
-  `builder.oauth2()` in `client.ts` is `filter(oauth2Filter(options))`). `OAuth2TokenRefusedError`
+  `builder.oauth2()` in `client.ts` takes `OAuth2Options`, where `authorize` is optional, and is
+  `filter(oauth2Filter(options))` when `authorize` is given; without it the builder holds a `DeferredOAuth2`
+  in the filter list and `build()` binds it to the `baseUrl` origin, one filter per origin, throwing
+  `HttpConfigError` without a `baseUrl`). `OAuth2FilterOptions.authorize` is required on the bare filter. `OAuth2TokenRefusedError`
   (`http.oauth2-token-refused`) and `OAuth2TokenError` (`http.oauth2-token`) live in `errors/http-errors.ts`.
   Invariants:
   - The token request goes through the raw `ctx.fetch`, never `next`, so no filter sees it.
@@ -75,5 +78,7 @@ filters, ADR-0030 (`0030-http-resilience-filters.md`) and, for the OAuth2 filter
   - A replay happens at most once and never for a non-replayable body.
   - The access token is checked against the `b64token` charset before `store.set` and before every
     `headers.set`.
+  - The builder's default `authorize` is the `baseUrl` origin, never every request; a built client
+    holds the bound filter, so `extend()` shares that instance and its origin.
 - Dependencies are `@vipengele/ts-core-common`, `@vipengele/ts-core-redaction` and
   `@vipengele/ts-core-resilience`, resolved through their built `dist/`. The package does not depend on `@vipengele/ts-core-observability` (ADR-0029).

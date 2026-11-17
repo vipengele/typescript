@@ -432,28 +432,142 @@ describe("oauth2", () => {
     });
   }
 
+  const authorizationOf = (call: Call | undefined): string | null => new Headers(call?.init.headers).get("authorization");
+
   it("adds the oauth2 filter", async () => {
     const { fetch, calls } = fakeFetch();
-    const client = HttpClient.builder().fetch(fetch).oauth2({ source }).build();
+    const client = HttpClient.builder().baseUrl("https://h.test").fetch(fetch).oauth2({ source }).build();
+    await client.get("/x").send();
+    expect(authorizationOf(calls[0])).toBe("Bearer tok");
+  });
+
+  it("sends the token to the baseUrl origin and not to another origin by default", async () => {
+    const { fetch, calls } = fakeFetch();
+    const client = HttpClient.builder().baseUrl("https://h.test/api").fetch(fetch).oauth2({ source }).build();
+    await client.get("/x").send();
+    await client.get("https://h.test/elsewhere").send();
+    await client.get("https://other.test/x").send();
+    await client.get("http://h.test/x").send();
+    await client.get("https://h.test:8443/x").send();
+    expect(calls.map(authorizationOf)).toEqual(["Bearer tok", "Bearer tok", null, null, null]);
+  });
+
+  it("binds the default authorize to a baseUrl set after oauth2", async () => {
+    const { fetch, calls } = fakeFetch();
+    const client = HttpClient.builder().fetch(fetch).oauth2({ source }).baseUrl("https://h.test").build();
+    await client.get("/x").send();
+    await client.get("https://other.test/x").send();
+    expect(calls.map(authorizationOf)).toEqual(["Bearer tok", null]);
+  });
+
+  it("binds the default authorize to the baseUrl each build sees", async () => {
+    const { fetch, calls } = fakeFetch();
+    const builder = HttpClient.builder().baseUrl("https://h.test").fetch(fetch).oauth2({ source });
+    const first = builder.build();
+    const second = builder.baseUrl("https://other.test").build();
+    await first.get("https://other.test/x").send();
+    await second.get("https://other.test/x").send();
+    await second.get("https://h.test/x").send();
+    expect(calls.map(authorizationOf)).toEqual([null, "Bearer tok", null]);
+  });
+
+  it("throws HttpConfigError from build without a baseUrl or authorize", () => {
+    const builder = HttpClient.builder().oauth2({ source });
+    let thrown: unknown;
+    try {
+      builder.build();
+    } catch (error) {
+      thrown = error;
+    }
+    expect(isHttpConfigError(thrown)).toBe(true);
+    expect((thrown as Error).message).toContain("set a baseUrl or give authorize");
+  });
+
+  it("removes a deferred oauth2 filter by name", async () => {
+    const { fetch, calls } = fakeFetch();
+    const client = HttpClient.builder().fetch(fetch).oauth2({ source }).removeFilter("oauth2").build();
     await client.get("https://h.test/x").send();
-    expect(new Headers(calls[0]?.init.headers).get("authorization")).toBe("Bearer tok");
+    expect(authorizationOf(calls[0])).toBeNull();
+  });
+
+  it("uses an explicit authorize over the default", async () => {
+    const { fetch, calls } = fakeFetch();
+    const client = HttpClient.builder()
+      .baseUrl("https://h.test")
+      .fetch(fetch)
+      .oauth2({ source, authorize: (request) => request.url.origin === "https://other.test" })
+      .build();
+    await client.get("/x").send();
+    await client.get("https://other.test/x").send();
+    expect(calls.map(authorizationOf)).toEqual([null, "Bearer tok"]);
+  });
+
+  it("sends the token everywhere with an explicit authorize and no baseUrl", async () => {
+    const { fetch, calls } = fakeFetch();
+    const client = HttpClient.builder()
+      .fetch(fetch)
+      .oauth2({ source, authorize: () => true })
+      .build();
+    await client.get("https://other.test/x").send();
+    expect(authorizationOf(calls[0])).toBe("Bearer tok");
+  });
+
+  it("shares one refresh between a client, its extension and repeated builds", async () => {
+    const { fetch, calls } = fakeFetch();
+    let refreshes = 0;
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const slow = {
+      getToken: async () => {
+        refreshes++;
+        await gate;
+        return { accessToken: "shared" };
+      },
+    };
+    const builder = HttpClient.builder().baseUrl("https://h.test").fetch(fetch).oauth2({ source: slow });
+    const client = builder.build();
+    const rebuilt = builder.build();
+    const extended = client.extend().header("x-extended", "1").build();
+    const extendedWithOtherBase = client.extend().baseUrl("https://other.test").build();
+    const sent = Promise.all([
+      client.get("/a").send(),
+      rebuilt.get("/b").send(),
+      extended.get("/c").send(),
+      extendedWithOtherBase.get("https://h.test/d").send(),
+      extendedWithOtherBase.get("/e").send(),
+    ]);
+    release();
+    await sent;
+    expect(refreshes).toBe(1);
+    expect(Object.fromEntries(calls.map((call) => [call.url, authorizationOf(call)]))).toEqual({
+      "https://h.test/a": "Bearer shared",
+      "https://h.test/b": "Bearer shared",
+      "https://h.test/c": "Bearer shared",
+      "https://h.test/d": "Bearer shared",
+      "https://other.test/e": null,
+    });
   });
 
   it("replaces an existing oauth2 filter on a second call", async () => {
     const { fetch, calls } = fakeFetch();
-    const builder = HttpClient.builder().fetch(fetch).oauth2({ source });
+    const builder = HttpClient.builder().baseUrl("https://h.test").fetch(fetch).oauth2({ source });
     builder.oauth2({ source: { getToken: async () => ({ accessToken: "second" }) } });
-    await builder.build().get("https://h.test/x").send();
+    await builder.build().get("/x").send();
     expect(calls).toHaveLength(1);
-    expect(new Headers(calls[0]?.init.headers).get("authorization")).toBe("Bearer second");
+    expect(authorizationOf(calls[0])).toBe("Bearer second");
   });
 
-  it("throws HttpConfigError for bad options and leaves the builder unchanged", async () => {
+  it.each([
+    ["with authorize", { authorize: () => true }],
+    ["without authorize", {}],
+  ])("throws HttpConfigError for bad options %s and leaves the builder unchanged", async (_name, extra) => {
     const { fetch, calls } = fakeFetch();
     const builder = HttpClient.builder().fetch(fetch).filter(marker());
     let thrown: unknown;
     try {
-      builder.oauth2({ source, refreshTimeoutMs: -1 });
+      builder.oauth2({ source, refreshTimeoutMs: -1, ...extra });
     } catch (error) {
       thrown = error;
     }
@@ -483,7 +597,6 @@ describe("oauth2", () => {
           clientSecret: "my-secret",
           scope: ["read"],
         }),
-        authorize: (request) => request.url.origin === "https://api.example.com",
       })
       .build();
 
