@@ -1,5 +1,6 @@
 import { createRegistry, fixedBackoff, isBulkheadFullError, type ResilienceRegistry } from "@vipengele/ts-core-resilience";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { clientCredentials } from "./auth";
 import { HttpClient } from "./client";
 import type { HttpFetch } from "./context";
 import { isHttpConfigError, isHttpStatusError } from "./errors/http-errors";
@@ -414,5 +415,85 @@ describe("end to end", () => {
     expect(body).toEqual({ id: 7 });
     expect(attempts).toEqual([1]);
     expect(seen).toEqual(["t"]);
+  });
+});
+
+describe("oauth2", () => {
+  const source = { getToken: async () => ({ accessToken: "tok" }) };
+
+  function marker(): Filter {
+    return filter({
+      name: "oauth2",
+      order: Order.AUTH,
+      handle: (ctx, next) => {
+        ctx.request.headers.set("x-marker", "1");
+        return next();
+      },
+    });
+  }
+
+  it("adds the oauth2 filter", async () => {
+    const { fetch, calls } = fakeFetch();
+    const client = HttpClient.builder().fetch(fetch).oauth2({ source }).build();
+    await client.get("https://h.test/x").send();
+    expect(new Headers(calls[0]?.init.headers).get("authorization")).toBe("Bearer tok");
+  });
+
+  it("replaces an existing oauth2 filter on a second call", async () => {
+    const { fetch, calls } = fakeFetch();
+    const builder = HttpClient.builder().fetch(fetch).oauth2({ source });
+    builder.oauth2({ source: { getToken: async () => ({ accessToken: "second" }) } });
+    await builder.build().get("https://h.test/x").send();
+    expect(calls).toHaveLength(1);
+    expect(new Headers(calls[0]?.init.headers).get("authorization")).toBe("Bearer second");
+  });
+
+  it("throws HttpConfigError for bad options and leaves the builder unchanged", async () => {
+    const { fetch, calls } = fakeFetch();
+    const builder = HttpClient.builder().fetch(fetch).filter(marker());
+    let thrown: unknown;
+    try {
+      builder.oauth2({ source, refreshTimeoutMs: -1 });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(isHttpConfigError(thrown)).toBe(true);
+    await builder.build().get("https://h.test/x").send();
+    expect(new Headers(calls[0]?.init.headers).get("x-marker")).toBe("1");
+  });
+
+  it("sends the token request and the API request through the injected fetch", async () => {
+    const requests: { url: string; headers: Headers; body: unknown }[] = [];
+    const fakeApiFetch: HttpFetch = async (url, init) => {
+      requests.push({ url, headers: new Headers(init.headers), body: init.body });
+      if (url === "https://auth.example.com/token") {
+        return Response.json({ access_token: "abc123", token_type: "Bearer", expires_in: 3600 });
+      }
+      return Response.json({ ok: true });
+    };
+
+    // README example start
+    const client = HttpClient.builder()
+      .baseUrl("https://api.example.com")
+      .fetch(fakeApiFetch)
+      .oauth2({
+        source: clientCredentials({
+          tokenUrl: "https://auth.example.com/token",
+          clientId: "my-client",
+          clientSecret: "my-secret",
+          scope: ["read"],
+        }),
+        authorize: (request) => request.url.origin === "https://api.example.com",
+      })
+      .build();
+
+    const result = await client.get("/things").json<{ ok: boolean }>();
+    // README example end
+
+    expect(result).toEqual({ ok: true });
+    expect(requests.map((r) => r.url)).toEqual(["https://auth.example.com/token", "https://api.example.com/things"]);
+    expect(requests[0]?.headers.get("authorization")).toBe(`Basic ${btoa("my-client:my-secret")}`);
+    expect(String(requests[0]?.body)).toContain("grant_type=client_credentials");
+    expect(requests[1]?.headers.get("authorization")).toBe("Bearer abc123");
   });
 });

@@ -1,4 +1,5 @@
 import type { ResilienceRegistry } from "@vipengele/ts-core-resilience";
+import { type OAuth2FilterOptions, oauth2Filter } from "./auth/oauth2-filter";
 import { compileChain } from "./chain";
 import type { ClientConfig } from "./client-config";
 import type { HttpFetch } from "./context";
@@ -106,6 +107,20 @@ export class HttpClientBuilder {
     const added = resilienceFilters(registry, name, options);
     this.#filters = this.#filters.filter((existing) => !RESILIENCE_FILTER_NAMES.includes(existing.name));
     return this.filter(...added);
+  }
+
+  /**
+   * Adds the OAuth2 filter {@link oauth2Filter} builds from `options`, replacing any filter named
+   * `"oauth2"`. The filter is built before the builder changes: when `options` are invalid, the
+   * builder is unchanged.
+   *
+   * {@link HttpClient.extend} shares the filter instance, so a client and its extension share one
+   * token cache and one in-flight refresh. This is intended: both act as the same OAuth2 client.
+   *
+   * @throws HttpConfigError when `options` are invalid.
+   */
+  oauth2(options: OAuth2FilterOptions): this {
+    return this.filter(oauth2Filter(options));
   }
 
   /** Sets whether `send` raises an `HttpStatusError` for a failing status; off by default. */
